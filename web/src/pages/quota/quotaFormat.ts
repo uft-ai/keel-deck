@@ -92,14 +92,15 @@ export function resetAccuracyMarker(resetAccuracy?: string): string {
  * exact upstream reset time can support. It falls back to what upstream itself stated.
  */
 export function quotaResetCountdown(
-  window: { reset_at_ms?: number; reset_label?: string; reset_accuracy?: string },
+  window: { reset_at_ms?: number; reset_label?: string; reset_accuracy?: string; reset_requires_confirmation?: boolean },
   nowMS: number,
   t: TFunc,
 ): string {
   const approximate = resetAccuracyMarker(window.reset_accuracy);
-  if (!window.reset_at_ms) return window.reset_label ? `${approximate}${window.reset_label}` : '';
+  if (!window.reset_at_ms) return window.reset_label ? `${approximate}${window.reset_label}` : window.reset_requires_confirmation ? t('quota.reset_unknown') : '';
   const countdown = formatCountdown(window.reset_at_ms, nowMS, t);
   if (countdown) return `${approximate}${countdown}`;
+  if (window.reset_requires_confirmation) return t('quota.renewal_unconfirmed');
   if (approximate) return window.reset_label ? `${approximate}${window.reset_label}` : '';
   return t('quota.recovered');
 }

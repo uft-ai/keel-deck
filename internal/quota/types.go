@@ -23,7 +23,9 @@ type QuotaWindow struct {
 	// PeriodDeliveryPending keeps a failed Relay delivery retryable after the
 	// stored reset has moved forward. An observation that was never submitted
 	// does not set it.
-	PeriodDeliveryPending bool `json:"period_delivery_pending,omitempty"`
+	PeriodDeliveryPending     bool  `json:"period_delivery_pending,omitempty"`
+	InferenceBlocked          *bool `json:"inference_blocked,omitempty"`
+	ResetRequiresConfirmation bool  `json:"reset_requires_confirmation,omitempty"`
 
 	// The three fields below are joined from recorded usage when a quota is
 	// read and are never part of a stored snapshot: usage keeps arriving after

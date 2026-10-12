@@ -142,6 +142,10 @@ func TestNanRefreshKeepsANotRenewedBlockVisible(t *testing.T) {
 	if len(result.Windows) != 1 {
 		t.Fatalf("quota windows were discarded: %+v", result.Windows)
 	}
+	if result.Windows[0].InferenceBlocked == nil || !*result.Windows[0].InferenceBlocked ||
+		!result.Windows[0].ResetRequiresConfirmation || *result.Windows[0].RemainingPercent != 100 {
+		t.Fatal("provider allowance must stay separate from the retained inference block")
+	}
 }
 
 func TestNanRefreshObservesEveryConfiguredModel(t *testing.T) {

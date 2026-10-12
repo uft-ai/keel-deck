@@ -150,15 +150,16 @@ func NormalizeNanQuota(report NanQuotaReport) []QuotaWindow {
 		usedPercent := math.Min(used/limit*100, 100)
 		remainingPercent := math.Min(math.Max(float64(model.Remaining)/limit*100, 0), 100)
 		window := QuotaWindow{
-			ID:               "nan:" + model.Model,
-			Label:            model.Model,
-			Kind:             "model_scoped",
-			Scope:            "model",
-			Model:            model.Model,
-			Used:             &used,
-			Limit:            &limit,
-			UsedPercent:      &usedPercent,
-			RemainingPercent: &remainingPercent,
+			ResetRequiresConfirmation: true,
+			ID:                        "nan:" + model.Model,
+			Label:                     model.Model,
+			Kind:                      "model_scoped",
+			Scope:                     "model",
+			Model:                     model.Model,
+			Used:                      &used,
+			Limit:                     &limit,
+			UsedPercent:               &usedPercent,
+			RemainingPercent:          &remainingPercent,
 		}
 		if model.PeriodEnd != nil {
 			reset := model.PeriodEnd.UTC().UnixMilli()

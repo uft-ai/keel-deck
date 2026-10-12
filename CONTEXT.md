@@ -634,6 +634,12 @@ authentication facts.
   window, so a linear ramp collapses the middle of the range into one invisible shade and a logarithm
   over-amplifies the bottom. The scale is relative to the window, so the same shape of traffic paints
   the same field whatever the absolute volume.
+- **NaN availability confirmation**: A provider's remaining allowance and Relay's
+  inference block are separate observations. Model windows keep the exact quota
+  percentage while displaying a retained block or pending reset confirmation.
+  Passing a reset timestamp alone is never displayed as recovered for NaN.
+  Configured NaN keys also appear in the dashboard without an OAuth auth file;
+  their details show every reported model window.
 - **Credential Quota**: The dashboard panel beside the Token Activity Grid, listing every enabled
   credential of the deployment by urgency - sign-in required, cooling down, exhausted, unavailable,
   running low, healthy, no quota reading - with the ones that cannot serve first, because on a

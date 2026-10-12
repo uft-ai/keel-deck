@@ -3356,3 +3356,13 @@ adding a new selected entry; existing entries keep their original identity/optio
 model-pull response. They neither create availability nor persist a second catalog.
 The backend metadata test and rendered provider-hook test cover unknown models,
 missing limits, image route separation and preservation of a native alias.
+
+### NaN availability in quota views
+
+The quota service projects versioned Relay block observations onto the matching
+model windows independently of provider counters. These optional fields survive
+the existing window JSON snapshots. The dashboard joins configured NaN quota
+subjects even when the OAuth credential list omits them, reuses the complete quota
+renderer for per-model details, and refreshes those same auth indexes. Reset
+countdown helpers preserve the requirement for verified renewal in expanded,
+compact and dashboard readings.

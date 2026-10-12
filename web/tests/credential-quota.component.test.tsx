@@ -11,9 +11,60 @@ import { buildCredentialQuotaBoard, credentialQuotaRefreshTargets } from '../src
 import { CredentialQuotaBody } from '../src/pages/quota/CredentialQuotaBody';
 import type { ManagementAuthFile } from '../src/types/managementAuthFile';
 import type { QuotaItem, QuotaWindow } from '../src/types/quota';
+import { QuotaProgressBar } from '../src/pages/quota/QuotaProgressBar';
+import { quotaResetCountdown } from '../src/pages/quota/quotaFormat';
 
 const NOW_MS = Date.parse('2026-10-10T08:00:00Z');
 const HOUR_MS = 3_600_000;
+
+it('shows configured NaN subjects without an OAuth file and refreshes the same key', () => {
+  const nan = quota('nan-key', [{ id: 'nan:qwen', label: 'qwen', scope: 'model', model: 'qwen', remaining_percent: 80 }],
+    { provider: 'nan', type: 'nan', name: 'My NaN key' });
+  const board = buildCredentialQuotaBoard([], [nan]);
+  expect(board.rows).toHaveLength(1);
+  expect(board.rows[0].primary).toBe('My NaN key');
+  expect(credentialQuotaRefreshTargets([], [nan])).toEqual(['nan-key']);
+  expect(buildCredentialQuotaBoard([file('runtime', { auth_index: 'nan-key', runtime_only: true })], [nan]).rows).toHaveLength(1);
+  nan.windows[0].inference_blocked = true;
+  expect(buildCredentialQuotaBoard([], [nan]).rows[0].state).toBe('problem');
+  expect(buildCredentialQuotaBoard([], [{ ...nan, disabled: true }]).disabledCount).toBe(1);
+});
+
+it('keeps provider allowance visible while renewal and inference availability are unconfirmed', () => {
+  window.localStorage.setItem('omc-lang', 'en');
+  const capacity: QuotaWindow = { id: 'nan:qwen', label: 'qwen', scope: 'model', remaining_percent: 100,
+    reset_at_ms: NOW_MS - HOUR_MS, reset_accuracy: 'exact', reset_requires_confirmation: true,
+    inference_blocked: true, period_delivery_pending: true };
+  render(<I18nProvider><QuotaProgressBar label="qwen" nowMS={NOW_MS} remainingPercent={100}
+    resetAtMS={capacity.reset_at_ms} capacity={capacity} /></I18nProvider>);
+  expect(screen.getByText('100%')).toBeTruthy();
+  expect(screen.getByText('Inference paused')).toBeTruthy();
+  expect(screen.getByText('Availability confirmation pending')).toBeTruthy();
+  expect(screen.getByText('Renewal not confirmed')).toBeTruthy();
+  expect(screen.queryByText('Recovered')).toBeNull();
+  expect(quotaResetCountdown(capacity, NOW_MS, key => key)).toBe('quota.renewal_unconfirmed');
+});
+
+it('opens every NaN model window from the dashboard without an OAuth file', async () => {
+  const item = quota('nan-key', [
+    { id: 'qwen', label: 'Qwen allowance', model: 'qwen', scope: 'model', remaining_percent: 80 },
+    { id: 'glm', label: 'GLM allowance', model: 'glm', scope: 'model', remaining_percent: 30 },
+  ], { provider: 'nan', type: 'nan', name: 'My NaN key' });
+  render(<QuotaSurface files={[]} quotas={[item]} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Details My NaN key' }));
+  const drawer = await screen.findByRole('dialog');
+  expect(within(drawer).getByText('Qwen allowance')).toBeTruthy();
+  expect(within(drawer).getByText('GLM allowance')).toBeTruthy();
+});
+
+it('does not round a nearly full allowance to an exact 100 percent', () => {
+  window.localStorage.setItem('omc-lang', 'en');
+  render(<I18nProvider><QuotaProgressBar label="qwen" nowMS={NOW_MS} remainingPercent={99.999999}
+    capacity={{ used: 5, limit: 500000000 }} /></I18nProvider>);
+  expect(screen.getByText('<100%')).toBeTruthy();
+  expect(screen.getByText('Reported usage: 5 / 500,000,000')).toBeTruthy();
+  expect(screen.queryByText('100%')).toBeNull();
+});
 
 function file(name: string, overrides: Partial<ManagementAuthFile> = {}): ManagementAuthFile {
   return { name, auth_index: name, type: 'codex', disabled: false, unavailable: false, runtime_only: false, success: 0, failed: 0, ...overrides };

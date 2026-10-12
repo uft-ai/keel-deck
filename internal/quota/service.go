@@ -384,6 +384,12 @@ func (s *Service) RefreshCredentialQuotaModels(ctx context.Context, file managem
 				break
 			}
 			result.Windows = windows
+			for i := range result.Windows {
+				if read, ok := reads[result.Windows[i].Model]; ok {
+					blocked := read.Record != nil && read.Record.Blocked
+					result.Windows[i].InferenceBlocked = &blocked
+				}
+			}
 			if report.AccountPeriodStart != nil {
 				if result.RawSignals == nil {
 					result.RawSignals = map[string]string{}
@@ -419,6 +425,11 @@ func (s *Service) RefreshCredentialQuotaModels(ctx context.Context, file managem
 				}
 				blocked := record.Blocked
 				result.PeriodDeliveries = append(result.PeriodDeliveries, PeriodDelivery{Model: model, State: observation.State, Status: "accepted", Version: record.Version, Blocked: &blocked})
+				for i := range result.Windows {
+					if result.Windows[i].Model == model {
+						result.Windows[i].InferenceBlocked = &blocked
+					}
+				}
 			}
 
 		case "codex":

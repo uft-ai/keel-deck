@@ -7,6 +7,7 @@ import { useTokenDisplayStyle } from '../../types/tokenDisplayContext';
 import type { QuotaWindow } from '../../types/quota';
 import styles from './QuotaPresentation.module.css';
 import { Meter } from '../../components/common/Meter';
+import { Tag } from '../../components/common/Tag';
 
 interface QuotaProgressBarProps {
   nowMS: number;
@@ -20,7 +21,7 @@ interface QuotaProgressBarProps {
   resetAccuracy?: 'exact' | 'derived' | 'approximate';
   showPercent?: boolean;
   /** The window's recorded usage and estimated capacity, when the estimate applies to it. */
-  capacity?: Pick<QuotaWindow, 'usage' | 'capacity' | 'capacity_unavailable'>;
+  capacity?: Pick<QuotaWindow, 'usage' | 'capacity' | 'capacity_unavailable' | 'used' | 'limit' | 'inference_blocked' | 'period_delivery_pending' | 'reset_requires_confirmation'>;
 }
 
 export const QuotaProgressBar: React.FC<QuotaProgressBarProps> = ({
@@ -55,13 +56,20 @@ export const QuotaProgressBar: React.FC<QuotaProgressBarProps> = ({
   const computedResetText = (() => {
     if (resetAtMS) {
       if (resetAtMS - nowMS > 0) return `${resetMarker}${formatTimeWithCountdown(resetAtMS, nowMS, t)}`;
+      if (capacity?.reset_requires_confirmation) return t('quota.renewal_unconfirmed');
       if (!resetMarker) return t('quota.recovered');
       return resetLabel ? `${resetMarker}${resetLabel}` : '';
     }
-    return resetLabel ? `${resetMarker}${resetLabel}` : '';
+    return resetLabel ? `${resetMarker}${resetLabel}` : capacity?.reset_requires_confirmation ? t('quota.reset_unknown') : '';
   })();
 
-  const displayPercent = hasData ? `${clampedRemaining}%` : '--';
+  const preciseRemaining = remainingPercent ?? (usedPercent != null ? 100 - usedPercent : null);
+  const boundedRemaining = preciseRemaining == null ? null : Math.max(0, Math.min(100, preciseRemaining));
+  const roundedRemaining = boundedRemaining == null ? null : Math.round(boundedRemaining * 10000) / 10000;
+  const displayPercent = roundedRemaining == null ? '--'
+    : roundedRemaining === 100 && boundedRemaining! < 100 ? '<100%'
+    : roundedRemaining === 0 && boundedRemaining! > 0 ? '>0%'
+    : `${roundedRemaining.toLocaleString(undefined, { maximumFractionDigits: 4 })}%`;
 
   return (
     <div className={styles['progress-wrap']}>
@@ -82,6 +90,19 @@ export const QuotaProgressBar: React.FC<QuotaProgressBarProps> = ({
           {computedResetText}
         </span>
       </div>
+
+      {capacity?.used != null && capacity.limit != null && (
+        <div className={styles['capacity-note']}>
+          {t('quota.reported_usage', { used: capacity.used.toLocaleString(), limit: capacity.limit.toLocaleString() })}
+        </div>
+      )}
+
+      {(capacity?.inference_blocked || capacity?.period_delivery_pending) && (
+        <div className={styles['progress-flags']}>
+          {capacity.inference_blocked && <Tag tone="danger" size="small">{t('quota.inference_blocked')}</Tag>}
+          {capacity.period_delivery_pending && <Tag tone="warn" size="small">{t('quota.confirmation_pending')}</Tag>}
+        </div>
+      )}
 
       <div title={hasData ? `${resolvedLabel}: ${displayPercent}` : undefined}>
         <Meter

@@ -18,6 +18,9 @@ import { Tag } from '../../components/common/Tag';
  * "Normal" in one place and something else in the other.
  */
 export function quotaStatusTag(item: QuotaItem, t: TFunc): React.ReactNode {
+  if (item.windows?.some(window => window.inference_blocked || window.period_delivery_pending)) {
+    return <Tag color="warning" icon={<WarningOutlined />} style={{ margin: 0 }}>{t('quota.confirmation_pending')}</Tag>;
+  }
   if (item.active_cooldown?.is_active || item.status === 'cooldown') {
     const reason = item.active_cooldown?.reason;
     return (

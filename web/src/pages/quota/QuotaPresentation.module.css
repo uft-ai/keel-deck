@@ -95,6 +95,12 @@
   font-size: var(--text-xs);
 }
 
+.progress-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .progress-label {
   color: var(--fg-2);
   flex: 1;

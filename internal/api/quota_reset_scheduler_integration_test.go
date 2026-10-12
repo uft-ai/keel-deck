@@ -176,6 +176,9 @@ func TestRefreshDueQuotaRetriesAFailedPeriodDelivery(t *testing.T) {
 	if !stored[0].PeriodDeliveryPending || stored[0].ResetAtMS == nil || *stored[0].ResetAtMS <= now.UnixMilli() {
 		t.Fatalf("future reset did not retain the failed delivery: %+v", stored)
 	}
+	if stored[0].InferenceBlocked == nil || !stored[0].ResetRequiresConfirmation {
+		t.Fatal("availability evidence was lost from the stored window")
+	}
 	beforeHold := calls.Load()
 	if err := handler.RefreshDueQuota(context.Background()); err != nil {
 		t.Fatal(err)

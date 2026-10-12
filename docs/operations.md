@@ -532,3 +532,14 @@ Explicit reasoning levels retain `none` without generic low-effort coercion.
 Create a second Qwen 3.6 entry with alias `qwen3.6-native` and native operations
 `responses` and `completions` when exact native behavior is wanted; the ordinary
 alias uses translated Responses.
+
+NaN's dashboard entry includes configured API keys and opens all model windows.
+A quota percentage remains the provider's reported allowance even while the
+gateway is paused awaiting verified renewal. The reading exposes
+`inference_blocked`, `period_delivery_pending` and `reset_requires_confirmation`
+per window; missing gateway evidence stays unknown. A passed billing boundary
+displays renewal unconfirmed, and an absent boundary displays reset time unknown.
+
+Expanded quota windows show the reported used/limit counters. A nearly full
+allowance is never rounded into a claim of exactly 100 percent; compact bars
+remain coarse summaries, and the details retain the precise reading.

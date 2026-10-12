@@ -18,6 +18,9 @@ export interface QuotaWindow {
   limit?: number;
   used_percent?: number;
   remaining_percent?: number;
+  period_delivery_pending?: boolean;
+  inference_blocked?: boolean;
+  reset_requires_confirmation?: boolean;
   reset_at_ms?: number;
   reset_label?: string;
   period_hours?: number;

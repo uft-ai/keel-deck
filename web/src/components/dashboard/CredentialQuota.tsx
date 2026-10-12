@@ -1,4 +1,5 @@
 import React from 'react';
+import { Button } from 'antd';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import clsx from 'clsx';
@@ -19,6 +20,7 @@ import {
 } from '../icons';
 import type { ManagementAuthFile } from '../../types/managementAuthFile';
 import type { QuotaItem, QuotaWindow } from '../../types/quota';
+import { CredentialQuotaBody } from '../../pages/quota/CredentialQuotaBody';
 import {
   quotaRefreshFailureReason,
   refreshCredentialQuotas,
@@ -39,6 +41,7 @@ import {
   type CredentialQuotaState,
   type QuotaWindowPeriod,
 } from './credentialQuotaLogic';
+import { AppDrawer } from '../common/AppDrawer';
 import { Panel } from '../common/Panel';
 import './dashboard.css';
 
@@ -108,7 +111,7 @@ const QuotaWindowMeter: React.FC<{ window: QuotaWindow }> = ({ window }) => {
   );
 };
 
-const CredentialQuotaRowView: React.FC<{ row: CredentialQuotaRow; nowMS: number }> = ({ row, nowMS }) => {
+const CredentialQuotaRowView: React.FC<{ row: CredentialQuotaRow; nowMS: number; onInspect?: () => void }> = ({ row, nowMS, onInspect }) => {
   const t = useT();
   const status = STATUS_ROW_STATES[row.state];
   // A blocked row counts down to when it serves again; a serving one to when its tightest window
@@ -116,7 +119,8 @@ const CredentialQuotaRowView: React.FC<{ row: CredentialQuotaRow; nowMS: number 
   const reset = row.bindingWindow?.reset_at_ms;
   const isEstimated = !row.recoverAtMS && Boolean(row.bindingWindow?.reset_accuracy) && row.bindingWindow?.reset_accuracy !== 'exact';
   const until = formatTimeUntil(row.recoverAtMS ?? (status ? undefined : reset), nowMS, t);
-  const when = until ? `${isEstimated ? '~' : ''}${until}` : '';
+  const when = row.bindingWindow?.reset_requires_confirmation && reset && reset <= nowMS
+    ? t('quota.renewal_unconfirmed') : until ? `${isEstimated ? '~' : ''}${until}` : '';
   return (
     // A row is not a link. It scrolls under a finger, and a row that navigates turns every touch
     // that was meant to move the list into leaving the page; the panel's one exit is its footer.
@@ -142,6 +146,7 @@ const CredentialQuotaRowView: React.FC<{ row: CredentialQuotaRow; nowMS: number 
         </span>
       )}
       <span className="quota-row-when">
+        {onInspect && <Button type="text" size="small" icon={<RightOutlined />} aria-label={`${t('common.details')} ${row.primary}`} onClick={onInspect} />}
         {when && (
           <>
             <ClockCircleOutlined className="quota-row-when-icon" aria-hidden="true" />
@@ -201,6 +206,8 @@ export const CredentialQuotaPanel: React.FC<CredentialQuotaPanelProps> = ({
 }) => {
   const t = useT();
   const board = React.useMemo(() => (files ? buildCredentialQuotaBoard(files, quotas ?? []) : null), [files, quotas]);
+  const [selectedAuthIndex, setSelectedAuthIndex] = React.useState<string | null>(null);
+  const detailItem = quotas?.find(item => item.auth_index === selectedAuthIndex);
   const state = resolveCredentialQuotaPanelState(board, isLoading);
 
   return (
@@ -273,12 +280,16 @@ export const CredentialQuotaPanel: React.FC<CredentialQuotaPanelProps> = ({
               // Every credential is listed and the list scrolls inside the panel, so a large fleet
               // is readable here without the panel outgrowing the row it shares.
               <ul className="quota-list">
-                {board.rows.map((row) => <CredentialQuotaRowView key={row.key} row={row} nowMS={nowMS} />)}
+                {board.rows.map((row) => <CredentialQuotaRowView key={row.key} row={row} nowMS={nowMS}
+                  onInspect={row.provider === 'nan' ? () => setSelectedAuthIndex(row.key) : undefined} />)}
               </ul>
             ) : (
               <p className="empty-copy quota-all-disabled">{t('dash.quota.all_disabled')}</p>
             )}
             <div className="quota-foot">
+              {board.rows.some(row => row.provider === 'nan') && (
+                <Link to="/ai-providers" className="quota-foot-link">{t('nav.providers')}</Link>
+              )}
               <Link to="/oauth-management" className="quota-foot-link">
                 <span>{t('oauth.view_auth_files')}</span>
                 <RightOutlined className="quota-link-icon" />
@@ -287,6 +298,9 @@ export const CredentialQuotaPanel: React.FC<CredentialQuotaPanelProps> = ({
           </>
         )}
       </div>
+      <AppDrawer title={detailItem?.name} open={Boolean(detailItem)} onClose={() => setSelectedAuthIndex(null)} width="medium">
+        {detailItem && <CredentialQuotaBody item={detailItem} nowMS={nowMS} isDemo={false} />}
+      </AppDrawer>
     </Panel>
   );
 };

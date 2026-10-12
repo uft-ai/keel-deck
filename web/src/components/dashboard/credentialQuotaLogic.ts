@@ -72,11 +72,26 @@ function pickRowWindows(windows: QuotaWindow[]): QuotaWindow[] {
     .slice(0, 2);
 }
 
-function isDisabled(file: ManagementAuthFile): boolean {
+type QuotaCredential = Omit<ManagementAuthFile, 'success' | 'failed'>;
+
+function quotaCredentials(files: ManagementAuthFile[], quotas: QuotaItem[]): QuotaCredential[] {
+  // Configured NaN keys have quota subjects but need not appear in OAuth's auth-file list.
+  const configured = quotas.filter(item => item.provider === 'nan' && item.auth_index);
+  const indexes = new Set(configured.map(item => item.auth_index));
+  return [
+    ...files.filter(file => !file.runtime_only || !indexes.has(file.auth_index ?? '')),
+    ...configured.filter(item => !files.some(file => !file.runtime_only && file.auth_index === item.auth_index)).map(item => ({
+      name: item.name, auth_index: item.auth_index, type: item.provider, provider: item.provider,
+      disabled: item.disabled, unavailable: false, runtime_only: false,
+    })),
+  ];
+}
+
+function isDisabled(file: QuotaCredential): boolean {
   return file.disabled === true || file.status?.trim().toLowerCase() === 'disabled';
 }
 
-function isUnavailable(file: ManagementAuthFile): boolean {
+function isUnavailable(file: QuotaCredential): boolean {
   return file.unavailable === true || file.status?.trim().toLowerCase() === 'error';
 }
 
@@ -110,10 +125,11 @@ export function isCredentialQuotaBlocked(state: CredentialQuotaState): boolean {
   return BLOCKED_STATES.has(state);
 }
 
-function resolveState(file: ManagementAuthFile, item: QuotaItem | undefined, remainingPercent: number | undefined): CredentialQuotaState {
+function resolveState(file: QuotaCredential, item: QuotaItem | undefined, remainingPercent: number | undefined): CredentialQuotaState {
   if (item?.recommendation?.action === 'reauth' || item?.recommendation?.status === 'needs_reauth') return 'reauth';
   if (item?.active_cooldown?.is_active || item?.status === 'cooldown') return 'cooldown';
   if (item?.status === 'exhausted' || remainingPercent === 0) return 'exhausted';
+  if (item?.windows?.some(window => window.inference_blocked || window.period_delivery_pending)) return 'problem';
   if (isUnavailable(file) || item?.status === 'error') return 'problem';
   if (remainingPercent == null) return 'unread';
   return remainingPercent < QUOTA_LOW_PERCENT ? 'low' : 'healthy';
@@ -149,7 +165,7 @@ export function buildCredentialQuotaBoard(files: ManagementAuthFile[], quotas: Q
 
   const rows: CredentialQuotaRow[] = [];
   let disabledCount = 0;
-  for (const file of files) {
+  for (const file of quotaCredentials(files, quotas)) {
     if (file.runtime_only) continue;
     if (isDisabled(file)) {
       disabledCount += 1;
@@ -196,14 +212,15 @@ export function buildCredentialQuotaBoard(files: ManagementAuthFile[], quotas: Q
  * no other credential shares, and from a provider the gateway can read on demand.
  */
 export function credentialQuotaRefreshTargets(files: ManagementAuthFile[], quotas: QuotaItem[]): string[] {
+  const credentials = quotaCredentials(files, quotas);
   const refreshable = new Set(
     quotas.filter((item) => item.auth_index && item.capabilities?.refresh_supported).map((item) => item.auth_index),
   );
   const occurrences = new Map<string, number>();
-  for (const file of files) {
+  for (const file of credentials) {
     if (file.auth_index) occurrences.set(file.auth_index, (occurrences.get(file.auth_index) ?? 0) + 1);
   }
-  return files
+  return credentials
     .filter((file) => !file.runtime_only && !isDisabled(file))
     .map((file) => file.auth_index ?? '')
     .filter((authIndex) => authIndex && occurrences.get(authIndex) === 1 && refreshable.has(authIndex));
