@@ -104,6 +104,10 @@ func lockUsagePrice(ctx context.Context, tx *sql.Tx, event usage.Event) (lockedP
 	if !version.Available {
 		return lockedPrice{status: "unpriced"}, nil
 	}
+	if reason := usageUnpricedReason(event.Generate, event.TokensReported,
+		eventTokens(event.InputTokens, event.OutputTokens, event.CacheReadTokens, event.CacheCreationTokens), event.TotalTokens); reason != "" {
+		return lockedPrice{version: &version.ID, status: "unpriced"}, nil
+	}
 	locked := lockedPrice{version: &version.ID}
 	multiplier := 1.0
 	if event.Provider != "" {
@@ -138,6 +142,62 @@ func eventTokens(input, output, cacheRead, cacheWrite int64) pricing.Tokens {
 	return pricing.Tokens{Input: input, Output: output, CacheRead: cacheRead, CacheWrite: cacheWrite}
 }
 
+// Reasons an unpriced request was not priced. no_price is the only one a price
+// would have fixed; the others describe counters that are not billable counts,
+// whether or not a price existed when the request ran.
+const (
+	UnpricedNoPrice      = "no_price"
+	UnpricedNotGenerated = "not_generated"
+	UnpricedUsageMissing = "usage_missing"
+	UnpricedUsageUnknown = "usage_unknown"
+	// UnpricedUsageIncomplete is a provider count with only a billed total, such
+	// as a rerank's billed units: there is no input/output split to price.
+	UnpricedUsageIncomplete = "usage_incomplete"
+)
+
+// usageUnpricedReason decides whether a request's counters can be priced.
+//
+// tokens_reported=false means the provider response carried no usage, so its
+// zero counters are not counts. generate=false marks utility and history calls
+// (account usage reads, warm-ups) that produce no billable output. A legacy
+// event without tokens_reported keeps the established pricing when it carries
+// any positive counter: those counts came from the provider. A legacy event
+// whose counters are all zero is indistinguishable from a response without
+// usage, and pricing it would record a cost of zero that nothing observed, so
+// it stays unpriced.
+func usageUnpricedReason(generate bool, tokensReported *bool, tokens pricing.Tokens, total int64) string {
+	if tokensReported != nil && !*tokensReported {
+		return UnpricedUsageMissing
+	}
+	if !generate {
+		return UnpricedNotGenerated
+	}
+	noBillable := tokens.Input <= 0 && tokens.Output <= 0 && tokens.CacheRead <= 0 && tokens.CacheWrite <= 0
+	if tokensReported == nil && noBillable {
+		return UnpricedUsageUnknown
+	}
+	// A reported zero everywhere is a real zero; a positive total with no
+	// classified counters is not, and pricing it would claim $0.
+	if noBillable && total > 0 {
+		return UnpricedUsageIncomplete
+	}
+	return ""
+}
+
+// UnpricedReason explains a stored unpriced request from its own counters. The
+// counters decide first: a request without billable counts would have stayed
+// unpriced under any price, so offering to set one would mislead. Only billable
+// counters with no price at the time are no_price. Other statuses have no reason.
+func UnpricedReason(status string, generate bool, tokensReported *bool, tokens pricing.Tokens, total int64) string {
+	if status != "unpriced" {
+		return ""
+	}
+	if reason := usageUnpricedReason(generate, tokensReported, tokens, total); reason != "" {
+		return reason
+	}
+	return UnpricedNoPrice
+}
+
 // RequestCostBreakdown explains one stored request cost. The stored amount is
 // authoritative; Quote is the same computation re-run from the immutable
 // versions the request locked, and RecomputedMatches says whether it agrees.
@@ -152,21 +212,29 @@ type RequestCostBreakdown struct {
 	Quote             *pricing.Breakdown `json:"quote,omitempty"`
 	RecomputedMatches bool               `json:"recomputed_matches"`
 	InvalidReason     string             `json:"invalid_reason,omitempty"`
+	// UnpricedReason says why an unpriced request was not priced: no_price,
+	// not_generated, usage_missing, usage_unknown or usage_incomplete. It is derived from the
+	// stored row on read; the stored status itself never changes.
+	UnpricedReason string `json:"unpriced_reason,omitempty"`
 }
 
 // GetUsageEventCostBreakdown loads the versions a stored request locked. An
-// unpriced request has nothing to explain and returns only its status.
+// unpriced request has nothing to quote and returns its status, the reason it
+// was not priced, and the price version it saw, if any.
 func (r *Repository) GetUsageEventCostBreakdown(ctx context.Context, id int64) (RequestCostBreakdown, error) {
 	var result RequestCostBreakdown
 	if err := r.requirePricingSchema(ctx); err != nil {
 		return result, err
 	}
-	var versionID, channelID, storedNanos, storedTier sql.NullInt64
+	var versionID, channelID, storedNanos, storedTier, tokensReported sql.NullInt64
 	var timestampMS int64
-	var input, output, cacheRead, cacheWrite int64
+	var input, output, cacheRead, cacheWrite, total int64
+	var generate int
 	err := r.SQL().QueryRowContext(ctx, `SELECT pricing_status, cost_nanos, price_version_id, channel_version_id, price_tier,
- timestamp_ms, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM usage_events WHERE id = ?`, id).Scan(
-		&result.Status, &storedNanos, &versionID, &channelID, &storedTier, &timestampMS, &input, &output, &cacheRead, &cacheWrite)
+ timestamp_ms, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, total_tokens, generate, tokens_reported
+ FROM usage_events WHERE id = ?`, id).Scan(
+		&result.Status, &storedNanos, &versionID, &channelID, &storedTier, &timestampMS, &input, &output, &cacheRead, &cacheWrite,
+		&total, &generate, &tokensReported)
 	if errors.Is(err, sql.ErrNoRows) {
 		return result, ErrNotFound
 	}
@@ -179,6 +247,8 @@ func (r *Repository) GetUsageEventCostBreakdown(ctx context.Context, id int64) (
 	if storedTier.Valid {
 		result.StoredTier = &storedTier.Int64
 	}
+	result.UnpricedReason = UnpricedReason(result.Status, generate != 0, reportedTokens(tokensReported),
+		eventTokens(input, output, cacheRead, cacheWrite), total)
 	if !versionID.Valid {
 		return result, nil
 	}
@@ -192,6 +262,11 @@ func (r *Repository) GetUsageEventCostBreakdown(ctx context.Context, id int64) (
 		return result, fmt.Errorf("read request price version: %w", err)
 	}
 	result.Version = &version
+	if result.Status == "unpriced" {
+		// The version is shown as context only. Quoting it would present a cost
+		// the request was deliberately not charged.
+		return result, nil
+	}
 	multiplier := 1.0
 	if channelID.Valid {
 		channel, err := scanChannelVersion(r.SQL().QueryRowContext(ctx, channelVersionSelect+` WHERE id = ?`, channelID.Int64))

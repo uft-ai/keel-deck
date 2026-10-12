@@ -1979,9 +1979,23 @@ index of the tier the request qualified for, and integer USD nanos computed by
 `pricing.Quote`. Historical totals never join the mutable tables, so a later edit
 cannot rewrite an invoice. A request with no effective price version is stored
 with pricing status `unpriced` (`legacy_unpriced` for rows that predate migration
-019), cost absent, and is never backfilled. The request detail recomputes a
-breakdown from the locked versions for display; the stored amount stays
-authoritative.
+019), cost absent, and is never backfilled. A request whose model had a price is
+still stored `unpriced`, with the version it saw, when its counters are not billable
+provider counts: `tokens_reported` is false (the response carried no usage), the
+request is not a generating call (`generate` false: account usage reads, warm-ups),
+or a legacy row without `tokens_reported` has all-zero counters (indistinguishable
+from missing usage, so pricing it would record an unobserved zero cost), or the
+provider reported only a billed total with no input, output or cache counts (a
+rerank's billed units), which cannot be classified into a price without inventing
+a split. A reported zero in every counter, total included, stays a priced zero. A legacy
+row with any positive counter keeps its price: those counts came from the provider.
+The request list, the request detail and the cost breakdown derive the reason
+(`unpriced_reason`: `no_price`, `not_generated`, `usage_missing`, `usage_unknown`,
+`usage_incomplete`) from the stored row. The counters decide first, whether or not
+a price existed when the request ran: a model with no price whose response
+carried no usage is `usage_missing`, not `no_price`, because no price would have
+priced it. Only `no_price` offers the price editor, on the row and in the detail. For priced rows it recomputes a breakdown from the
+locked versions for display; the stored amount stays authoritative.
 
 A sync downloads outside the write lock, then re-reads prices and pins under it,
 so an operator's pin set during the download is honoured. Catalog reconciliation

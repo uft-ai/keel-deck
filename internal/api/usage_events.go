@@ -93,6 +93,7 @@ type usageEventResponse struct {
 	CostUSD        *float64 `json:"cost_usd,omitempty"`
 	PricingStatus  string   `json:"pricing_status"`
 	PriceVersionID *int64   `json:"price_version_id,omitempty"`
+	UnpricedReason string   `json:"unpriced_reason,omitempty"`
 }
 
 func projectUsageEvent(row repository.UsageEventRow) usageEventResponse {
@@ -132,6 +133,7 @@ func projectUsageEvent(row repository.UsageEventRow) usageEventResponse {
 	item.CostUSD = row.CostUSD
 	item.PricingStatus = row.PricingStatus
 	item.PriceVersionID = row.PriceVersionID
+	item.UnpricedReason = row.UnpricedReason
 	item.Tokens = usageEventTokens(row)
 	if row.ModelAlias != nil {
 		item.ModelAlias = *row.ModelAlias
@@ -663,6 +665,9 @@ func projectUsageEventDetail(row repository.UsageEventRow, providerKeyMask strin
 	// for a record it cannot attribute.
 	if providerKeyMask != "" {
 		detail["provider_key_mask"] = providerKeyMask
+	}
+	if row.UnpricedReason != "" {
+		detail["unpriced_reason"] = row.UnpricedReason
 	}
 	return detail
 }

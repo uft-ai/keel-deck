@@ -10,6 +10,8 @@ import (
 	"github.com/oh-my-cpa/oh-my-cpa/internal/usage"
 )
 
+func boolPointer(value bool) *bool { return &value }
+
 // Pricing persistence round-trips and the cost query that powers the dashboard:
 // unpriced events count separately instead of quietly adding zero.
 func TestPricingRoundTripAndUsageCost(t *testing.T) {
@@ -46,6 +48,12 @@ func TestPricingRoundTripAndUsageCost(t *testing.T) {
 			Generate: true, TimestampMS: timestamp, InputTokens: 1_000_000, TotalTokens: 1_000_000},
 		{InstanceID: "default", EventKey: "unpriced", Model: "unpriced-model",
 			Generate: true, TimestampMS: timestamp, InputTokens: 500, TotalTokens: 500},
+		{InstanceID: "default", EventKey: "missing-usage", Model: "openai/gpt-5",
+			Generate: true, TimestampMS: timestamp, TokensReported: boolPointer(false)},
+		{InstanceID: "default", EventKey: "reported-zero", Model: "openai/gpt-5",
+			Generate: true, TimestampMS: timestamp, TokensReported: boolPointer(true)},
+		{InstanceID: "default", EventKey: "history", Model: "openai/gpt-5",
+			Generate: false, TimestampMS: timestamp, InputTokens: 500},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +62,7 @@ func TestPricingRoundTripAndUsageCost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.PricedEvents != 1 || stats.UnpricedEvents != 1 {
+	if stats.PricedEvents != 2 || stats.UnpricedEvents != 3 {
 		t.Fatalf("priced=%d unpriced=%d", stats.PricedEvents, stats.UnpricedEvents)
 	}
 	if diff := stats.CostUSD - 3.0; diff < -1e-6 || diff > 1e-6 {
@@ -75,7 +83,7 @@ func TestPricingRoundTripAndUsageCost(t *testing.T) {
 		}
 		pricedCost += *item.CostUSD
 	}
-	if nilCost != 1 || pricedCost < 3.0-1e-6 || pricedCost > 3.0+1e-6 {
+	if nilCost != 3 || pricedCost < 3.0-1e-6 || pricedCost > 3.0+1e-6 {
 		t.Fatalf("list costs wrong: nil=%d sum=%v", nilCost, pricedCost)
 	}
 

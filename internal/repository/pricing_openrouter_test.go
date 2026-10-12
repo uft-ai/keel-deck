@@ -141,7 +141,7 @@ func TestPricingHistoryIsImmutable(t *testing.T) {
 	if _, err := r.SQL().ExecContext(ctx, `DELETE FROM model_price_versions`); err == nil {
 		t.Fatal("price history was deletable")
 	}
-	id, err := r.InsertUsageEvents(ctx, []usage.Event{{InstanceID: "default", EventKey: "k", Model: "m", Provider: "relay", TimestampMS: time.Now().UnixMilli(), InputTokens: 10}})
+	id, err := r.InsertUsageEvents(ctx, []usage.Event{{InstanceID: "default", EventKey: "k", Model: "m", Provider: "relay", Generate: true, TimestampMS: time.Now().UnixMilli(), InputTokens: 10}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +181,7 @@ func TestChannelMultiplierLockedAtRequestTime(t *testing.T) {
 	}
 	insert := func(key, provider string, at int64) int64 {
 		t.Helper()
-		id, err := r.InsertUsageEvents(ctx, []usage.Event{{InstanceID: "default", EventKey: key, Model: "m", Provider: provider, TimestampMS: at, InputTokens: 1_000_000}})
+		id, err := r.InsertUsageEvents(ctx, []usage.Event{{InstanceID: "default", EventKey: key, Model: "m", Provider: provider, Generate: true, TimestampMS: at, InputTokens: 1_000_000}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -214,7 +214,7 @@ func TestChannelMultiplierLockedAtRequestTime(t *testing.T) {
 		t.Fatalf("claim: %d %v", len(batch), err)
 	}
 	if _, err := r.CommitUsageDecoded(ctx, []UsageDecoded{{InboxID: batch[0].ID, Event: usage.Event{
-		InstanceID: "default", EventKey: "decoded", Model: "m", Provider: "relay", TimestampMS: effective, InputTokens: 1_000_000}}}); err != nil {
+		InstanceID: "default", EventKey: "decoded", Model: "m", Provider: "relay", Generate: true, TimestampMS: effective, InputTokens: 1_000_000}}}); err != nil {
 		t.Fatal(err)
 	}
 	var decoded int64
@@ -246,7 +246,7 @@ func TestTierLockedWithRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	at := time.Now().UnixMilli()
-	id, err := r.InsertUsageEvents(ctx, []usage.Event{{InstanceID: "default", EventKey: "long", Model: "m", TimestampMS: at, InputTokens: 1_000_000}})
+	id, err := r.InsertUsageEvents(ctx, []usage.Event{{InstanceID: "default", EventKey: "long", Model: "m", Generate: true, TimestampMS: at, InputTokens: 1_000_000}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +257,7 @@ func TestTierLockedWithRequest(t *testing.T) {
 	if breakdown.Quote == nil || breakdown.Quote.TierIndex == nil || !breakdown.RecomputedMatches {
 		t.Fatalf("recomputed breakdown: %+v", breakdown)
 	}
-	unpricedID, _ := r.InsertUsageEvents(ctx, []usage.Event{{InstanceID: "default", EventKey: "none", Model: "unknown", TimestampMS: at, InputTokens: 1}})
+	unpricedID, _ := r.InsertUsageEvents(ctx, []usage.Event{{InstanceID: "default", EventKey: "none", Model: "unknown", Generate: true, TimestampMS: at, InputTokens: 1}})
 	unpriced, err := r.GetUsageEventCostBreakdown(ctx, unpricedID)
 	if err != nil || unpriced.Status != "unpriced" || unpriced.Version != nil {
 		t.Fatalf("unpriced breakdown: %+v %v", unpriced, err)
@@ -373,10 +373,10 @@ func TestPricingUsageAndTokenProfile(t *testing.T) {
 	now := time.Now().UnixMilli()
 	var events []usage.Event
 	for i, input := range []int64{100, 300, 200, 900_000} {
-		events = append(events, usage.Event{InstanceID: "default", EventKey: fmt.Sprint("e", i), Model: "m", Provider: "relay", TimestampMS: now, InputTokens: input, OutputTokens: int64(i)})
+		events = append(events, usage.Event{InstanceID: "default", EventKey: fmt.Sprint("e", i), Model: "m", Provider: "relay", Generate: true, TimestampMS: now, InputTokens: input, OutputTokens: int64(i)})
 	}
-	events = append(events, usage.Event{InstanceID: "default", EventKey: "u", Model: "unpriced", Provider: "codex", TimestampMS: now, InputTokens: 5})
-	events = append(events, usage.Event{InstanceID: "default", EventKey: "old", Model: "m", Provider: "relay", TimestampMS: now - 40*24*3600*1000, InputTokens: 5})
+	events = append(events, usage.Event{InstanceID: "default", EventKey: "u", Model: "unpriced", Provider: "codex", Generate: true, TimestampMS: now, InputTokens: 5})
+	events = append(events, usage.Event{InstanceID: "default", EventKey: "old", Model: "m", Provider: "relay", Generate: true, TimestampMS: now - 40*24*3600*1000, InputTokens: 5})
 	if _, err := r.InsertUsageEvents(ctx, events); err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +409,7 @@ func TestCorruptStoredTiersKeepCostBreakdown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, err := repo.InsertUsageEvents(ctx, []usage.Event{{InstanceID: "default", EventKey: "broken-tier", Model: "broken", TimestampMS: time.Now().UnixMilli(), InputTokens: 1000}})
+	id, err := repo.InsertUsageEvents(ctx, []usage.Event{{InstanceID: "default", EventKey: "broken-tier", Model: "broken", Generate: true, TimestampMS: time.Now().UnixMilli(), InputTokens: 1000}})
 	if err != nil {
 		t.Fatal(err)
 	}

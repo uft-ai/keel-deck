@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import { sleep } from '../probe.mjs';
 import { pastDeadline, until } from '../harness.mjs';
 import { requestInspectorResponse } from '../request-inspector-fixture.mjs';
+import { withCertifiedPricing } from '../usage-event-pricing-fixture.mjs';
 
 /**
  * Probes for the request-record console: the column geometry and truncation, the
@@ -340,7 +341,9 @@ export async function columnAlignment({ base, page, check }) {
 
 export const interactionRecords = (() => {
   const now = Date.now();
-  return Array.from({ length: 500 }, (_, index) => ({
+  // Every record ran without a price and with reported counters, so each row offers
+  // to price its model exactly as a stored request of that shape does.
+  return Array.from({ length: 500 }, (_, index) => withCertifiedPricing({
     id: 500 - index,
     event_key: `event-${index}`,
     request_id: `req_interaction_${String(index).padStart(4, '0')}`,
@@ -366,7 +369,7 @@ export const interactionRecords = (() => {
     endpoint: '/v1/responses',
     tokens: { input: 2150, output: 485, reasoning: 120, cached: 400, cache_read: 400, cache_creation: 0, total: 2635 },
     has_request_log: true,
-  }));
+  }, 'priceable-no-price'));
 })();
 
 export const INTERACTION_FAILURE_BODY =

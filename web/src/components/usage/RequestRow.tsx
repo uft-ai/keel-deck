@@ -12,6 +12,7 @@ import { maskKeyText } from '../../utils/maskKey';
 import { cacheScaleMix, formatCacheRate } from '../../theme/cacheScale';
 import { displayEffortName, effortColor, effortStep } from '../../theme/effortScale';
 import type { UsageEvent } from '../../types/usageEvents';
+import { priceWouldApply } from '../../types/pricing';
 import {
   resolveProviderInfo,
   type CredentialIndex,
@@ -424,10 +425,18 @@ export const RequestRow = React.memo<RequestRowProps>(
             <strong className="req-cost-val">${event.cost_usd.toFixed(4)}</strong>
           ) : (
             <>
-              <RequestTooltip title={t('events.cost_unpriced')}>
+              <RequestTooltip
+                title={
+                  event.unpriced_reason && event.unpriced_reason !== 'no_price'
+                    ? t(`cost.unpriced_reason.${event.unpriced_reason}`)
+                    : t('events.cost_unpriced')
+                }
+              >
                 <span className="req-cost-none">—</span>
               </RequestTooltip>
-              {openPriceEditor && event.model && event.pricing_status !== 'legacy_unpriced' && (
+              {/* Only a request that ran without a price is fixed by setting one;
+                  counters that are not billable counts would stay unpriced. */}
+              {openPriceEditor && event.model && priceWouldApply(event.pricing_status, event.unpriced_reason) && (
                 <RequestTooltip title={t('cost.set_price', { model: event.model })}>
                   <button
                     type="button"

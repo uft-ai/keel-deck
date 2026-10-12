@@ -70,7 +70,7 @@ func TestManualPricePricesLaterRequestsWithoutSync(t *testing.T) {
 	at := time.Now().UnixMilli()
 	rowID, err := r.InsertUsageEvents(ctx, []usage.Event{{
 		InstanceID: "default", EventKey: "after-manual", Model: model,
-		TimestampMS: at, InputTokens: 1_000_000,
+		Generate: true, TimestampMS: at, InputTokens: 1_000_000,
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -126,7 +126,7 @@ func TestManualPriceBoundaryAndDelayedIngestion(t *testing.T) {
 			key := "delayed-" + testCase.name
 			rowID, err := r.InsertUsageEvents(ctx, []usage.Event{{
 				InstanceID: "default", EventKey: key, Model: model,
-				TimestampMS: testCase.requestedAt, InputTokens: 1_000_000,
+				Generate: true, TimestampMS: testCase.requestedAt, InputTokens: 1_000_000,
 			}})
 			if err != nil {
 				t.Fatal(err)
@@ -165,7 +165,7 @@ func TestManualPriceAppliesOnBothInsertPaths(t *testing.T) {
 
 	directID, err := r.InsertUsageEvents(ctx, []usage.Event{{
 		InstanceID: "default", EventKey: "direct", Model: model,
-		TimestampMS: at, InputTokens: 1_000_000,
+		Generate: true, TimestampMS: at, InputTokens: 1_000_000,
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -182,7 +182,7 @@ func TestManualPriceAppliesOnBothInsertPaths(t *testing.T) {
 		InboxID: batch[0].ID,
 		Event: usage.Event{
 			InstanceID: "default", EventKey: "decoded", Model: model,
-			TimestampMS: at, InputTokens: 1_000_000,
+			Generate: true, TimestampMS: at, InputTokens: 1_000_000,
 		},
 	}}); err != nil {
 		t.Fatal(err)
@@ -277,7 +277,7 @@ func TestManualPriceDeletionStopsFutureRequests(t *testing.T) {
 
 	rowID, err := r.InsertUsageEvents(ctx, []usage.Event{{
 		InstanceID: "default", EventKey: "after-delete", Model: model,
-		TimestampMS: time.Now().UnixMilli(), InputTokens: 1_000_000,
+		Generate: true, TimestampMS: time.Now().UnixMilli(), InputTokens: 1_000_000,
 	}})
 	if err != nil {
 		t.Fatal(err)

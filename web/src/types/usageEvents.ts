@@ -1,4 +1,4 @@
-import type { RequestCostBreakdown } from './pricing';
+import type { RequestCostBreakdown, UnpricedReason } from './pricing';
 
 /**
  * Request-record types shared by the dashboard drill-down, the event table and
@@ -89,6 +89,8 @@ export interface UsageEvent {
   cost_usd?: number | null;
   pricing_status?: 'priced' | 'unpriced' | 'legacy_unpriced' | 'invalid_price';
   price_version_id?: number | null;
+  /** Why an `unpriced` row was not priced; absent from older servers. */
+  unpriced_reason?: UnpricedReason;
 }
 
 /** One bounded section of a retained Relay request log. */

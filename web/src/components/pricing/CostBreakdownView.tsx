@@ -5,7 +5,7 @@ import dayjs from '../../utils/time';
 import { DollarOutlined } from '../icons';
 import { useT } from '../../i18n';
 import { formatTokensFull } from '../../types/tokenDisplay';
-import type { RequestCostBreakdown } from '../../types/pricing';
+import { priceWouldApply, type RequestCostBreakdown } from '../../types/pricing';
 import { formatMultiplier, formatRatePer1M, formatUsd, nanosToUsd } from '../../types/pricingDisplay';
 import { describeTier } from './PricingParts';
 import { channelIdentity } from './pricingIdentity';
@@ -54,10 +54,17 @@ export const CostBreakdownView: React.FC<CostBreakdownViewProps> = ({ breakdown,
     );
   }
   if (breakdown.status === 'unpriced' || breakdown.status === 'legacy_unpriced') {
+    // A request that had a price but no billable counters is not fixed by setting a price, so
+    // only a request that ran without one offers the editor.
+    const reason = breakdown.status === 'unpriced' ? breakdown.unpriced_reason : undefined;
+    const usageReason = reason && !priceWouldApply(breakdown.status, reason) ? reason : undefined;
+    const message = usageReason
+      ? t(`cost.unpriced_reason.${usageReason}`)
+      : t(breakdown.status === 'unpriced' ? 'cost.unpriced' : 'cost.legacy_unpriced');
     return (
       <div className={styles.breakdown} data-testid="cost-breakdown">
-        <p className={styles['mode-hint']}>{t(breakdown.status === 'unpriced' ? 'cost.unpriced' : 'cost.legacy_unpriced')}</p>
-        {setPrice}
+        <p className={styles['mode-hint']} data-testid="cost-unpriced-reason">{message}</p>
+        {!usageReason && setPrice}
       </div>
     );
   }

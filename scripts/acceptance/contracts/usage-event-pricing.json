@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "description": "Request-list pricing fields certified by internal/api usage event pricing contract test against the real list handler; consumed by the browser request-list fixtures.",
+  "cases": [
+    {
+      "id": "priceable-no-price",
+      "event": { "model": "gpt-5.4", "generate": true, "tokens_reported": true, "input": 2150, "output": 485, "cache_read": 400, "total": 2635 },
+      "row": { "pricing_status": "unpriced", "unpriced_reason": "no_price", "tokens_reported": true }
+    },
+    {
+      "id": "usage-missing",
+      "event": { "model": "kokoro", "generate": true, "tokens_reported": false, "input": 0, "output": 0, "cache_read": 0, "total": 0 },
+      "row": { "pricing_status": "unpriced", "unpriced_reason": "usage_missing", "tokens_reported": false }
+    }
+  ]
+}

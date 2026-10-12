@@ -221,6 +221,8 @@ type UsageEventRow struct {
 	CostUSD        *float64 `json:"cost_usd,omitempty"`
 	PricingStatus  string   `json:"pricing_status"`
 	PriceVersionID *int64   `json:"price_version_id,omitempty"`
+	// UnpricedReason is set for an unpriced row; see UnpricedReason.
+	UnpricedReason string `json:"unpriced_reason,omitempty"`
 }
 
 // UsageEventPage is one keyset-paginated result set.
@@ -389,6 +391,7 @@ func (r *Repository) ListUsageEvents(ctx context.Context, filter UsageEventFilte
 			row.CostUSD = &costUSD.Float64
 		}
 		row.TokensReported = reportedTokens(tokensReported)
+		row.UnpricedReason = rowUnpricedReason(row)
 		row.HasRequestLog = strings.TrimSpace(row.RequestID) != ""
 		page.Items = append(page.Items, row)
 	}
@@ -463,6 +466,7 @@ func (r *Repository) GetUsageEvent(ctx context.Context, id int64) (UsageEventRow
 	row.Generate = generate == 1
 	row.IsNativeKey = isNativeKey.Valid && isNativeKey.Int64 != 0
 	row.TokensReported = reportedTokens(tokensReported)
+	row.UnpricedReason = rowUnpricedReason(row)
 	if streamVal.Valid {
 		isStream := streamVal.Int64 == 1
 		row.Stream = &isStream
@@ -1072,4 +1076,10 @@ func NewUsageEventFilter(instanceID string, span time.Duration) UsageEventFilter
 		ToMS:       now.UnixMilli(),
 		Result:     ResultAll,
 	}
+}
+
+func rowUnpricedReason(row UsageEventRow) string {
+	return UnpricedReason(row.PricingStatus, row.Generate, row.TokensReported,
+		eventTokens(row.Tokens.InputTokens, row.Tokens.OutputTokens, row.Tokens.CacheReadTokens, row.Tokens.CacheCreationTokens),
+		row.Tokens.TotalTokens)
 }

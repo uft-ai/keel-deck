@@ -229,4 +229,18 @@ export interface RequestCostBreakdown {
   quote?: CostQuote;
   recomputed_matches: boolean;
   invalid_reason?: string;
+  /** Why an `unpriced` request was not priced; derived from the stored row on read. */
+  unpriced_reason?: UnpricedReason;
+}
+
+/**
+ * Why an unpriced request was not priced. Only `no_price` is fixed by setting a
+ * price; the others are counters that are not billable counts.
+ */
+export type UnpricedReason = 'no_price' | 'not_generated' | 'usage_missing' | 'usage_unknown' | 'usage_incomplete';
+
+/** Whether setting a price would have priced this request: the server's reason
+ *  decides, and a server too old to send one keeps the established action. */
+export function priceWouldApply(status: string | undefined, reason: UnpricedReason | undefined): boolean {
+  return status === 'unpriced' && (reason === undefined || reason === 'no_price');
 }

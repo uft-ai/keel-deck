@@ -96,7 +96,7 @@ func TestOAuthAliasCatalogLocksUpstreamPrices(t *testing.T) {
 			}
 			now := time.Now().UnixMilli()
 			modelAlias := OAUTH_CALL_MODEL
-			eventID, err := repository.InsertUsageEvents(ctx, []usage.Event{{InstanceID: "default", EventKey: "before-link", Model: OAUTH_UPSTREAM_MODEL, ModelAlias: &modelAlias, TimestampMS: now, InputTokens: 1_000_000}})
+			eventID, err := repository.InsertUsageEvents(ctx, []usage.Event{{InstanceID: "default", EventKey: "before-link", Model: OAUTH_UPSTREAM_MODEL, ModelAlias: &modelAlias, TimestampMS: now, InputTokens: 1_000_000, Generate: true}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -112,7 +112,7 @@ func TestOAuthAliasCatalogLocksUpstreamPrices(t *testing.T) {
 			if err := repository.SQL().QueryRow(`SELECT max(effective_from_ms) FROM model_price_versions WHERE model=?`, OAUTH_UPSTREAM_MODEL).Scan(&effectiveFrom); err != nil {
 				t.Fatal(err)
 			}
-			newID, err := repository.InsertUsageEvents(ctx, []usage.Event{{InstanceID: "default", EventKey: "after-link", Model: OAUTH_UPSTREAM_MODEL, ModelAlias: &modelAlias, TimestampMS: effectiveFrom, InputTokens: 1_000_000}})
+			newID, err := repository.InsertUsageEvents(ctx, []usage.Event{{InstanceID: "default", EventKey: "after-link", Model: OAUTH_UPSTREAM_MODEL, ModelAlias: &modelAlias, TimestampMS: effectiveFrom, InputTokens: 1_000_000, Generate: true}})
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -125,6 +125,16 @@ The Browser Mock uses the per-context fixture in
 frontend integration and repository checks together; complete CI still discovers
 all owners independently.
 
+The request inspector and request-list pricing use the same pattern.
+`scripts/acceptance/contracts/request-inspector.json` is pinned by
+`TestRequestInspectorSharedWireContract`, and
+`scripts/acceptance/contracts/usage-event-pricing.json` by
+`TestUsageEventPricingSharedWireContract`, which seeds each case through the
+repository and reads it back from the real list handler. The browser request-list
+records take their `pricing_status`, `unpriced_reason` and `tokens.reported` from
+that corpus, so a fixture row offers to set a price only when a stored request with
+those counters would.
+
 A contract is bounded evidence, not a second implementation of the repository.
 Custom-icon reference validation, body limits, same-origin write protection,
 database failures and complete timezone aliases remain real Go test concerns;

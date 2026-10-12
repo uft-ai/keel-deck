@@ -28,7 +28,7 @@ func TestRequestPriceSnapshotsNeverReprice(t *testing.T) {
 	}
 	insert := func(key, model string, ts int64) int64 {
 		t.Helper()
-		id, err := r.InsertUsageEvents(ctx, []usage.Event{{InstanceID: "default", EventKey: key, Model: model, TimestampMS: ts, InputTokens: 1_000_000}})
+		id, err := r.InsertUsageEvents(ctx, []usage.Event{{InstanceID: "default", EventKey: key, Model: model, Generate: true, TimestampMS: ts, InputTokens: 1_000_000}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -149,7 +149,7 @@ func TestDecodedPriceAndInboxCommitRollBackTogether(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	event := usage.Event{InstanceID: "default", EventKey: "atomic", Model: "m", TimestampMS: time.Now().UnixMilli(), InputTokens: 1_000_000}
+	event := usage.Event{InstanceID: "default", EventKey: "atomic", Model: "m", Generate: true, TimestampMS: time.Now().UnixMilli(), InputTokens: 1_000_000}
 	broken := event
 	broken.InstanceID = "missing-instance"
 	if _, err = r.CommitUsageDecoded(ctx, []UsageDecoded{{InboxID: batch[0].ID, Event: event}, {InboxID: batch[0].ID, Event: broken}}); err == nil {
@@ -169,5 +169,96 @@ func TestDecodedPriceAndInboxCommitRollBackTogether(t *testing.T) {
 	var cost int64
 	if err = r.SQL().QueryRow(`SELECT cost_nanos FROM usage_events`).Scan(&cost); err != nil || cost != 1_000_000_000 {
 		t.Fatalf("decoded request not locked: %d %v", cost, err)
+	}
+}
+
+// A price version being available is not enough to price a request: the
+// counters must be real provider counts for a generating call. The stored
+// status stays unpriced and the breakdown names the reason without quoting the
+// version it saw.
+func TestUnpricedReasonsForCountersThatAreNotProviderCounts(t *testing.T) {
+	r := usageTestRepository(t)
+	ctx := context.Background()
+	if err := r.UpsertModelPrices(ctx, []pricing.ModelPrice{{Model: "m", PromptPricePer1M: 1, PriceMultiplier: 1, Source: pricing.SourceManual}}); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().UnixMilli()
+	reported, missing := true, false
+	cases := []struct {
+		key      string
+		event    usage.Event
+		status   string
+		reason   string
+		wantCost *int64
+	}{
+		{key: "legacy-positive", event: usage.Event{Model: "m", Generate: true, InputTokens: 1_000_000}, status: "priced", wantCost: int64Ptr(1_000_000_000)},
+		{key: "legacy-zero", event: usage.Event{Model: "m", Generate: true}, status: "unpriced", reason: UnpricedUsageUnknown},
+		{key: "reported-zero", event: usage.Event{Model: "m", Generate: true, TokensReported: &reported}, status: "priced", wantCost: int64Ptr(0)},
+		{key: "reported-positive", event: usage.Event{Model: "m", Generate: true, TokensReported: &reported, InputTokens: 1_000_000}, status: "priced", wantCost: int64Ptr(1_000_000_000)},
+		{key: "reported-total-only", event: usage.Event{Model: "m", Generate: true, TokensReported: &reported, TotalTokens: 1_000_000}, status: "unpriced", reason: UnpricedUsageIncomplete},
+		{key: "legacy-total-only", event: usage.Event{Model: "m", Generate: true, TotalTokens: 1_000_000}, status: "unpriced", reason: UnpricedUsageUnknown},
+		{key: "usage-missing", event: usage.Event{Model: "m", Generate: true, TokensReported: &missing}, status: "unpriced", reason: UnpricedUsageMissing},
+		{key: "utility", event: usage.Event{Model: "m", Generate: false, TokensReported: &reported, InputTokens: 1_000_000}, status: "unpriced", reason: UnpricedNotGenerated},
+		{key: "no-price", event: usage.Event{Model: "unknown", Generate: true, TokensReported: &reported, InputTokens: 1_000_000}, status: "unpriced", reason: UnpricedNoPrice},
+		{key: "legacy-positive-no-price", event: usage.Event{Model: "unknown", Generate: true, InputTokens: 1_000_000}, status: "unpriced", reason: UnpricedNoPrice},
+		// A model with no price whose counters are not counts (speech without a
+		// usage payload) would stay unpriced under any price.
+		{key: "no-price-usage-missing", event: usage.Event{Model: "kokoro", Generate: true, TokensReported: &missing}, status: "unpriced", reason: UnpricedUsageMissing},
+		{key: "no-price-utility", event: usage.Event{Model: "unknown", Generate: false, TokensReported: &reported, InputTokens: 1_000_000}, status: "unpriced", reason: UnpricedNotGenerated},
+		{key: "no-price-legacy-zero", event: usage.Event{Model: "unknown", Generate: true}, status: "unpriced", reason: UnpricedUsageUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.key, func(t *testing.T) {
+			event := tc.event
+			event.InstanceID, event.EventKey, event.TimestampMS = "default", tc.key, at
+			id, err := r.InsertUsageEvents(ctx, []usage.Event{event})
+			if err != nil {
+				t.Fatal(err)
+			}
+			breakdown, err := r.GetUsageEventCostBreakdown(ctx, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if breakdown.Status != tc.status || breakdown.UnpricedReason != tc.reason {
+				t.Fatalf("status=%q reason=%q, want %q %q", breakdown.Status, breakdown.UnpricedReason, tc.status, tc.reason)
+			}
+			// The list and single-record rows carry the same reason, so a row
+			// never offers a price the breakdown would refuse.
+			row, err := r.GetUsageEvent(ctx, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if row.UnpricedReason != tc.reason {
+				t.Fatalf("row reason=%q, want %q", row.UnpricedReason, tc.reason)
+			}
+			page, err := r.ListUsageEvents(ctx, UsageEventFilter{InstanceID: "default", FromMS: at, ToMS: at + 1, Limit: 100})
+			if err != nil {
+				t.Fatal(err)
+			}
+			listed := false
+			for _, item := range page.Items {
+				if item.ID == id {
+					listed = true
+					if item.UnpricedReason != tc.reason {
+						t.Fatalf("list reason=%q, want %q", item.UnpricedReason, tc.reason)
+					}
+				}
+			}
+			if !listed {
+				t.Fatal("event missing from the list")
+			}
+			if tc.wantCost == nil {
+				if breakdown.StoredNanos != nil || breakdown.Quote != nil {
+					t.Fatalf("unpriced request carries a cost: stored=%v quote=%+v", breakdown.StoredNanos, breakdown.Quote)
+				}
+				if tc.event.Model == "m" && breakdown.Version == nil {
+					t.Fatal("the price version the request saw is not shown")
+				}
+				return
+			}
+			if breakdown.StoredNanos == nil || *breakdown.StoredNanos != *tc.wantCost || breakdown.Quote == nil || !breakdown.RecomputedMatches {
+				t.Fatalf("priced breakdown wrong: %+v", breakdown)
+			}
+		})
 	}
 }
