@@ -187,8 +187,10 @@ describe('routing', () => {
     const { default: worker } = await import('./worker.mjs');
     const env = { ASSETS: { fetch: () => new Response('', { status: 200 }) } };
     const rows = JSON.parse(DATASET.responses['usage-events'].body).items;
-    const response = await worker.fetch(request(`/api/v1/usage/events/${rows[0].id}/request-log`), env);
-    assert.equal(response.status, 403);
+    for (const suffix of ['request-log', 'inspector', 'inspector/export']) {
+      const response = await worker.fetch(request(`/api/v1/usage/events/${rows[0].id}/${suffix}`), env);
+      assert.equal(response.status, 403, suffix);
+    }
   });
 
   it('answers every fixed route the console reads', () => {

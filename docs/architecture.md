@@ -850,12 +850,16 @@ than by following a tail. An older `/logs?source=audit` link redirects there.
 - **Gateway log** — CPA's own log file and request error files, proxied through the
   typed management client (`/management/logs`, `/management/logs/status`,
   `/management/request-error-logs`, `/management/request-logs/{id}`). The console tails
-  it; it owns none of it. A line's request id opens that request's log file in a side
+  it; it owns none of it. Each tail line passes `security.RedactText` before it is
+  returned, because a line can quote a request URL or an upstream error. A line's request id opens that request's log file in a side
   panel (`components/logs/LogFileViewer.tsx`), as does an error log file: the file is
   fetched once per opening, drawn up to `MAX_LOG_PREVIEW_BYTES`, saved from the same
   copy, and dropped from the query cache when the panel closes because it quotes
-  request content. `downloadRequestLogByID` accepts only a plain-token id, audits the
-  read as `request_log.download` and is refused in demo mode. This route, not the
+  request content. Both file routes stream through `serveRedactedGatewayLog`
+  (`internal/api/request_log_stream.go`), so the panel only ever receives redacted
+  text. `downloadRequestLogByID` accepts only a plain-token id, refuses a file whose
+  `Request ID:` line names another request, audits the read as `request_log.download`
+  and is refused in demo mode. This route, not the
   request list, is how a request with no usage record is read (see Failure Detail in
   `CONTEXT.md`).
 - **Service log** — Oh My CPA's own process log. `cmd/oh-my-cpa` builds the logger as
@@ -2069,10 +2073,23 @@ Streaming redaction retains only an unresolved credential boundary. A URL
 longer than 8 KiB is omitted with an explicit length-limit marker; it is not
 silently truncated. Ordinary conversation and tool text remains.
 
-Request inspection is session-only and no-store. Both
-`/usage/events/{id}/request-log` and `/usage/events/{id}/inspector` redact
-through one streaming redactor before browser bytes are written. Payload
-bodies are not stored in SQLite.
+Request inspection is session-only and no-store. Every route that returns
+gateway log text to the browser (`/usage/events/{id}/request-log`,
+`/usage/events/{id}/inspector`, `/usage/events/{id}/inspector/export`,
+`/management/request-logs/{id}` and `/management/request-error-logs/{name}`)
+redacts through one streaming redactor before browser bytes are written. Every
+read writes an audited attempt first and fails closed without it, then records
+`success` or `failure`. The file routes share `serveRedactedGatewayLog`: the
+whole file is streamed with no size cap, and a source failure ends the stream
+with an explicit incomplete marker. The management client's total request
+timeout (`OMCPA_REQUEST_TIMEOUT`) still bounds each read, so a very large or slow
+log can end with that marker. One identity rule (`requestIDMatches`) serves the
+inspector and the file routes: the logged `Request ID:` must equal the expected
+id, except that an expected id of exactly eight characters, Relay's short form,
+matches a longer logged id ending with it. A request log whose `Request ID:`
+names another request is answered as 404 `request_log_not_found` rather than
+served. The plugin host's management forwarding is not one of these routes; it
+is described under plugins. Payload bodies are not stored in SQLite.
 
 The inspector streams the uncapped Relay log through the redactor into
 `internal/requestlog`, which reads at most a fixed scan budget and bounds each
@@ -2082,7 +2099,7 @@ state and reason, parse state, identity, the limits used, how much was read,
 whether the read reached the end, and how many sections were not kept. Each
 section reports its kind, attempt number, status, metadata (headers), body,
 total body bytes, truncation, binary omission, and Relay's own capture markers
-such as body truncation and `<missing>`. Identity compares the exact
+such as body truncation and `<missing>`. Identity applies the shared rule to the
 `Request ID:` line Relay writes; a log without that line is `unknown`, and a log
 for a different request is `mismatch` and its sections are withheld. A Relay
 404 is `expired_unknown`, because a never-captured request and a pruned one
@@ -2091,7 +2108,7 @@ request's log file is still being assembled, is the `pending` state; export
 and download answer the same code before any bytes are sent, so an unfinished
 capture is never shown or saved. Relay's text format does not escape payload lines, so
 section boundaries are inferred from Relay's write order and reported as
-heuristic. `/inspector/export` is the full redacted log as an attachment with
+heuristic. The file routes answer the full redacted log as an attachment with
 `nosniff`; a source stream that fails after bytes were sent ends with an
 explicit incomplete-export marker and an audited failure.
 

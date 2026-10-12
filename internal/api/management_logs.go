@@ -3,7 +3,7 @@ package api
 import (
 	"context"
 	"errors"
-	"fmt"
+	"io"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/oh-my-cpa/oh-my-cpa/internal/cpa/management"
+	"github.com/oh-my-cpa/oh-my-cpa/internal/security"
 )
 
 // management_logs.go is the session-protected facade over CPA's log endpoints.
@@ -66,8 +67,14 @@ func (h *Handler) managementLogs(writer http.ResponseWriter, request *http.Reque
 		writeCPAFacadeError(writer, err)
 		return
 	}
+	// Gateway log lines can quote request URLs and upstream errors; they get the
+	// same redaction as the log file routes.
+	lines := make([]string, len(page.Lines))
+	for index, line := range page.Lines {
+		lines[index] = security.RedactText(line)
+	}
 	writeJSON(writer, http.StatusOK, logsFacadeResponse{
-		Lines:       page.Lines,
+		Lines:       lines,
 		LatestAfter: page.LatestAfter,
 		NextCursor:  page.NextCursor,
 		CursorReset: page.CursorReset,
@@ -136,7 +143,7 @@ func (h *Handler) requestErrorLogs(writer http.ResponseWriter, request *http.Req
 	writeJSON(writer, http.StatusOK, map[string]any{"files": files})
 }
 
-// downloadRequestErrorLog streams one error log file back to the browser.
+// downloadRequestErrorLog streams one redacted error log file to the browser.
 func (h *Handler) downloadRequestErrorLog(writer http.ResponseWriter, request *http.Request) {
 	name := chi.URLParam(request, "name")
 	if !management.ValidLogFileName(name) {
@@ -147,22 +154,17 @@ func (h *Handler) downloadRequestErrorLog(writer http.ResponseWriter, request *h
 	if !ok {
 		return
 	}
-	data, _, err := client.DownloadRequestErrorLog(request.Context(), name)
-	if err != nil {
-		_ = h.recordAudit(request, "request_log.download", "request_error_log", name, "failure", map[string]any{"error": err.Error()})
-		writeCPAFacadeError(writer, err)
-		return
-	}
-	if auditErr := h.recordAudit(request, "request_log.download", "request_error_log", name, "success", map[string]any{"size_bytes": len(data)}); auditErr != nil {
-		writeError(writer, http.StatusInternalServerError, "audit log failure; log download aborted")
-		return
-	}
-	writer.Header().Set("Cache-Control", "no-store")
-	writer.Header().Set("X-Content-Type-Options", "nosniff")
-	writer.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", name))
-	writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	writer.WriteHeader(http.StatusOK)
-	_, _ = writer.Write(data)
+	h.serveRedactedGatewayLog(writer, request, gatewayLogRead{
+		action:       "request_log.download",
+		targetType:   "request_error_log",
+		targetID:     name,
+		fileName:     name,
+		abortMessage: "audit log failure; log download aborted",
+		open: func(ctx context.Context) (io.ReadCloser, error) {
+			return client.OpenRequestErrorLog(ctx, name)
+		},
+		fetchError: writeCPAFacadeError,
+	})
 }
 
 // requestLogIDPattern is the shape of a request id as CPA prints it: the short
@@ -188,34 +190,21 @@ func (h *Handler) downloadRequestLogByID(writer http.ResponseWriter, request *ht
 	if !ok {
 		return
 	}
-	ctx, cancel := context.WithTimeout(request.Context(), h.queryTimeout())
-	defer cancel()
-	data, _, err := client.DownloadRequestLog(ctx, requestID)
-	if err != nil {
-		_ = h.recordAudit(request, "request_log.download", "request_log", requestID, "failure", map[string]any{"error": err.Error()})
-		// CPA keeps a per-request file only while request logging is on, and
-		// otherwise just its newest few error logs: a 404 is an answer about
-		// retention, which the console words differently from an outage.
-		var httpErr *management.HTTPError
-		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusNotFound {
-			writeJSON(writer, http.StatusNotFound, map[string]string{
-				"error": "CPA holds no log file for this request",
-				"code":  requestLogNotFoundCode,
-			})
-			return
-		}
-		writeCPAFacadeError(writer, err)
-		return
-	}
-	if auditErr := h.recordAudit(request, "request_log.download", "request_log", requestID, "success", map[string]any{"size_bytes": len(data)}); auditErr != nil {
-		writeError(writer, http.StatusInternalServerError, "audit log failure; request log download aborted")
-		return
-	}
-	writer.Header().Set("X-Content-Type-Options", "nosniff")
-	writer.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", "request-"+requestID+".log"))
-	writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	writer.WriteHeader(http.StatusOK)
-	_, _ = writer.Write(data)
+	// CPA keeps a per-request file only while request logging is on, and
+	// otherwise just its newest few error logs: a 404 is an answer about
+	// retention, which the console words differently from an outage.
+	h.serveRedactedGatewayLog(writer, request, gatewayLogRead{
+		action:            "request_log.download",
+		targetType:        "request_log",
+		targetID:          requestID,
+		fileName:          "request-" + requestID + ".log",
+		abortMessage:      "audit log failure; request log download aborted",
+		expectedRequestID: requestID,
+		open: func(ctx context.Context) (io.ReadCloser, error) {
+			return client.OpenRequestLog(ctx, requestID)
+		},
+		fetchError: writeRequestLogFetchError,
+	})
 }
 
 // fileLoggingDisabled recognises CPA's "logging to file disabled" answer.

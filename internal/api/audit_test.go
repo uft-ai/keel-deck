@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -201,9 +202,10 @@ func TestAuditOperationsAreRecorded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	errLogBody, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("request error log status = %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK || strings.Contains(string(errLogBody), "secret-err-log") {
+		t.Fatalf("request error log = %d %s", resp.StatusCode, errLogBody)
 	}
 
 	// 8. Usage event request log download
@@ -303,5 +305,17 @@ func TestAuditFailureFailsClosedWithoutExposingSecrets(t *testing.T) {
 	defer resp3.Body.Close()
 	if resp3.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("expected 500 on audit failure, got %d", resp3.StatusCode)
+	}
+
+	// 4. A gateway log is never served without its audit record.
+	errLogReq, _ := http.NewRequest(http.MethodGet, serverURL+"/api/v1/management/request-error-logs/err.log", nil)
+	resp4, err := client.Do(errLogReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp4.Body.Close()
+	body4, _ := io.ReadAll(resp4.Body)
+	if resp4.StatusCode != http.StatusInternalServerError || strings.Contains(string(body4), "secret-err-log") {
+		t.Fatalf("expected 500 without log text on audit failure, got %d %s", resp4.StatusCode, body4)
 	}
 }

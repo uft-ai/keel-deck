@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/oh-my-cpa/oh-my-cpa/internal/cpa/management"
 	"github.com/oh-my-cpa/oh-my-cpa/internal/repository"
 	"github.com/oh-my-cpa/oh-my-cpa/internal/security"
 	"github.com/oh-my-cpa/oh-my-cpa/internal/usage"
@@ -682,73 +681,40 @@ func responseHeadersOrEmpty(stored string) []usage.ResponseHeader {
 
 const requestLogNotFoundCode = "request_log_not_found"
 
-// downloadUsageEventRequestLog proxies CPA's raw request log for one record.
+// downloadUsageEventRequestLog serves the redacted request log for one record.
 //
 // The browser never learns CPA's management key or the log endpoint: it asks us
 // by event id, and we fetch it server-side. The id is validated, and the
 // download is an explicit action rather than something a list view triggers.
 func (h *Handler) downloadUsageEventRequestLog(writer http.ResponseWriter, request *http.Request) {
 	writer.Header().Set("Cache-Control", "no-store")
-	id, err := parseEventID(request)
-	if err != nil {
-		writeError(writer, http.StatusBadRequest, err.Error())
-		return
-	}
-	row, err := h.repo.GetUsageEvent(request.Context(), id)
-	if errors.Is(err, repository.ErrNotFound) {
-		writeError(writer, http.StatusNotFound, "usage event not found")
-		return
-	}
-	if err != nil {
-		writeInternalError(writer, err)
+	row, ok := h.usageEventForRequestLog(writer, request)
+	if !ok {
 		return
 	}
 	if strings.TrimSpace(row.RequestID) == "" {
 		writeError(writer, http.StatusConflict, "this record has no CPA request id to look up")
 		return
 	}
-
 	client, ok := h.managementClientOrError(writer, request)
 	if !ok {
 		return
 	}
-	ctx, cancel := context.WithTimeout(request.Context(), h.queryTimeout())
-	defer cancel()
-	body, fetchErr := client.OpenRequestLog(ctx, row.RequestID)
-	if fetchErr != nil {
-		_ = h.recordAudit(request, "request_log.download", "request_log", row.RequestID, "failure", map[string]any{"error": fetchErr.Error()})
-		// CPA writes a per-request file only while request logging is on, and
-		// otherwise keeps just its newest few error logs. A 404 here is that
-		// file's absence, which the console explains differently from an outage.
-		writeRequestLogFetchError(writer, fetchErr)
-		return
-	}
-	defer body.Close()
-	if auditErr := h.recordAudit(request, "request_log.download", "request_log", row.RequestID, "attempt", nil); auditErr != nil {
-		writeError(writer, http.StatusInternalServerError, "audit log failure; request log download aborted")
-		return
-	}
-	name := sanitizeLogName(row.RequestID)
-	writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	writer.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, name))
-	writer.Header().Set("X-Content-Type-Options", "nosniff")
-	if request.Method == http.MethodHead {
-		return
-	}
-	stream := security.NewRedactionStream()
-	buffer := make([]byte, 64*1024)
-	for {
-		read, readErr := body.Read(buffer)
-		if read > 0 {
-			if _, writeErr := io.WriteString(writer, stream.Write(string(buffer[:read]))); writeErr != nil {
-				return
-			}
-		}
-		if readErr != nil {
-			_, _ = io.WriteString(writer, stream.Close())
-			return
-		}
-	}
+	// CPA writes a per-request file only while request logging is on, and
+	// otherwise keeps just its newest few error logs. A 404 here is that
+	// file's absence, which the console explains differently from an outage.
+	h.serveRedactedGatewayLog(writer, request, gatewayLogRead{
+		action:            "request_log.download",
+		targetType:        "request_log",
+		targetID:          row.RequestID,
+		fileName:          sanitizeLogName(row.RequestID),
+		abortMessage:      "audit log failure; request log download aborted",
+		expectedRequestID: row.RequestID,
+		open: func(ctx context.Context) (io.ReadCloser, error) {
+			return client.OpenRequestLog(ctx, row.RequestID)
+		},
+		fetchError: writeRequestLogFetchError,
+	})
 }
 
 // listUsageFacets returns the filter values actually present in a window.
@@ -862,6 +828,3 @@ func sanitizeLogName(requestID string) string {
 	}
 	return cleaned + ".log"
 }
-
-// compile-time assertion that the management client offers the log download.
-var _ = (*management.Client).DownloadRequestLog

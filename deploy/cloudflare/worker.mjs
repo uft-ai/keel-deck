@@ -56,7 +56,9 @@ function isRefused(request) {
       pathname === '/api/v1/management/auth-files/download' ||
       pathname.startsWith('/api/v1/management/request-error-logs/') ||
       pathname.startsWith('/api/v1/management/request-logs/') ||
-      pathname.endsWith('/request-log')
+      pathname.endsWith('/request-log') ||
+      pathname.endsWith('/inspector') ||
+      pathname.endsWith('/inspector/export')
     );
   }
   // Everything else that is not a read: the demonstration has nothing durable to

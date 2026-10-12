@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/oh-my-cpa/oh-my-cpa/internal/cpa/management"
+	"github.com/oh-my-cpa/oh-my-cpa/internal/repository"
 )
 
 // logsFixtureCPA serves the log half of the management API and records the
@@ -115,6 +116,32 @@ func TestManagementLogsForwardsPagingContract(t *testing.T) {
 	response, payload = getJSON(t, client, base+"?after=nope")
 	if response.StatusCode != http.StatusBadRequest {
 		t.Fatalf("bad after status = %d body %s", response.StatusCode, payload)
+	}
+}
+
+// Gateway log lines can quote a request URL or an upstream error; the tail gets
+// the same redaction as the log files.
+func TestManagementLogsRedactsTailLines(t *testing.T) {
+	queryKey := "AIza" + strings.Repeat("q", 35)
+	bearer := "sk-" + strings.Repeat("t", 30)
+	fixture := &logsFixtureCPA{logsBody: `{"lines":["2026-09-01T12:00:00Z INFO GET https://generativelanguage.googleapis.com/v1beta/models?key=` + queryKey +
+		`","2026-09-01T12:00:01Z ERROR upstream said Authorization: Bearer ` + bearer + `"],"latest-timestamp":1788235201,"next-cursor":"c-2"}`}
+	client, baseURL, _ := startDashboardTestServer(t, fixture.serve)
+	response, payload := getJSON(t, client, baseURL+"/omc/api/v1/management/logs")
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d body %s", response.StatusCode, payload)
+	}
+	if strings.Contains(string(payload), queryKey) || strings.Contains(string(payload), bearer) {
+		t.Fatalf("tail leaked a credential: %s", payload)
+	}
+	var page struct {
+		Lines []string `json:"lines"`
+	}
+	if err := json.Unmarshal(payload, &page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Lines) != 2 || !strings.Contains(page.Lines[0], "generativelanguage.googleapis.com/v1beta/models") || !strings.Contains(page.Lines[1], "upstream said") {
+		t.Fatalf("redaction dropped the line text: %q", page.Lines)
 	}
 }
 
@@ -271,13 +298,85 @@ func TestRequestLogByIDServesAuditsAndExplainsAbsence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	outcomes := map[string]string{}
+	outcomes := requestLogAuditOutcomes(events, "request_log.download")
+	if !outcomes["41dbb9ee"]["attempt"] || !outcomes["41dbb9ee"]["success"] || !outcomes["deadbeef"]["attempt"] || !outcomes["deadbeef"]["failure"] {
+		t.Fatalf("audit outcomes = %v", outcomes)
+	}
+}
+
+func requestLogAuditOutcomes(events []repository.AuditEvent, action string) map[string]map[string]bool {
+	outcomes := map[string]map[string]bool{}
 	for _, event := range events {
-		if event.Action == "request_log.download" && event.TargetType == "request_log" {
-			outcomes[event.TargetID] = event.Result
+		if event.Action != action {
+			continue
+		}
+		if outcomes[event.TargetID] == nil {
+			outcomes[event.TargetID] = map[string]bool{}
+		}
+		outcomes[event.TargetID][event.Result] = true
+	}
+	return outcomes
+}
+
+// Every gateway log the browser can read passes the redactor, whatever its
+// size, and a request log naming another request is not served as this one.
+func TestGatewayLogReadsAreRedactedAndIdentityChecked(t *testing.T) {
+	secret := "sk-" + strings.Repeat("e", 30)
+	client, baseURL, repo := startDashboardTestServer(t, func(writer http.ResponseWriter, request *http.Request) {
+		path := strings.TrimPrefix(request.URL.Path, "/v8/management/observability")
+		switch path {
+		case "/logs/errors/error-1.log":
+			_, _ = writer.Write([]byte("=== REQUEST INFO ===\nAuthorization: Bearer " + secret + "\n"))
+		case "/logs/requests/aaaa1111":
+			_, _ = writer.Write([]byte("=== REQUEST INFO ===\nRequest ID: 0000-aaaa1111\n\n=== REQUEST BODY ===\n{\"api_key\":\"" + secret + "\"}\n"))
+		case "/logs/requests/bbbb2222":
+			_, _ = writer.Write([]byte("=== REQUEST INFO ===\nRequest ID: another-request\n\n=== REQUEST BODY ===\nother content\n"))
+		case "/logs/requests/pending1":
+			writer.Header().Set("Content-Type", "application/json")
+			writer.WriteHeader(http.StatusConflict)
+			_, _ = writer.Write([]byte(`{"error":"capture_pending"}`))
+		case "/logs/requests/cut00000":
+			// A declared length that is never delivered makes the read fail.
+			writer.Header().Set("Content-Length", "100000")
+			_, _ = writer.Write([]byte("=== REQUEST INFO ===\nRequest ID: cut00000\n"))
+		default:
+			writer.WriteHeader(http.StatusNotFound)
+		}
+	})
+	api := baseURL + "/omc/api/v1/management/"
+
+	for _, path := range []string{"request-error-logs/error-1.log", "request-logs/aaaa1111"} {
+		response, payload := getJSON(t, client, api+path)
+		if response.StatusCode != http.StatusOK || strings.Contains(string(payload), secret) || !strings.HasPrefix(response.Header.Get("Content-Disposition"), "attachment;") {
+			t.Fatalf("%s = %d %v %s", path, response.StatusCode, response.Header, payload)
+		}
+		if response.Header.Get("Cache-Control") != "no-store" || response.Header.Get("X-Content-Type-Options") != "nosniff" {
+			t.Fatalf("%s headers = %v", path, response.Header)
 		}
 	}
-	if outcomes["41dbb9ee"] != "success" || outcomes["deadbeef"] != "failure" {
+
+	response, payload := getJSON(t, client, api+"request-logs/bbbb2222")
+	if response.StatusCode != http.StatusNotFound || !strings.Contains(string(payload), requestLogNotFoundCode) || strings.Contains(string(payload), "other content") {
+		t.Fatalf("another request's log = %d %s", response.StatusCode, payload)
+	}
+
+	response, payload = getJSON(t, client, api+"request-logs/pending1")
+	if response.StatusCode != http.StatusConflict || !strings.Contains(string(payload), `"code":"capture_pending"`) || response.Header.Get("Content-Disposition") != "" {
+		t.Fatalf("pending capture = %d %s", response.StatusCode, payload)
+	}
+
+	response, payload = getJSON(t, client, api+"request-logs/cut00000")
+	if response.StatusCode != http.StatusOK || !strings.HasSuffix(string(payload), exportIncompleteMarker) {
+		t.Fatalf("cut stream = %d %q", response.StatusCode, payload)
+	}
+
+	events, err := repo.ListAuditEvents(context.Background(), 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcomes := requestLogAuditOutcomes(events, "request_log.download")
+	if !outcomes["error-1.log"]["success"] || !outcomes["aaaa1111"]["success"] || !outcomes["bbbb2222"]["failure"] ||
+		!outcomes["pending1"]["failure"] || !outcomes["cut00000"]["failure"] || outcomes["cut00000"]["success"] {
 		t.Fatalf("audit outcomes = %v", outcomes)
 	}
 }

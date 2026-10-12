@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"math"
 	"net/http"
@@ -93,11 +92,24 @@ func (h *Handler) inspectUsageEventRequestLog(writer http.ResponseWriter, reques
 	body, fetchErr := client.OpenRequestLog(ctx, row.RequestID)
 	if fetchErr != nil {
 		response.CaptureState, response.CaptureReason = inspectorFetchState(fetchErr)
+		_ = h.recordAudit(request, "request_log.inspect", "request_log", row.RequestID, "failure",
+			map[string]any{"error": fetchErr.Error(), "capture_reason": response.CaptureReason})
 		writeJSON(writer, http.StatusOK, response)
 		return
 	}
 	defer body.Close()
 	inspectRequestLog(&response, row.RequestID, body, limits)
+	switch {
+	case response.Identity.Match == "mismatch":
+		_ = h.recordAudit(request, "request_log.inspect", "request_log", row.RequestID, "failure",
+			map[string]any{"error": "the gateway returned another request's log", "size_bytes": response.Preview.BytesRead})
+	case response.Preview.ReadError:
+		_ = h.recordAudit(request, "request_log.inspect", "request_log", row.RequestID, "failure",
+			map[string]any{"error": "the gateway log could not be read", "size_bytes": response.Preview.BytesRead})
+	default:
+		_ = h.recordAudit(request, "request_log.inspect", "request_log", row.RequestID, "success",
+			map[string]any{"size_bytes": response.Preview.BytesRead})
+	}
 	writeJSON(writer, http.StatusOK, response)
 }
 
@@ -188,7 +200,7 @@ func inspectRequestLog(response *requestInspectorResponse, requestID string, bod
 	switch {
 	case result.RequestID == "":
 		response.Identity.Match = "unknown"
-	case result.RequestID == requestID:
+	case requestIDMatches(result.RequestID, requestID):
 		response.Identity.Match = "matched"
 	default:
 		// Another request's log must not be presented as this event's.
@@ -265,28 +277,22 @@ func (h *Handler) exportUsageEventRequestLog(writer http.ResponseWriter, request
 		})
 		return
 	}
-	if auditErr := h.recordAudit(request, "request_log.export", "request_log", row.RequestID, "attempt", nil); auditErr != nil {
-		writeError(writer, http.StatusInternalServerError, "audit log failure; request export aborted")
-		return
-	}
 	client, ok := h.managementClientOrError(writer, request)
 	if !ok {
 		return
 	}
-	body, err := client.OpenRequestLog(request.Context(), row.RequestID)
-	if err != nil {
-		_ = h.recordAudit(request, "request_log.export", "request_log", row.RequestID, "failure", map[string]any{"error": err.Error()})
-		writeRequestLogFetchError(writer, err)
-		return
-	}
-	defer body.Close()
-	setRequestLogAttachmentHeaders(writer, row.RequestID)
-	if request.Method == http.MethodHead {
-		return
-	}
-	if streamErr := streamRedactedRequestLog(writer, body); streamErr != nil {
-		_ = h.recordAudit(request, "request_log.export", "request_log", row.RequestID, "failure", map[string]any{"error": streamErr.Error()})
-	}
+	h.serveRedactedGatewayLog(writer, request, gatewayLogRead{
+		action:            "request_log.export",
+		targetType:        "request_log",
+		targetID:          row.RequestID,
+		fileName:          sanitizeLogName(row.RequestID),
+		abortMessage:      "audit log failure; request export aborted",
+		expectedRequestID: row.RequestID,
+		open: func(ctx context.Context) (io.ReadCloser, error) {
+			return client.OpenRequestLog(ctx, row.RequestID)
+		},
+		fetchError: writeRequestLogFetchError,
+	})
 }
 
 func (h *Handler) usageEventForRequestLog(writer http.ResponseWriter, request *http.Request) (repository.UsageEventRow, bool) {
@@ -305,12 +311,6 @@ func (h *Handler) usageEventForRequestLog(writer http.ResponseWriter, request *h
 		return repository.UsageEventRow{}, false
 	}
 	return row, true
-}
-
-func setRequestLogAttachmentHeaders(writer http.ResponseWriter, requestID string) {
-	writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	writer.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, sanitizeLogName(requestID)))
-	writer.Header().Set("X-Content-Type-Options", "nosniff")
 }
 
 // streamRedactedRequestLog copies body through the redactor. Once bytes have

@@ -112,6 +112,12 @@ func TestUsageEventInspectorHidesAnotherRequestsLog(t *testing.T) {
 	if inspector.Identity.Match != "mismatch" || inspector.Identity.LoggedRequestID != "01a12e30-d92f-7d85-b6a0-d6e8093d62ba" || len(inspector.Sections) != 0 {
 		t.Fatalf("mismatched log was shown: %+v", inspector)
 	}
+	for _, path := range []string{"request-log", "inspector/export"} {
+		response, payload := getJSON(t, client, fmt.Sprintf("%s/omc/api/v1/usage/events/%d/%s", baseURL, id, path))
+		if response.StatusCode != http.StatusNotFound || !strings.Contains(string(payload), `"code":"request_log_not_found"`) || response.Header.Get("Content-Disposition") != "" {
+			t.Fatalf("%s served another request's log: %d %s", path, response.StatusCode, payload)
+		}
+	}
 }
 
 func TestUsageEventInspectorLegacyLogHasUnknownIdentity(t *testing.T) {

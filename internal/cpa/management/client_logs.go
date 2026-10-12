@@ -10,33 +10,33 @@ import (
 	"strings"
 )
 
-// DownloadRequestLog fetches one CPA raw request log by request id.
+// OpenRequestLog opens one CPA request log by request id without a size cap.
 //
 // The id is validated here rather than by callers: CPA resolves it to a filename
 // inside its log directory, so a traversal or empty value must never reach it.
-// The response is capped like other downloads.
-func (c *Client) DownloadRequestLog(ctx context.Context, requestID string) ([]byte, ResponseMeta, error) {
-	requestID = strings.TrimSpace(requestID)
-	if requestID == "" || strings.ContainsAny(requestID, "/\\") || strings.Contains(requestID, "..") {
-		return nil, ResponseMeta{}, errors.New("invalid request id")
-	}
-	request, err := c.newRequest(ctx, http.MethodGet, "/observability/logs/requests/"+url.PathEscape(requestID), nil, "")
-	if err != nil {
-		return nil, ResponseMeta{}, err
-	}
-	return c.doBytes(request, 16*1024*1024)
-}
-
-// OpenRequestLog opens one request log without a 16 MiB cap.
-//
-// The caller closes the body. Streaming export uses this; the bounded
-// DownloadRequestLog remains for callers that need one complete small body.
+// The caller closes the body and must redact it before it reaches a browser.
 func (c *Client) OpenRequestLog(ctx context.Context, requestID string) (io.ReadCloser, error) {
 	requestID = strings.TrimSpace(requestID)
 	if requestID == "" || strings.ContainsAny(requestID, "/\\") || strings.Contains(requestID, "..") {
 		return nil, errors.New("invalid request id")
 	}
-	request, err := c.newRequest(ctx, http.MethodGet, "/observability/logs/requests/"+url.PathEscape(requestID), nil, "")
+	return c.openLog(ctx, "/observability/logs/requests/"+url.PathEscape(requestID))
+}
+
+// OpenRequestErrorLog opens one named error log file without a size cap.
+//
+// The name is validated here rather than by callers: CPA resolves it inside its
+// log directory, so an empty value, a traversal or a path separator must never
+// reach it. The caller must redact the body before it reaches a browser.
+func (c *Client) OpenRequestErrorLog(ctx context.Context, name string) (io.ReadCloser, error) {
+	if !ValidLogFileName(name) {
+		return nil, errors.New("invalid log file name")
+	}
+	return c.openLog(ctx, "/observability/logs/errors/"+url.PathEscape(name))
+}
+
+func (c *Client) openLog(ctx context.Context, path string) (io.ReadCloser, error) {
+	request, err := c.newRequest(ctx, http.MethodGet, path, nil, "")
 	if err != nil {
 		return nil, err
 	}
@@ -164,22 +164,6 @@ func (c *Client) RequestErrorLogs(ctx context.Context) ([]ErrorLogFile, error) {
 		})
 	}
 	return files, nil
-}
-
-// DownloadRequestErrorLog returns raw bytes for one named error log file.
-//
-// The name is validated here rather than by callers: CPA resolves it inside its
-// log directory, so an empty value, a traversal or a path separator must never
-// reach it.
-func (c *Client) DownloadRequestErrorLog(ctx context.Context, name string) ([]byte, ResponseMeta, error) {
-	if !ValidLogFileName(name) {
-		return nil, ResponseMeta{}, errors.New("invalid log file name")
-	}
-	request, err := c.newRequest(ctx, http.MethodGet, "/observability/logs/errors/"+url.PathEscape(name), nil, "")
-	if err != nil {
-		return nil, ResponseMeta{}, err
-	}
-	return c.doBytes(request, 16*1024*1024)
 }
 
 // ValidLogFileName accepts a bare log filename and nothing else.
