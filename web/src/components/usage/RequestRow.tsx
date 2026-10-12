@@ -395,7 +395,7 @@ export const RequestRow = React.memo<RequestRowProps>(
           <span className="req-mobile-label">{t('events.col_tokens')}</span>
           <div className="req-tokens-total">
             <strong title={`${formatTokensFull(event.tokens.total)} ${t('dash.unit_tokens')}`}>{formatTokens(event.tokens.total, tokenStyle)}</strong>
-            <small>tokens</small>
+            <small>{event.tokens.reported === false ? t('events.tokens_missing') : event.tokens.reported == null && event.tokens.total === 0 ? t('events.tokens_unknown') : 'tokens'}</small>
           </div>
           <div className="req-tokens-breakdown">
             <span title={`${t('events.input_tokens')}: ${formatTokensFull(event.tokens.input)}`}>

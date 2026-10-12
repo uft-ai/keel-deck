@@ -2233,6 +2233,8 @@ export const MS: Readonly<Record<string, string>> = {
   "events.cached_tokens": "Token Cache",
   "events.cache_read_tokens": "Bacaan Cache",
   "events.cache_creation_tokens": "Penciptaan Cache",
+  "events.tokens_unknown": "Penggunaan tidak diketahui",
+  "events.tokens_missing": "Penyedia tidak melaporkan penggunaan",
   "events.cache_rate_tooltip": "Kadar hit cache {rate} ({count} token cache)",
   "events.cache_hit_count": "{count} pukulan",
   "events.cache_no_data": "Tiada data cache",

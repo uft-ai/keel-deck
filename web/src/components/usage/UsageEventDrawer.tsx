@@ -476,6 +476,8 @@ export const UsageEventDrawer: React.FC<UsageEventDrawerProps> = ({
                         )}
                       </div>
                     )}
+                    {event.tokens.reported === false && <p className="request-detail-note">{t('events.tokens_missing')}</p>}
+                    {event.tokens.reported == null && event.tokens.total === 0 && <p className="request-detail-note">{t('events.tokens_unknown')}</p>}
                     <div className="req-token-cards-grid">
                       <div className="req-token-card">
                         <span>{t('events.total_tokens')}</span>

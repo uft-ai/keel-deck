@@ -2559,6 +2559,8 @@ const DICT: Record<string, [string, string]> = {
   'events.cached_tokens': ['缓存 Tokens', 'Cached Tokens'],
   'events.cache_read_tokens': ['缓存读取', 'Cache Read'],
   'events.cache_creation_tokens': ['缓存创建', 'Cache Creation'],
+  'events.tokens_unknown': ['用量未知', 'Usage unknown'],
+  'events.tokens_missing': ['上游未报告用量', 'Provider reported no usage'],
   'events.cache_rate_tooltip': ['缓存命中率 {rate}（命中 {count} 缓存 Tokens）', 'Cache hit rate {rate} ({count} cached tokens)'],
   'events.cache_hit_count': ['{count} 命中', '{count} hit'],
   'events.cache_no_data': ['无缓存记录', 'No cache data'],

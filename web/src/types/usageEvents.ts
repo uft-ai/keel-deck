@@ -14,6 +14,11 @@ export interface UsageEventTokens {
   cache_read: number;
   cache_creation: number;
   total: number;
+  /**
+   * Whether the provider reported these counters. Absent is unknown, false is
+   * an explicit missing usage payload, and true includes genuine zeros.
+   */
+  reported?: boolean;
 }
 
 export interface UsageEvent {

@@ -2233,6 +2233,8 @@ export const ZH_HANT: Readonly<Record<string, string>> = {
   "events.cached_tokens": "快取 Tokens",
   "events.cache_read_tokens": "快取讀取",
   "events.cache_creation_tokens": "快取建立",
+  "events.tokens_unknown": "用量未知",
+  "events.tokens_missing": "上游未報告用量",
   "events.cache_rate_tooltip": "快取命中率 {rate}（命中 {count} 快取 Tokens）",
   "events.cache_hit_count": "{count} 命中",
   "events.cache_no_data": "無快取記錄",
