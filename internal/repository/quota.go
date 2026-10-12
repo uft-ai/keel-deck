@@ -108,6 +108,35 @@ func (r *Repository) trimQuotaSnapshots(ctx context.Context, authIndex string, k
 }
 
 // GetLatestQuotaSnapshots retrieves the most recent snapshot for each specified auth index in a single batch query.
+// LatestQuotaWindows returns every credential's newest stored window JSON.
+func (r *Repository) LatestQuotaWindows(ctx context.Context) (map[string]QuotaSnapshotRecord, error) {
+	result := map[string]QuotaSnapshotRecord{}
+	if r == nil || r.SQL() == nil {
+		return result, errors.New("repository is not initialized")
+	}
+	rows, err := r.SQL().QueryContext(ctx, `
+		SELECT id, auth_index, provider, status, plan_type, plan_tier, windows_json, reset_credits_json, plan_json, observed_at_ms, created_at_ms
+		FROM quota_snapshots
+		WHERE id IN (
+			SELECT id FROM quota_snapshots AS current
+			WHERE observed_at_ms = (
+				SELECT MAX(observed_at_ms) FROM quota_snapshots WHERE auth_index = current.auth_index
+			)
+		)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		record, err := scanQuotaSnapshot(rows)
+		if err != nil {
+			return nil, err
+		}
+		result[record.AuthIndex] = record
+	}
+	return result, rows.Err()
+}
+
 func (r *Repository) GetLatestQuotaSnapshots(ctx context.Context, authIndexes []string) (map[string]QuotaSnapshotRecord, error) {
 	result := make(map[string]QuotaSnapshotRecord)
 	if r == nil || r.SQL() == nil || len(authIndexes) == 0 {

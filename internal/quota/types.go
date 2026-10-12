@@ -20,6 +20,10 @@ type QuotaWindow struct {
 	// Reset evidence survives snapshot retention until this scheduled cycle ends.
 	HasMidCycleReset     bool `json:"has_mid_cycle_reset,omitempty"`
 	HasIncompleteHistory bool `json:"has_incomplete_history,omitempty"`
+	// PeriodDeliveryPending keeps a failed Relay delivery retryable after the
+	// stored reset has moved forward. An observation that was never submitted
+	// does not set it.
+	PeriodDeliveryPending bool `json:"period_delivery_pending,omitempty"`
 
 	// The three fields below are joined from recorded usage when a quota is
 	// read and are never part of a stored snapshot: usage keeps arriving after

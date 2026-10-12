@@ -67,6 +67,9 @@ type Handler struct {
 	// recent traffic. Nil means the wall
 	// clock; only the demo dataset export sets it.
 	nowFn func() time.Time
+	// quotaRetryAfter is the next permitted scheduled refresh for one subject.
+	quotaRetryAfter map[string]time.Time
+	quotaRetryMu   sync.Mutex
 
 	configMu       sync.Mutex
 	startTime      time.Time

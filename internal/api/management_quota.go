@@ -269,6 +269,7 @@ func (h *Handler) persistNormalizedQuotaSnapshot(ctx context.Context, q *quota.N
 		}
 		break
 	}
+	markPendingPeriodDelivery(q)
 	windows := append([]quota.QuotaWindow(nil), q.Windows...)
 	for i := range windows {
 		window := &windows[i]

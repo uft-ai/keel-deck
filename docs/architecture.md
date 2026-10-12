@@ -2042,6 +2042,14 @@ submits one observation with `PUT` on that route. The GET's `observed_at`
 becomes `not_before`, and its version becomes `based_on_version`. CPA's
 `api-call` body is unwrapped when it is a JSON string. Delivery failure is
 stored beside the reading; it is not a successful allowance.
+`persistNormalizedQuotaSnapshot` sets `period_delivery_pending` on a window
+whose Relay delivery is `unavailable` or `rejected`, so a manual refresh uses
+the same marker as the scan. The scan retries that window one minute after its
+last attempt even when the reported reset is already in the future. An
+observation that was never submitted, including an absent model, does not set
+the marker. The non-demo scan in `App.runQuotaResets` runs once at startup and
+then on a fixed one-minute ticker. A disabled decision uses the current
+configured subject, not the stored snapshot status.
 
 `usage_events.tokens_reported` is nullable. Null preserves a legacy record,
 false records an explicit missing usage payload, and true records provider
@@ -3293,3 +3301,14 @@ script permission with same-origin permission: model markup runs only in the exi
 sandbox, its bounded response becomes an image, and the outer snapshot is script-disabled.
 A missing figure retains an explicit unavailable-image note; all transcript pages must encode
 before any PNG is downloaded.
+
+### NaN discovery enrichment
+
+`internal/api/nan_model_metadata.go` enriches key-specific model pull with dated
+NaN documentation defaults, restricted to the exact inference host and discovered
+model identity. The existing provider editor consumes those defaults only when
+adding a new selected entry; existing entries keep their original identity/options.
+`model_defaults` and source `metadata` are additive fields on the authenticated
+model-pull response. They neither create availability nor persist a second catalog.
+The backend metadata test and rendered provider-hook test cover unknown models,
+missing limits, image route separation and preservation of a native alias.
