@@ -46,12 +46,12 @@ func periodDeliveryStatus(err error) string {
 // Relay decides whether it blocks or clears. This mapping only refuses a
 // report that does not identify one model period.
 type PeriodObservationInput struct {
-	ObservationID      string
-	BasedOnVersion     uint64
-	AuthIndex          string
-	Model              string
-	NotBefore          time.Time
-	Report             NanQuotaReport
+	ObservationID  string
+	BasedOnVersion uint64
+	AuthIndex      string
+	Model          string
+	NotBefore      time.Time
+	Report         NanQuotaReport
 }
 
 // NanPeriodObservation maps one validated model row to Relay's reduced schema.

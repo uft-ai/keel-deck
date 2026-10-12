@@ -201,27 +201,27 @@ func (h *Handler) operationsService() *operations.Service {
 		if found {
 			file := subject.File
 			h.agent.refreshMu.Lock()
-				if time.Since(h.agent.lastRefresh[authIndex]) < 30*time.Second {
-					h.agent.refreshMu.Unlock()
-					return operations.Quota{}, errors.New("write_busy")
-				}
-				if h.agent.lastRefresh == nil {
-					h.agent.lastRefresh = map[string]time.Time{}
-				}
-				h.agent.lastRefresh[authIndex] = time.Now()
+			if time.Since(h.agent.lastRefresh[authIndex]) < 30*time.Second {
 				h.agent.refreshMu.Unlock()
+				return operations.Quota{}, errors.New("write_busy")
+			}
+			if h.agent.lastRefresh == nil {
+				h.agent.lastRefresh = map[string]time.Time{}
+			}
+			h.agent.lastRefresh[authIndex] = time.Now()
+			h.agent.refreshMu.Unlock()
 
-				value, err := quota.NewService(client).RefreshCredentialQuotaModels(ctx, file, h.loadPriorNormalizedQuota(ctx, authIndex), subject.Models)
-				if err != nil {
+			value, err := quota.NewService(client).RefreshCredentialQuotaModels(ctx, file, h.loadPriorNormalizedQuota(ctx, authIndex), subject.Models)
+			if err != nil {
+				return operations.Quota{}, err
+			}
+			if value.Status != "error" && value.Status != "stale" {
+				if err = h.persistNormalizedQuotaSnapshot(ctx, value); err != nil {
 					return operations.Quota{}, err
 				}
-				if value.Status != "error" && value.Status != "stale" {
-					if err = h.persistNormalizedQuotaSnapshot(ctx, value); err != nil {
-						return operations.Quota{}, err
-					}
-				}
-				h.attachWindowCapacity(ctx, value, h.now().UnixMilli())
-				return operations.SafeQuota(value), nil
+			}
+			h.attachWindowCapacity(ctx, value, h.now().UnixMilli())
+			return operations.SafeQuota(value), nil
 		}
 		return operations.Quota{}, errors.New("resource_missing")
 	}

@@ -69,7 +69,7 @@ type Handler struct {
 	nowFn func() time.Time
 	// quotaRetryAfter is the next permitted scheduled refresh for one subject.
 	quotaRetryAfter map[string]time.Time
-	quotaRetryMu   sync.Mutex
+	quotaRetryMu    sync.Mutex
 
 	configMu       sync.Mutex
 	startTime      time.Time

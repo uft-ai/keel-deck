@@ -538,7 +538,7 @@ func TestConfiguredNanQuotaSubjectsAreSecretFree(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	if err := handler.repo.UpsertInstance(context.Background(), domain.CPAInstance{
 		ID: "default", Name: "Default", BaseURL: cpaServer.URL,
-		UsageAddr: strings.TrimPrefix(cpaServer.URL, "http://"),
+		UsageAddr:               strings.TrimPrefix(cpaServer.URL, "http://"),
 		ManagementKeyCiphertext: ciphertext, ManagementKeyNonce: nonce,
 		CreatedAt: now, UpdatedAt: now,
 	}); err != nil {

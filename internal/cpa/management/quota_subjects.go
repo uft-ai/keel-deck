@@ -32,9 +32,9 @@ type ConfiguredQuotaDiagnostic struct {
 
 // ConfiguredQuotaSubjects is the secret-free result of reading NaN keys.
 type ConfiguredQuotaSubjects struct {
-	Subjects     []ConfiguredQuotaSubject
-	Diagnostics  []ConfiguredQuotaDiagnostic
-	byIndex      map[string]int
+	Subjects    []ConfiguredQuotaSubject
+	Diagnostics []ConfiguredQuotaDiagnostic
+	byIndex     map[string]int
 }
 
 // Subject returns the one enabled subject for authIndex. A missing, repeated,

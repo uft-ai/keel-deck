@@ -13,8 +13,8 @@ type ProviderKeyEntryDTO struct {
 	Index     int    `json:"index"`
 	AuthIndex string `json:"auth_index,omitempty"`
 	APIKey    string `json:"api_key"`
-	ProxyURL string `json:"proxy_url,omitempty"`
-	Weight   *int   `json:"weight,omitempty"`
+	ProxyURL  string `json:"proxy_url,omitempty"`
+	Weight    *int   `json:"weight,omitempty"`
 }
 
 type ThinkingDTO struct {
@@ -322,8 +322,8 @@ func (h *Handler) readProviderItems(ctx context.Context, client *management.Clie
 					Index:     ki,
 					AuthIndex: k.AuthIndex,
 					APIKey:    k.APIKey,
-					ProxyURL: k.ProxyURL,
-					Weight:   k.Weight,
+					ProxyURL:  k.ProxyURL,
+					Weight:    k.Weight,
 				})
 			}
 			for ki, k := range entry.LegacyAPIKeys {
