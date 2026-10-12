@@ -24,6 +24,7 @@ var (
 
 type pullModelsRequest struct {
 	ProviderID string            `json:"provider_id,omitempty"`
+	AuthIndex  string            `json:"auth_index,omitempty"`
 	Family     string            `json:"family,omitempty"`
 	BaseURL    string            `json:"base_url,omitempty"`
 	APIKey     string            `json:"api_key,omitempty"`
@@ -71,7 +72,50 @@ func (h *Handler) pullProviderModels(writer http.ResponseWriter, request *http.R
 	headers := req.Headers
 	family := strings.ToLower(strings.TrimSpace(req.Family))
 
-	if req.ProviderID != "" && (baseURL == "" || apiKey == "") {
+	if wanted := strings.TrimSpace(req.AuthIndex); wanted != "" {
+		// A named key is the whole connection. A typed URL, secret, proxy, or
+		// header beside it would mix two sources, and a missing or non-compatible
+		// provider id must not fall through to a typed pull.
+		if req.ProviderID == "" || baseURL != "" || apiKey != "" || proxyURL != "" || len(headers) > 0 {
+			writeError(writer, http.StatusBadRequest, "auth_index selects a stored key and cannot be combined with connection overrides")
+			return
+		}
+		client, ok := h.managementClientOrError(writer, request)
+		if !ok {
+			return
+		}
+		storedFamily, index, err := parseProviderID(req.ProviderID)
+		if err != nil || index < 0 || storedFamily != openAICompatibilityFamily {
+			writeError(writer, http.StatusBadRequest, "auth_index requires an OpenAI-compatible provider id")
+			return
+		}
+		resp, err := client.OpenAICompatibility(request.Context())
+		if err != nil || index >= len(resp.Entries) {
+			writeError(writer, http.StatusBadRequest, "auth_index requires an OpenAI-compatible provider id")
+			return
+		}
+		entry := resp.Entries[index]
+		if entry.Disabled {
+			writeError(writer, http.StatusBadRequest, "provider is disabled")
+			return
+		}
+		matched := false
+		for _, candidate := range entry.APIKeyEntries {
+			if candidate.AuthIndex == wanted {
+				baseURL = entry.BaseURL
+				apiKey = candidate.APIKey
+				proxyURL = candidate.ProxyURL
+				headers = entry.Headers
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			writeError(writer, http.StatusBadRequest, "auth_index is not one of this provider's keys")
+			return
+		}
+		family = storedFamily
+	} else if req.ProviderID != "" && (baseURL == "" || apiKey == "") {
 		client, ok := h.managementClientOrError(writer, request)
 		if ok {
 			storedFamily, index, err := parseProviderID(req.ProviderID)
@@ -82,6 +126,10 @@ func (h *Handler) pullProviderModels(writer http.ResponseWriter, request *http.R
 					resp, err := client.OpenAICompatibility(ctx)
 					if err == nil && index < len(resp.Entries) {
 						entry := resp.Entries[index]
+						if entry.Disabled {
+							writeError(writer, http.StatusBadRequest, "provider is disabled")
+							return
+						}
 						if baseURL == "" {
 							baseURL = entry.BaseURL
 						}

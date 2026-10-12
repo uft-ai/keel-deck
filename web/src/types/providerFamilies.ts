@@ -70,7 +70,7 @@ export interface ProviderFamilyMeta {
 export const PROVIDER_FAMILIES: ProviderFamilyMeta[] = [
   {
     id: 'openai-compatibility',
-    modelOptionFields: ['max_context_length', 'is_compat', 'modalities', 'use_max_completion_tokens'],
+    modelOptionFields: ['max_context_length', 'is_compat', 'modalities', 'use_max_completion_tokens', 'operation_metadata'],
     labelKey: 'pro.family_openai_compat',
     color: '#10A37F',
     iconId: 'OpenAI',

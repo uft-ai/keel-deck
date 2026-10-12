@@ -291,6 +291,71 @@ func TestPullProviderModelsByProviderID(t *testing.T) {
 	}
 }
 
+func TestPullProviderModelsSelectedAuthIndex(t *testing.T) {
+	var seen []string
+	fakeUpstream := newFakeCPA(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{{"id": "qwen3.8-flash"}}})
+	}))
+	defer fakeUpstream.Close()
+
+	fixture := newProviderTestFixture(t)
+	fixture.state.mu.Lock()
+	fixture.state.oaiProviders = []map[string]any{{
+		"name": "nan", "base-url": fakeUpstream.URL,
+		"api-key-entries": []any{
+			map[string]any{"api-key": "sk-first", "auth-index": "nan-1", "proxy-url": "http://first.invalid"},
+			map[string]any{"api-key": "sk-second", "auth-index": "nan-2"},
+		},
+	}}
+	fixture.state.mu.Unlock()
+
+	resp, payload := doJSON(t, fixture.client, http.MethodPost, fixture.baseURL+providersEndpoint+"/pull-models", `{"provider_id":"openai-compat-0","auth_index":"nan-2"}`)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(payload), "qwen3.8-flash") {
+		t.Fatalf("selected pull = %d %s", resp.StatusCode, payload)
+	}
+	if len(seen) != 1 || seen[0] != "Bearer sk-second" {
+		t.Fatalf("selected key = %#v", seen)
+	}
+
+	resp, _ = doJSON(t, fixture.client, http.MethodPost, fixture.baseURL+providersEndpoint+"/pull-models", `{"provider_id":"openai-compat-0","auth_index":"missing"}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown index = %d", resp.StatusCode)
+	}
+	resp, _ = doJSON(t, fixture.client, http.MethodPost, fixture.baseURL+providersEndpoint+"/pull-models", `{"provider_id":"openai-compat-0","auth_index":"nan-2","base_url":"`+fakeUpstream.URL+`"}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("mixed selector = %d", resp.StatusCode)
+	}
+
+	fixture.state.mu.Lock()
+	fixture.state.oaiProviders[0]["disabled"] = true
+	fixture.state.mu.Unlock()
+	resp, _ = doJSON(t, fixture.client, http.MethodPost, fixture.baseURL+providersEndpoint+"/pull-models", `{"provider_id":"openai-compat-0","auth_index":"nan-2"}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("disabled provider = %d", resp.StatusCode)
+	}
+
+	// A named key is the whole connection. Headers, a missing provider, a
+	// non-compatible id, and an unknown id are refused rather than mixed or
+	// fallen through to a typed pull.
+	refused := []string{
+		`{"provider_id":"openai-compat-0","auth_index":"nan-2","headers":{"X-Test":"1"}}`,
+		`{"auth_index":"nan-2"}`,
+		`{"provider_id":"codex-0","auth_index":"nan-2"}`,
+		`{"provider_id":"not-a-provider","auth_index":"nan-2"}`,
+	}
+	for _, body := range refused {
+		resp, payload = doJSON(t, fixture.client, http.MethodPost, fixture.baseURL+providersEndpoint+"/pull-models", body)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("refused selector %s = %d %s", body, resp.StatusCode, payload)
+		}
+	}
+	if len(seen) != 1 {
+		t.Fatalf("refused selectors reached upstream: %#v", seen)
+	}
+}
+
 func TestPullProtocolFollowsFamilyRegistry(t *testing.T) {
 	for family, want := range map[string]string{
 		"claude":               "anthropic",

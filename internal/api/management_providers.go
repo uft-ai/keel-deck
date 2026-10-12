@@ -10,8 +10,9 @@ import (
 )
 
 type ProviderKeyEntryDTO struct {
-	Index    int    `json:"index"`
-	APIKey   string `json:"api_key"`
+	Index     int    `json:"index"`
+	AuthIndex string `json:"auth_index,omitempty"`
+	APIKey    string `json:"api_key"`
 	ProxyURL string `json:"proxy_url,omitempty"`
 	Weight   *int   `json:"weight,omitempty"`
 }
@@ -318,8 +319,9 @@ func (h *Handler) readProviderItems(ctx context.Context, client *management.Clie
 			for ki, k := range entry.APIKeyEntries {
 				authIndexes = append(authIndexes, nonEmptyStrings(k.AuthIndex)...)
 				keyEntries = append(keyEntries, ProviderKeyEntryDTO{
-					Index:    ki,
-					APIKey:   k.APIKey,
+					Index:     ki,
+					AuthIndex: k.AuthIndex,
+					APIKey:    k.APIKey,
 					ProxyURL: k.ProxyURL,
 					Weight:   k.Weight,
 				})

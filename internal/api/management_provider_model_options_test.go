@@ -72,6 +72,109 @@ func TestProviderModelOptionsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSharedUpstreamNameKeepsDistinctAliasMetadata(t *testing.T) {
+	fixture := newProviderTestFixture(t)
+	fixture.state.mu.Lock()
+	fixture.state.oaiProviders = []map[string]any{{
+		"name": "nan", "prefix": "nan", "base-url": "https://api.nan.builders/v1",
+		"api-key-entries": []any{map[string]any{"api-key": "sk-nan", "auth-index": "nan-1"}},
+		"models": []any{
+			map[string]any{"name": "qwen3.6", "alias": "qwen3.6"},
+			map[string]any{"name": "qwen3.6", "alias": "qwen3.6-native", "operations": []any{"chat", "responses", "completions"}, "native": []any{"responses", "completions"}, "max-output-tokens": float64(8192)},
+		},
+	}}
+	fixture.state.mu.Unlock()
+
+	body := `{"family":"openai-compatibility","name":"nan","prefix":"nan","base_url":"https://api.nan.builders/v1","keys":[{"api_key":""}],
+		"model_entries":[
+			{"name":"qwen3.6","alias":"qwen3.6","options":{}},
+			{"name":"qwen3.6","alias":"qwen3.6-native","options":{"operations":["Chat","responses","completions"],"native":["responses","completions"],"max_output_tokens":8192}}
+		]}`
+	if resp, payload := doJSON(t, fixture.client, http.MethodPut, fixture.baseURL+providersEndpoint+"/openai-compat-0", body); resp.StatusCode != http.StatusOK {
+		t.Fatalf("update = %d %s", resp.StatusCode, payload)
+	}
+	fixture.state.mu.Lock()
+	models := anyList(fixture.state.oaiProviders[0]["models"])
+	fixture.state.mu.Unlock()
+	if len(models) != 2 {
+		t.Fatalf("stored models = %d, want both aliases", len(models))
+	}
+	native := models[1].(map[string]any)
+	if native["alias"] != "qwen3.6-native" || fmt.Sprint(native["native"]) != "[responses completions]" || native["max-output-tokens"] != float64(8192) {
+		t.Fatalf("native route = %#v", native)
+	}
+	translated := models[0].(map[string]any)
+	if _, hasNative := translated["native"]; hasNative {
+		t.Fatalf("translated route inherited native metadata: %#v", translated)
+	}
+}
+
+func TestCaseDistinctUpstreamNamesStaySeparate(t *testing.T) {
+	fixture := newProviderTestFixture(t)
+	fixture.state.mu.Lock()
+	fixture.state.oaiProviders = []map[string]any{{
+		"name": "nan", "base-url": "https://api.nan.builders/v1",
+		"api-key-entries": []any{map[string]any{"api-key": "sk-nan", "auth-index": "nan-1"}},
+		"models": []any{
+			map[string]any{"name": "Qwen3.6", "alias": "upper", "future-field": "upper"},
+			map[string]any{"name": "qwen3.6", "alias": "lower", "future-field": "lower"},
+		},
+	}}
+	fixture.state.mu.Unlock()
+
+	body := `{"family":"openai-compatibility","name":"nan","base_url":"https://api.nan.builders/v1","keys":[{"api_key":""}],
+		"model_entries":[
+			{"name":"Qwen3.6","alias":"upper","original_name":"Qwen3.6","original_alias":"upper"},
+			{"name":"qwen3.6","alias":"lower","original_name":"qwen3.6","original_alias":"lower"}
+		]}`
+	if resp, payload := doJSON(t, fixture.client, http.MethodPut, fixture.baseURL+providersEndpoint+"/openai-compat-0", body); resp.StatusCode != http.StatusOK {
+		t.Fatalf("update = %d %s", resp.StatusCode, payload)
+	}
+	fixture.state.mu.Lock()
+	models := anyList(fixture.state.oaiProviders[0]["models"])
+	fixture.state.mu.Unlock()
+	if models[0].(map[string]any)["future-field"] != "upper" || models[1].(map[string]any)["future-field"] != "lower" {
+		t.Fatalf("case-distinct routes merged: %#v", models)
+	}
+}
+
+func TestRenameOneAliasOfSharedUpstreamName(t *testing.T) {
+	fixture := newProviderTestFixture(t)
+	fixture.state.mu.Lock()
+	fixture.state.oaiProviders = []map[string]any{{
+		"name": "nan", "base-url": "https://api.nan.builders/v1",
+		"api-key-entries": []any{map[string]any{"api-key": "sk-nan", "auth-index": "nan-1"}},
+		"models": []any{
+			map[string]any{"name": "qwen3.6", "alias": "qwen3.6", "future-field": "translated"},
+			map[string]any{"name": "qwen3.6", "alias": "qwen3.6-native", "native": []any{"responses"}, "future-field": "native"},
+		},
+	}}
+	fixture.state.mu.Unlock()
+
+	body := `{"family":"openai-compatibility","name":"nan","base_url":"https://api.nan.builders/v1","keys":[{"api_key":""}],
+		"model_entries":[
+			{"name":"qwen3.6","alias":"qwen3.6-native","original_name":"qwen3.6","original_alias":"qwen3.6-native"},
+			{"name":"qwen3.6","alias":"qwen3.6","original_name":"qwen3.6","original_alias":"qwen3.6"}
+		]}`
+	if resp, payload := doJSON(t, fixture.client, http.MethodPut, fixture.baseURL+providersEndpoint+"/openai-compat-0", body); resp.StatusCode != http.StatusOK {
+		t.Fatalf("update = %d %s", resp.StatusCode, payload)
+	}
+	fixture.state.mu.Lock()
+	models := anyList(fixture.state.oaiProviders[0]["models"])
+	fixture.state.mu.Unlock()
+	first := models[0].(map[string]any)
+	second := models[1].(map[string]any)
+	if first["future-field"] != "native" || fmt.Sprint(first["native"]) != "[responses]" {
+		t.Fatalf("reordered native route lost its fields: %#v", first)
+	}
+	if second["future-field"] != "translated" {
+		t.Fatalf("translated route = %#v", second)
+	}
+	if _, hasNative := second["native"]; hasNative {
+		t.Fatalf("translated route inherited native: %#v", second)
+	}
+}
+
 // The agent's provider operations and older clients send rows without options.
 func TestProviderModelRowWithoutOptionsKeepsStoredOptions(t *testing.T) {
 	fixture := newProviderTestFixture(t)
@@ -100,6 +203,50 @@ func TestProviderModelRowWithoutOptionsKeepsStoredOptions(t *testing.T) {
 	thinking := model["thinking"].(map[string]any)
 	if _, hasLevels := thinking["levels"]; hasLevels || thinking["max"] != float64(4096) {
 		t.Fatalf("thinking = %#v, want the row's empty levels applied and the bound kept", thinking)
+	}
+}
+
+// Original identity finds the stored row. The requested name is still applied,
+// and an identity that names nothing is refused instead of appended.
+func TestProviderModelRowWithoutOptionsRenamesUpstreamByOriginalIdentity(t *testing.T) {
+	fixture := newProviderTestFixture(t)
+	fixture.state.mu.Lock()
+	fixture.state.oaiProviders = []map[string]any{{
+		"name": "nan", "base-url": "https://api.nan.builders/v1",
+		"api-key-entries": []any{map[string]any{"api-key": "sk-nan", "auth-index": "nan-1"}},
+		"models": []any{map[string]any{
+			"name": "old", "alias": "route", "display-name": "Kept", "future-field": "kept",
+		}},
+	}}
+	fixture.state.mu.Unlock()
+
+	rename := `{"family":"openai-compatibility","name":"nan","base_url":"https://api.nan.builders/v1","keys":[{"api_key":""}],
+		"model_entries":[{"name":"new","alias":"route","original_name":"old","original_alias":"route"}]}`
+	if resp, payload := doJSON(t, fixture.client, http.MethodPut, fixture.baseURL+providersEndpoint+"/openai-compat-0", rename); resp.StatusCode != http.StatusOK {
+		t.Fatalf("rename = %d %s", resp.StatusCode, payload)
+	}
+	fixture.state.mu.Lock()
+	models := anyList(fixture.state.oaiProviders[0]["models"])
+	fixture.state.mu.Unlock()
+	if len(models) != 1 {
+		t.Fatalf("models = %#v, want the renamed row only", models)
+	}
+	model := models[0].(map[string]any)
+	if model["name"] != "new" || model["alias"] != "route" || model["display-name"] != "Kept" || model["future-field"] != "kept" {
+		t.Fatalf("renamed model = %#v, want name new and the stored fields kept", model)
+	}
+
+	stale := `{"family":"openai-compatibility","name":"nan","base_url":"https://api.nan.builders/v1","keys":[{"api_key":""}],
+		"model_entries":[{"name":"other","alias":"route","original_name":"missing","original_alias":"route"}]}`
+	resp, payload := doJSON(t, fixture.client, http.MethodPut, fixture.baseURL+providersEndpoint+"/openai-compat-0", stale)
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(payload), "missing") {
+		t.Fatalf("stale identity = %d %s", resp.StatusCode, payload)
+	}
+	fixture.state.mu.Lock()
+	defer fixture.state.mu.Unlock()
+	models = anyList(fixture.state.oaiProviders[0]["models"])
+	if len(models) != 1 || models[0].(map[string]any)["name"] != "new" {
+		t.Fatalf("refused save wrote %#v", models)
 	}
 }
 

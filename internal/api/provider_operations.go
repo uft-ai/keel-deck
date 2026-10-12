@@ -217,7 +217,11 @@ func (h *Handler) updateProvider(ctx context.Context, client *management.Client,
 					return err
 				}
 				entry.Disabled = req.Disabled
-				entry.Models = mergeModelEdits(entry.Models, models)
+				models, err := mergeModelEdits(entry.Models, models)
+				if err != nil {
+					return err
+				}
+				entry.Models = models
 				entry.Headers = req.Headers
 
 				if len(req.Keys) > 0 {
@@ -282,7 +286,11 @@ func (h *Handler) updateProvider(ctx context.Context, client *management.Client,
 			entry.Prefix = strings.TrimSpace(req.Prefix)
 			entry.Priority = req.Priority
 			entry.Weight = firstWeight
-			entry.Models = withoutImageFlag(mergeModelEdits(entry.Models, models))
+			merged, err := mergeModelEdits(entry.Models, models)
+			if err != nil {
+				return err
+			}
+			entry.Models = withoutImageFlag(merged)
 			entry.Headers = req.Headers
 			return nil
 		}, func(ctx context.Context, _ []management.ConfigAPIKey) error {

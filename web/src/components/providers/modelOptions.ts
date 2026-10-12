@@ -15,6 +15,9 @@ export interface ModelOptionsDraft {
   inputModalities: string[];
   outputModalities: string[];
   useMaxCompletionTokens: boolean;
+  operations: string[];
+  native: string[];
+  maxOutputTokens: number | null;
   thinkingMin: number | null;
   thinkingMax: number | null;
   thinkingZeroAllowed: boolean;
@@ -30,6 +33,9 @@ export const EMPTY_MODEL_OPTIONS_DRAFT: ModelOptionsDraft = {
   inputModalities: [],
   outputModalities: [],
   useMaxCompletionTokens: false,
+  operations: [],
+  native: [],
+  maxOutputTokens: null,
   thinkingMin: null,
   thinkingMax: null,
   thinkingZeroAllowed: false,
@@ -52,6 +58,9 @@ export function readModelOptionsDraft(options: ProviderModelOptions | undefined)
     inputModalities: options.input_modalities ?? [],
     outputModalities: options.output_modalities ?? [],
     useMaxCompletionTokens: options.use_max_completion_tokens ?? false,
+    operations: options.operations ?? [],
+    native: options.native ?? [],
+    maxOutputTokens: options.max_output_tokens || null,
     thinkingMin: options.thinking_min || null,
     thinkingMax: options.thinking_max || null,
     thinkingZeroAllowed: options.thinking_zero_allowed ?? false,
@@ -109,6 +118,13 @@ export function buildModelOptions(
   }
   if (fields.includes('use_max_completion_tokens') && draft.useMaxCompletionTokens) {
     options.use_max_completion_tokens = true;
+  }
+  if (fields.includes('operation_metadata')) {
+    const operations = normalizeModalities(draft.operations);
+    const native = normalizeModalities(draft.native);
+    if (operations.length > 0) options.operations = operations;
+    if (native.length > 0) options.native = native;
+    if (draft.maxOutputTokens !== null) options.max_output_tokens = draft.maxOutputTokens;
   }
   if (fields.includes('modalities')) {
     const inputModalities = normalizeModalities(draft.inputModalities);

@@ -108,5 +108,6 @@ test('the family table matches the entries CPA declares', () => {
     'is_compat',
     'modalities',
     'use_max_completion_tokens',
+    'operation_metadata',
   ]);
 });

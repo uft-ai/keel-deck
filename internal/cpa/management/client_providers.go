@@ -195,6 +195,11 @@ type ModelAlias struct {
 	InputModalities            []string `json:"input-modalities,omitempty"`
 	OutputModalities           []string `json:"output-modalities,omitempty"`
 	UseMaxCompletionTokens     bool     `json:"use-max-completion-tokens,omitempty"`
+	// Operations, Native and MaxOutputTokens are optional OpenAI-compatible
+	// metadata. Nil means the field was absent; an empty slice is explicit.
+	Operations      []string `json:"operations,omitempty"`
+	Native          []string `json:"native,omitempty"`
+	MaxOutputTokens int      `json:"max-output-tokens,omitempty"`
 
 	// extra keeps the settings of a model this struct does not declare, which
 	// every provider write sends back for every model of the family.

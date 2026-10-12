@@ -32,6 +32,9 @@ export interface ClientKeyUsageItem {
 
 export interface ProviderKeyEntry {
   index: number;
+  /** Runtime index of this key. A model pull names it so the stored key is used
+   *  without sending the secret back, and so a later key is not assumed to be the first. */
+  auth_index?: string;
   api_key: string;
   proxy_url?: string;
   weight?: number;
@@ -54,6 +57,9 @@ export interface ProviderModelOptions {
   input_modalities?: string[];
   output_modalities?: string[];
   use_max_completion_tokens?: boolean;
+  operations?: string[];
+  native?: string[];
+  max_output_tokens?: number;
   thinking_min?: number;
   thinking_max?: number;
   thinking_zero_allowed?: boolean;
@@ -66,7 +72,8 @@ export type ProviderModelOptionField =
   | 'is_compat'
   | 'support_configuration_update'
   | 'modalities'
-  | 'use_max_completion_tokens';
+  | 'use_max_completion_tokens'
+  | 'operation_metadata';
 
 export interface ProviderModelItem {
   name: string;
@@ -155,6 +162,8 @@ export interface SaveProviderKeyItem {
 export interface SaveProviderModelItem {
   name: string;
   alias?: string;
+  original_name?: string;
+  original_alias?: string;
   image?: boolean;
   thinking?: ThinkingSupportConfig;
   options?: ProviderModelOptions;

@@ -35,11 +35,12 @@ import {
   modelOptionsProblem,
   readModelOptionsDraft,
 } from './modelOptions';
-import type {
-  FormKeyItem,
-  FormHeaderItem,
-  FormModelItem,
-  ManagementProvidersData,
+import {
+  modelPullPayload,
+  type FormKeyItem,
+  type FormHeaderItem,
+  type FormModelItem,
+  type ManagementProvidersData,
 } from './managementProviders';
 
 /**
@@ -117,29 +118,31 @@ export function useProviderManagement({
       return;
     }
 
-    const firstKey = formKeys.find((k) => k.apiKey && k.apiKey.trim() !== '')?.apiKey || '';
-    const firstProxy = formKeys.find((k) => k.proxyUrl && k.proxyUrl.trim() !== '')?.proxyUrl || '';
-
-    const headersPayload: Record<string, string> = {};
-    for (const h of formHeaders) {
-      if (h.key.trim() !== '') {
-        headersPayload[h.key.trim()] = h.value.trim();
-      }
-    }
+    // The first row that still names a stored key is the one to pull, not always
+    // the provider's first key. A typed secret or a changed connection is sent
+    // instead, and then no stored key is named.
+    const storedKey = formKeys.find((key) => key.authIndex && (key.apiKey || '').trim() === (key.storedAPIKey || '').trim());
+    const typedKey = formKeys.find((key) => key.apiKey && key.apiKey.trim() !== '');
+    const typedProxy = formKeys.find((key) => key.proxyUrl && key.proxyUrl.trim() !== '');
 
     const seq = ++modelFetchSeqRef.current;
     setIsPullingModels(true);
     setEndpointModels([]);
     setIsModelPickerOpen(false);
     try {
-      const res = await api.pullProviderModels({
-        provider_id: editingProvider ? editingProvider.id : undefined,
+      const res = await api.pullProviderModels(modelPullPayload({
+        providerId: editingProvider?.id,
         family: formFamily,
-        base_url: rawUrl,
-        api_key: firstKey,
-        proxy_url: firstProxy,
-        headers: headersPayload,
-      });
+        baseURL: rawUrl,
+        storedBaseURL: editingProvider?.base_url,
+        apiKey: (storedKey ?? typedKey)?.apiKey || '',
+        storedAPIKey: storedKey?.storedAPIKey,
+        proxyURL: (storedKey ?? typedProxy)?.proxyUrl || '',
+        storedProxyURL: storedKey?.proxyUrl,
+        authIndex: storedKey?.authIndex,
+        headers: headersPayload(),
+        storedHeaders: editingProvider?.headers,
+      }));
 
       if (seq !== modelFetchSeqRef.current) return;
 
@@ -596,6 +599,8 @@ export function useProviderManagement({
           proxyUrl: k.proxy_url,
           weight: k.weight ?? 1,
           isChanging: false,
+          authIndex: k.auth_index,
+          storedAPIKey: k.api_key || '',
         }))
       );
       setExpandedKeyIds(new Set());
@@ -639,6 +644,8 @@ export function useProviderManagement({
           id: `model-edit-${i}`,
           name: m.name,
           alias: m.alias || '',
+          originalName: m.name,
+          originalAlias: m.alias || m.name,
           image: m.image || false,
           thinking: m.thinking ? { levels: m.thinking.levels || [] } : { levels: [] },
           options: readModelOptionsDraft(m.options),
@@ -710,6 +717,8 @@ export function useProviderManagement({
       .map((m) => ({
         name: m.name.trim(),
         alias: m.alias.trim() || undefined,
+        original_name: m.originalName,
+        original_alias: m.originalAlias,
         image: supportsModelImage && (m.image || false),
         thinking:
           m.thinking && m.thinking.levels && m.thinking.levels.length > 0

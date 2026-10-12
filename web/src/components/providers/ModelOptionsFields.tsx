@@ -111,6 +111,52 @@ export function ModelOptionsFields({ idPrefix, options, onChange, fields, proble
             onChange={(thinkingMax) => onChange({ thinkingMax })}
           />
         </div>
+        {fields.includes('operation_metadata') && (
+          <>
+            <div>
+              <label className={styles['item-field-label']} htmlFor={`${idPrefix}-operations`}>
+                {t('pro.model_operations')}
+              </label>
+              <Select
+                id={`${idPrefix}-operations`}
+                mode="tags"
+                className={styles['option-select']}
+                value={options.operations}
+                tokenSeparators={[',', ' ']}
+                placeholder={t('pro.model_operations_placeholder')}
+                onChange={(operations) => onChange({ operations })}
+              />
+            </div>
+            <div>
+              <label className={styles['item-field-label']} htmlFor={`${idPrefix}-native`}>
+                {t('pro.model_native')}
+              </label>
+              <Select
+                id={`${idPrefix}-native`}
+                mode="tags"
+                className={styles['option-select']}
+                value={options.native}
+                tokenSeparators={[',', ' ']}
+                placeholder={t('pro.model_native_placeholder')}
+                onChange={(native) => onChange({ native })}
+              />
+            </div>
+            <div>
+              <label className={styles['item-field-label']} htmlFor={`${idPrefix}-max-output`}>
+                {t('pro.model_max_output_tokens')}
+              </label>
+              <InputNumber
+                id={`${idPrefix}-max-output`}
+                className={styles['option-number']}
+                value={options.maxOutputTokens}
+                min={1}
+                precision={0}
+                placeholder={t('pro.model_number_unset')}
+                onChange={(maxOutputTokens) => onChange({ maxOutputTokens })}
+              />
+            </div>
+          </>
+        )}
         {fields.includes('modalities') && (
           <>
             <div>

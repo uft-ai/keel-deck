@@ -26,6 +26,9 @@ type ProviderModelOptionsDTO struct {
 	InputModalities            []string `json:"input_modalities,omitempty"`
 	OutputModalities           []string `json:"output_modalities,omitempty"`
 	UseMaxCompletionTokens     bool     `json:"use_max_completion_tokens,omitempty"`
+	Operations                 []string `json:"operations,omitempty"`
+	Native                     []string `json:"native,omitempty"`
+	MaxOutputTokens            int      `json:"max_output_tokens,omitempty"`
 	ThinkingMin                int      `json:"thinking_min,omitempty"`
 	ThinkingMax                int      `json:"thinking_max,omitempty"`
 	ThinkingZeroAllowed        bool     `json:"thinking_zero_allowed,omitempty"`
@@ -43,11 +46,12 @@ type providerModelOptionFields struct {
 	hasConfigurationUpdate bool
 	hasModalities          bool
 	hasMaxCompletionTokens bool
+	hasOperationMetadata   bool
 }
 
 func providerModelOptionFieldsFor(family string) providerModelOptionFields {
 	if family == openAICompatibilityFamily {
-		return providerModelOptionFields{hasMaxContextLength: true, hasIsCompat: true, hasModalities: true, hasMaxCompletionTokens: true}
+		return providerModelOptionFields{hasMaxContextLength: true, hasIsCompat: true, hasModalities: true, hasMaxCompletionTokens: true, hasOperationMetadata: true}
 	}
 	switch management.ConfigKeyFamily(family) {
 	case management.ConfigFamilyVertex:
@@ -70,6 +74,9 @@ func providerModelOptionsDTO(model management.ModelAlias) *ProviderModelOptionsD
 		InputModalities:            model.InputModalities,
 		OutputModalities:           model.OutputModalities,
 		UseMaxCompletionTokens:     model.UseMaxCompletionTokens,
+		Operations:                 model.Operations,
+		Native:                     model.Native,
+		MaxOutputTokens:            model.MaxOutputTokens,
 	}
 	if model.Thinking != nil {
 		options.ThinkingMin = model.Thinking.Min
@@ -87,7 +94,8 @@ func (options ProviderModelOptionsDTO) isZero() bool {
 	return options.DisplayName == "" && options.MaxContextLength == 0 && !options.ForceMapping &&
 		!options.IsCompat && !options.SupportConfigurationUpdate &&
 		len(options.InputModalities) == 0 && len(options.OutputModalities) == 0 &&
-		!options.UseMaxCompletionTokens && options.ThinkingMin == 0 && options.ThinkingMax == 0 &&
+		!options.UseMaxCompletionTokens && len(options.Operations) == 0 && len(options.Native) == 0 &&
+		options.MaxOutputTokens == 0 && options.ThinkingMin == 0 && options.ThinkingMax == 0 &&
 		!options.ThinkingZeroAllowed && !options.ThinkingDynamicAllowed
 }
 
@@ -110,6 +118,25 @@ func normalizedProviderModelOptions(family, modelName string, options ProviderMo
 		return refuse("this provider family has no modalities")
 	case !fields.hasMaxCompletionTokens && options.UseMaxCompletionTokens:
 		return refuse("this provider family has no use_max_completion_tokens")
+	case !fields.hasOperationMetadata && (len(options.Operations) > 0 || len(options.Native) > 0 || options.MaxOutputTokens != 0):
+		return refuse("this provider family has no operation metadata")
+	}
+	if fields.hasOperationMetadata {
+		var err error
+		if options.Operations, err = normalizedOperationList(options.Operations, false); err != nil {
+			return refuse("operations: " + err.Error())
+		}
+		if options.Native, err = normalizedOperationList(options.Native, true); err != nil {
+			return refuse("native: " + err.Error())
+		}
+		if options.MaxOutputTokens < 0 {
+			return refuse("max_output_tokens must not be negative")
+		}
+		for _, operation := range options.Native {
+			if !containsOperation(options.Operations, operation) && options.Operations != nil {
+				return refuse(fmt.Sprintf("native operation %q is not listed in operations", operation))
+			}
+		}
 	}
 
 	options.DisplayName = strings.TrimSpace(options.DisplayName)
@@ -133,6 +160,59 @@ func normalizedProviderModelOptions(family, modelName string, options ProviderMo
 		return refuse("output_modalities: " + err.Error())
 	}
 	return options, nil
+}
+
+var openAICompatOperationNames = []string{
+	"chat", "completions", "responses", "embeddings", "rerank",
+	"speech", "transcription", "image-generation", "image-edit",
+}
+
+func normalizedOperationList(values []string, nativeOnly bool) ([]string, error) {
+	if values == nil {
+		return nil, nil
+	}
+	if len(values) == 0 {
+		return nil, fmt.Errorf("must not be empty; omit it to keep the default")
+	}
+	normalized := make([]string, 0, len(values))
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" || seen[value] {
+			continue
+		}
+		allowed := containsOperation(openAICompatOperationNames, value)
+		if nativeOnly {
+			allowed = value == "responses" || value == "completions"
+		}
+		if !allowed {
+			return nil, fmt.Errorf("%q is not a supported operation", value)
+		}
+		seen[value] = true
+		normalized = append(normalized, value)
+	}
+	if len(normalized) == 0 {
+		return nil, fmt.Errorf("must not be empty; omit it to keep the default")
+	}
+	return normalized, nil
+}
+
+func containsOperation(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func storedModelKey(name, alias string) string {
+	name = strings.TrimSpace(name)
+	alias = strings.ToLower(strings.TrimSpace(alias))
+	if alias == "" {
+		alias = strings.ToLower(name)
+	}
+	return name + "\x00" + alias
 }
 
 // normalizedModalities lowercases and deduplicates, which is how CPA compares them.
@@ -171,6 +251,9 @@ func (options ProviderModelOptionsDTO) applyTo(model *management.ModelAlias) {
 	model.InputModalities = options.InputModalities
 	model.OutputModalities = options.OutputModalities
 	model.UseMaxCompletionTokens = options.UseMaxCompletionTokens
+	model.Operations = options.Operations
+	model.Native = options.Native
+	model.MaxOutputTokens = options.MaxOutputTokens
 
 	thinking := management.ThinkingSupport{}
 	if model.Thinking != nil {
@@ -193,8 +276,10 @@ func compactThinking(thinking management.ThinkingSupport) *management.ThinkingSu
 // editedProviderModel is one model row of a save: the model as the form states
 // it, and whether the form stated its options too.
 type editedProviderModel struct {
-	model      management.ModelAlias
-	hasOptions bool
+	model         management.ModelAlias
+	hasOptions    bool
+	originalName  string
+	originalAlias string
 }
 
 // editedProviderModels reads the request's model rows. A row without a name is
@@ -229,7 +314,10 @@ func editedProviderModels(family string, req SaveProviderRequest) ([]editedProvi
 			}
 			options.applyTo(&model)
 		}
-		edited = append(edited, editedProviderModel{model: model, hasOptions: entry.Options != nil})
+		edited = append(edited, editedProviderModel{
+			model: model, hasOptions: entry.Options != nil,
+			originalName: strings.TrimSpace(entry.OriginalName), originalAlias: strings.TrimSpace(entry.OriginalAlias),
+		})
 	}
 	return edited, nil
 }
@@ -246,18 +334,42 @@ func newProviderModels(edited []editedProviderModel) []management.ModelAlias {
 // states the name, alias, image flag and thinking levels. With options it states
 // the whole entry CPA models; without them (the agent's provider operations, an
 // older client) the stored model of the same name keeps its other settings.
-// Either way the fields this console does not model survive, matched by name.
-func mergeModelEdits(stored []management.ModelAlias, edited []editedProviderModel) []management.ModelAlias {
+// Either way the fields this console does not model survive. Two routes that
+// share an upstream name stay separate: the match is the upstream name plus
+// the client alias, with a single same-name row as a fallback for an edit
+// that names the stored route in original_name and original_alias. A unique
+// upstream name can still match an older client that omits that identity.
+// Original identity is only the lookup key: once a row is found, the requested
+// name replaces the stored upstream name. An original identity that names no
+// stored route is refused rather than appended as a new model.
+func mergeModelEdits(stored []management.ModelAlias, edited []editedProviderModel) ([]management.ModelAlias, error) {
+	byRoute := make(map[string]management.ModelAlias, len(stored))
 	byName := make(map[string]management.ModelAlias, len(stored))
+	nameCount := make(map[string]int, len(stored))
 	for _, model := range stored {
-		if _, seen := byName[model.Name]; !seen {
-			byName[model.Name] = model
+		byRoute[storedModelKey(model.Name, model.Alias)] = model
+		name := strings.TrimSpace(model.Name)
+		nameCount[name]++
+		if _, seen := byName[name]; !seen {
+			byName[name] = model
 		}
 	}
 	merged := make([]management.ModelAlias, 0, len(edited))
 	for _, row := range edited {
-		old, found := byName[row.model.Name]
+		keyName := row.originalName
+		keyAlias := row.originalAlias
+		if keyName == "" {
+			keyName = row.model.Name
+			keyAlias = row.model.Alias
+		}
+		old, found := byRoute[storedModelKey(keyName, keyAlias)]
+		if !found && row.originalName == "" && nameCount[strings.TrimSpace(row.model.Name)] == 1 {
+			old, found = byName[strings.TrimSpace(row.model.Name)]
+		}
 		if !found {
+			if row.originalName != "" {
+				return nil, newProviderWriteError(http.StatusBadRequest, fmt.Sprintf("model %q is not a stored route of this provider", row.originalName))
+			}
 			merged = append(merged, row.model)
 			continue
 		}
@@ -265,6 +377,7 @@ func mergeModelEdits(stored []management.ModelAlias, edited []editedProviderMode
 			merged = append(merged, row.model.WithUnmodelledFieldsOf(old))
 			continue
 		}
+		old.Name = row.model.Name
 		old.Alias = row.model.Alias
 		old.Image = row.model.Image
 		thinking := management.ThinkingSupport{}
@@ -278,5 +391,5 @@ func mergeModelEdits(stored []management.ModelAlias, edited []editedProviderMode
 		old.Thinking = compactThinking(thinking)
 		merged = append(merged, old)
 	}
-	return merged
+	return merged, nil
 }

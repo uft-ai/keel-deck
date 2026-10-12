@@ -18,6 +18,10 @@ type SaveProviderModelEntry struct {
 	Alias    string       `json:"alias,omitempty"`
 	Image    bool         `json:"image,omitempty"`
 	Thinking *ThinkingDTO `json:"thinking,omitempty"`
+	// OriginalName and OriginalAlias identify the stored route being edited.
+	// A rename cannot be inferred when two routes share an upstream name.
+	OriginalName  string `json:"original_name,omitempty"`
+	OriginalAlias string `json:"original_alias,omitempty"`
 	// Options is nil when the client does not edit the advanced settings, which
 	// then stay as stored.
 	Options *ProviderModelOptionsDTO `json:"options,omitempty"`

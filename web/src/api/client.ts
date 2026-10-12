@@ -699,6 +699,7 @@ export const api = {
 
   async pullProviderModels(payload: {
     provider_id?: string;
+    auth_index?: string;
     family?: string;
     base_url?: string;
     api_key?: string;
