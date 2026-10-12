@@ -2027,6 +2027,26 @@ A refresh that succeeds without publishing a window is recorded as an
 nobody has read, and a window's identity — its id, label and kind — comes from the
 duration the payload states rather than from the slot it arrived in (ADR 0071).
 
+Quota subjects come from two sources. Auth files remain the OAuth subjects.
+`NanConfiguredQuotaSubjects` adds an OpenAI-compatible key whose provider name is
+exactly `nan`, ignoring case, or whose base URL host is exactly
+`api.nan.builders`. A renamed NaN provider therefore stays observable. The
+subject keeps that provider's usage channel and its unique `auth_index`; its
+label names the index and contains no secret. Missing and duplicate indexes are
+diagnostics, not selections, and a disabled provider stays visible but cannot be
+refreshed. A gateway without the compatibility route contributes no configured
+subjects, so the auth-file overview still loads. These subjects are not written
+back as auth files. A NaN refresh reads
+`GET /v8/management/availability/period-exhaustion` before its quota fetch and
+submits one observation with `PUT` on that route. The GET's `observed_at`
+becomes `not_before`, and its version becomes `based_on_version`. CPA's
+`api-call` body is unwrapped when it is a JSON string. Delivery failure is
+stored beside the reading; it is not a successful allowance.
+
+`usage_events.tokens_reported` is nullable. Null preserves a legacy record,
+false records an explicit missing usage payload, and true records provider
+counters including zero. Existing token integer columns are unchanged.
+
 A provider is observed only once `internal/quota` both recognizes it
 (`DetectProvider`) and implements its probe; a credential whose provider has no
 probe is reported with `refresh_supported: false` rather than as a failed fetch.

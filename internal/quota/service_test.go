@@ -56,6 +56,177 @@ func (m *mockCPAClient) FetchPluginQuota(ctx context.Context, pluginID, authInde
 	return nil, errors.New("unimplemented")
 }
 
+type periodLedgerClient struct {
+	mockCPAClient
+	get func(context.Context, string, string) (management.PeriodRead, error)
+	put func(context.Context, management.PeriodObservation) (management.PeriodRecord, error)
+}
+
+func (client periodLedgerClient) GetPeriodExhaustion(ctx context.Context, authIndex, model string) (management.PeriodRead, error) {
+	return client.get(ctx, authIndex, model)
+}
+
+func (client periodLedgerClient) PutPeriodExhaustion(ctx context.Context, observation management.PeriodObservation) (management.PeriodRecord, error) {
+	return client.put(ctx, observation)
+}
+
+func TestFetchNanQuotaUnwrapsTheManagementStringBody(t *testing.T) {
+	document := `{"periodStart":"2026-10-01","models":[{"model":"qwen3.8-flash","tokensUsed":1,"cap":10,"remaining":9,"periodEnd":"2026-11-09T15:06:22Z"}]}`
+	encoded, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &mockCPAClient{apiCallFunc: func(context.Context, management.ApiCallRequest) (management.ApiCallResponse, error) {
+		return management.ApiCallResponse{StatusCode: 200, Body: encoded}, nil
+	}}
+	report, windows, err := NewService(client).fetchNanQuota(context.Background(), "1111111111111111")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Models) != 1 || report.Models[0].Remaining != 9 || len(windows) != 1 {
+		t.Fatalf("report = %+v windows = %+v", report, windows)
+	}
+}
+
+func TestNanRefreshReadsTheLedgerBeforeFetchingQuota(t *testing.T) {
+	order := []string{}
+	observedAt := time.Date(2026, 10, 12, 1, 0, 0, 0, time.UTC)
+	client := periodLedgerClient{
+		mockCPAClient: mockCPAClient{apiCallFunc: func(context.Context, management.ApiCallRequest) (management.ApiCallResponse, error) {
+			order = append(order, "fetch")
+			return management.ApiCallResponse{StatusCode: 200, Body: json.RawMessage(`{"models":[{"model":"qwen3.8-flash","tokensUsed":0,"cap":10,"remaining":10,"periodEnd":"2026-11-09T15:06:22Z"}]}`)}, nil
+		}},
+		get: func(context.Context, string, string) (management.PeriodRead, error) {
+			order = append(order, "get")
+			return management.PeriodRead{ObservedAt: observedAt, Record: &management.PeriodRecord{Version: 4, Blocked: true}}, nil
+		},
+		put: func(_ context.Context, observation management.PeriodObservation) (management.PeriodRecord, error) {
+			order = append(order, "put")
+			if observation.BasedOnVersion != 4 || !observation.NotBefore.Equal(observedAt) || observation.State != "available" || observation.PoolID != "" {
+				t.Fatalf("observation = %+v", observation)
+			}
+			return management.PeriodRecord{Version: 4, Blocked: false}, nil
+		},
+	}
+	result, err := NewService(&client).RefreshCredentialQuotaModels(context.Background(), management.AuthFile{AuthIndex: "1111111111111111", Type: "nan", Provider: "nan"}, nil, []string{"qwen3.8-flash"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(order, ",") != "get,fetch,put" {
+		t.Fatalf("order = %#v", order)
+	}
+	if len(result.PeriodDeliveries) != 1 || result.PeriodDeliveries[0].Status != "accepted" || result.PeriodDeliveries[0].Blocked == nil || *result.PeriodDeliveries[0].Blocked {
+		t.Fatalf("delivery = %+v", result.PeriodDeliveries)
+	}
+}
+
+func TestNanRefreshKeepsANotRenewedBlockVisible(t *testing.T) {
+	client := periodLedgerClient{
+		mockCPAClient: mockCPAClient{apiCallFunc: func(context.Context, management.ApiCallRequest) (management.ApiCallResponse, error) {
+			return management.ApiCallResponse{StatusCode: 200, Body: json.RawMessage(`{"models":[{"model":"qwen3.8-flash","tokensUsed":0,"cap":10,"remaining":10,"periodEnd":"2026-11-09T15:06:22Z"}]}`)}, nil
+		}},
+		get: func(context.Context, string, string) (management.PeriodRead, error) {
+			return management.PeriodRead{ObservedAt: time.Now().UTC(), Record: &management.PeriodRecord{Version: 2, Blocked: true}}, nil
+		},
+		put: func(context.Context, management.PeriodObservation) (management.PeriodRecord, error) {
+			return management.PeriodRecord{}, &management.HTTPError{StatusCode: 409, Body: `{"error":"not_renewed"}`}
+		},
+	}
+	result, err := NewService(&client).RefreshCredentialQuotaModels(context.Background(), management.AuthFile{AuthIndex: "1111111111111111", Type: "nan", Provider: "nan"}, nil, []string{"qwen3.8-flash"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Error != "" || len(result.PeriodDeliveries) != 1 || result.PeriodDeliveries[0].Status != "rejected" || !strings.Contains(result.PeriodDeliveries[0].Error, "not_renewed") {
+		t.Fatalf("result error = %q delivery = %+v", result.Error, result.PeriodDeliveries)
+	}
+	if len(result.Windows) != 1 {
+		t.Fatalf("quota windows were discarded: %+v", result.Windows)
+	}
+}
+
+func TestNanRefreshObservesEveryConfiguredModel(t *testing.T) {
+	body := json.RawMessage(`{"models":[
+		{"model":"qwen3.8-flash","tokensUsed":0,"cap":10,"remaining":10,"periodEnd":"2026-11-09T15:06:22Z"},
+		{"model":"qwen3.6","tokensUsed":10,"cap":10,"remaining":0,"periodEnd":"2026-11-01T00:00:00Z"}
+	]}`)
+	gets := []string{}
+	puts := []management.PeriodObservation{}
+	client := periodLedgerClient{
+		mockCPAClient: mockCPAClient{apiCallFunc: func(context.Context, management.ApiCallRequest) (management.ApiCallResponse, error) {
+			return management.ApiCallResponse{StatusCode: 200, Body: body}, nil
+		}},
+		get: func(_ context.Context, _, model string) (management.PeriodRead, error) {
+			gets = append(gets, model)
+			if model == "" {
+				t.Fatal("empty model was read")
+			}
+			return management.PeriodRead{ObservedAt: time.Date(2026, 10, 12, 1, 0, 0, 0, time.UTC), Record: &management.PeriodRecord{Version: 3, Blocked: true}}, nil
+		},
+		put: func(_ context.Context, observation management.PeriodObservation) (management.PeriodRecord, error) {
+			puts = append(puts, observation)
+			return management.PeriodRecord{Version: observation.BasedOnVersion, Blocked: observation.State == "exhausted"}, nil
+		},
+	}
+	service := NewService(&client)
+	file := management.AuthFile{AuthIndex: "1111111111111111", Type: "nan", Provider: "nan"}
+	models := []string{"qwen3.8-flash", "qwen3.6", "qwen3.8-flash"}
+	first, err := service.RefreshCredentialQuotaModels(context.Background(), file, nil, models)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(gets, ",") != "qwen3.8-flash,qwen3.6" || len(first.Windows) != 2 || len(puts) != 2 {
+		t.Fatalf("gets = %#v windows = %d puts = %+v", gets, len(first.Windows), puts)
+	}
+	if puts[0].State != "available" || puts[1].State != "exhausted" || puts[0].ObservationID == puts[1].ObservationID {
+		t.Fatalf("observations = %+v", puts)
+	}
+	second, err := service.RefreshCredentialQuotaModels(context.Background(), file, first, models)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(puts) != 4 || puts[2].BasedOnVersion != 3 || puts[2].ObservationID == puts[0].ObservationID {
+		t.Fatalf("repeated observations = %+v", puts[2:])
+	}
+	if len(second.Windows) != 2 {
+		t.Fatalf("second windows = %+v", second.Windows)
+	}
+
+	failing := client
+	failing.get = func(context.Context, string, string) (management.PeriodRead, error) {
+		return management.PeriodRead{}, &management.HTTPError{StatusCode: 503, Body: `{"error":"ledger_unavailable"}`}
+	}
+	failed, err := NewService(&failing).RefreshCredentialQuotaModels(context.Background(), file, nil, []string{"qwen3.8-flash", "qwen3.6"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(failed.Windows) != 2 || len(failed.PeriodDeliveries) != 2 || failed.PeriodDeliveries[0].Status != "unavailable" {
+		t.Fatalf("failed refresh = %+v deliveries = %+v", failed.Windows, failed.PeriodDeliveries)
+	}
+}
+
+func TestNanRefreshDoesNotExhaustAPositiveUnknownReset(t *testing.T) {
+	var submitted management.PeriodObservation
+	client := periodLedgerClient{
+		mockCPAClient: mockCPAClient{apiCallFunc: func(context.Context, management.ApiCallRequest) (management.ApiCallResponse, error) {
+			return management.ApiCallResponse{StatusCode: 200, Body: json.RawMessage(`{"models":[{"model":"qwen3.8-flash","tokensUsed":1,"cap":10,"remaining":9,"periodEnd":null}]}`)}, nil
+		}},
+		get: func(context.Context, string, string) (management.PeriodRead, error) {
+			return management.PeriodRead{ObservedAt: time.Now().UTC()}, nil
+		},
+		put: func(_ context.Context, observation management.PeriodObservation) (management.PeriodRecord, error) {
+			submitted = observation
+			return management.PeriodRecord{}, &management.HTTPError{StatusCode: 409, Body: `{"error":"not_renewed"}`}
+		},
+	}
+	result, err := NewService(&client).RefreshCredentialQuotaModels(context.Background(), management.AuthFile{AuthIndex: "1111111111111111", Type: "nan", Provider: "nan"}, nil, []string{"qwen3.8-flash"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if submitted.State != "available" || submitted.PeriodEnd != nil || len(result.Windows) != 1 || result.Windows[0].ResetAtMS != nil {
+		t.Fatalf("submitted = %+v windows = %+v", submitted, result.Windows)
+	}
+}
+
 func TestSSRFProtection(t *testing.T) {
 	svc := NewService(&mockCPAClient{})
 

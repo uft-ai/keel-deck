@@ -84,6 +84,7 @@ type usageEventResponse struct {
 		CacheRead     int64 `json:"cache_read"`
 		CacheCreation int64 `json:"cache_creation"`
 		Total         int64 `json:"total"`
+		Reported      *bool `json:"reported,omitempty"`
 	} `json:"tokens"`
 	ResourceID     *string  `json:"resource_id,omitempty"`
 	ResourceName   *string  `json:"resource_name,omitempty"`
@@ -147,6 +148,7 @@ func usageEventTokens(row repository.UsageEventRow) (tokens struct {
 	CacheRead     int64 `json:"cache_read"`
 	CacheCreation int64 `json:"cache_creation"`
 	Total         int64 `json:"total"`
+	Reported      *bool `json:"reported,omitempty"`
 }) {
 	tokens.Input = row.Tokens.InputTokens
 	tokens.Output = row.Tokens.OutputTokens
@@ -155,6 +157,7 @@ func usageEventTokens(row repository.UsageEventRow) (tokens struct {
 	tokens.CacheRead = row.Tokens.CacheReadTokens
 	tokens.CacheCreation = row.Tokens.CacheCreationTokens
 	tokens.Total = row.Tokens.TotalTokens
+	tokens.Reported = row.TokensReported
 	return tokens
 }
 

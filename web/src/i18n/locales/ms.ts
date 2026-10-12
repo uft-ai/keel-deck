@@ -1986,6 +1986,8 @@ export const MS: Readonly<Record<string, string>> = {
   "pro.pull_models_empty": "Tiada model ditemui dari titik akhir",
   "pro.models_applied": "Berjaya menambahkan {count} model",
   "pro.pull_requires_base_url": "Sila berikan URL Pangkalan titik akhir dahulu",
+  "pro.pull_key": "Kunci untuk penemuan model",
+  "pro.pull_requires_key": "Pilih kunci yang digunakan untuk menemui model",
   "pro.base_url_required": "Jenis penyedia ini memerlukan URL Pangkalan titik akhir",
   "pro.alias_optional": "alias (pilihan)",
   "pro.level_none": "Lumpuhkan pemikiran",

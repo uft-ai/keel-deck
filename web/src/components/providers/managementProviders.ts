@@ -26,6 +26,8 @@ export interface FormKeyItem {
   authIndex?: string;
   /** The secret loaded with authIndex. Compared with apiKey; never sent as a second copy. */
   storedAPIKey?: string;
+  /** The proxy loaded with authIndex. Compared with proxyUrl; a later edit is not the stored value. */
+  storedProxyURL?: string;
 }
 
 /** What a model pull may send. A stored key and a typed connection are alternatives, never both. */

@@ -387,6 +387,18 @@ and the places it deliberately differs from the hand-tuned values it replaced.
   clock runs behind hides every record newer than that clock, and no refresh
   brings them back. The console may still estimate the bounds locally to print
   them.
+- **Configured Quota Subject**: A NaN API key observed from the OpenAI-compatible
+  provider list rather than from an auth file. It qualifies when the provider name
+  is exactly `nan`, ignoring case, or when its base URL host is exactly
+  `api.nan.builders`, so renaming the provider does not hide the key. Its identity
+  is the key's unique `auth_index`; the label names that index and never a secret.
+  A missing or repeated index is a diagnostic and is not selected. The subject is
+  not an OAuth credential and does not join the auth-file collection.
+- **Token Report State**: Whether a request's counters were reported. An omitted
+  `tokens_reported` is unknown and stays null. `false` means the provider
+  explicitly published no usable counters. `true` means the counters were
+  reported, including genuine zeros. The integer counters themselves do not
+  change meaning.
 - **Quota Window**: One metered period of a provider credential's quota (for
   Codex, the 5-hour and weekly windows), each carrying its own used share. A
   window's period is the one its payload states, never the slot it arrived in: a

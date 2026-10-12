@@ -157,6 +157,19 @@ type NormalizedQuota struct {
 	Capabilities   QuotaCapabilities   `json:"capabilities"`
 	RawSignals     map[string]string   `json:"raw_signals,omitempty"`
 	Error          string              `json:"error,omitempty"`
+	// PeriodDeliveries reports one Relay result per configured model. A failed
+	// delivery never changes the quota reading into a healthy allowance.
+	PeriodDeliveries []PeriodDelivery `json:"period_deliveries,omitempty"`
+}
+
+// PeriodDelivery is what happened when one observation reached Relay.
+type PeriodDelivery struct {
+	Model   string `json:"model"`
+	State   string `json:"state"`
+	Status  string `json:"status"`
+	Version uint64 `json:"version,omitempty"`
+	Blocked *bool  `json:"blocked,omitempty"`
+	Error   string `json:"error,omitempty"`
 }
 
 // QuotaOverviewSummary provides fleet-wide counts and stats.

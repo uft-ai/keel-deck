@@ -126,6 +126,8 @@ export const ProvidersPage: React.FC = () => {
     endpointModels,
     setEndpointModels,
     isPullingModels,
+    pullKeyID,
+    setPullKeyID,
     modelFetchSeqRef,
     websiteInputState,
     handlePullModels,
@@ -410,6 +412,8 @@ export const ProvidersPage: React.FC = () => {
         endpointModels={endpointModels}
         setEndpointModels={setEndpointModels}
         isPullingModels={isPullingModels}
+        pullKeyID={pullKeyID}
+        setPullKeyID={setPullKeyID}
         modelFetchSeqRef={modelFetchSeqRef}
         websiteInputState={websiteInputState}
         handlePullModels={handlePullModels}

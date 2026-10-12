@@ -2285,6 +2285,8 @@ const DICT: Record<string, [string, string]> = {
   'pro.pull_models_empty': ['未拉取到可用模型', 'No models found from endpoint'],
   'pro.models_applied': ['已成功添加 {count} 个模型', 'Successfully added {count} models'],
   'pro.pull_requires_base_url': ['请先填写接入端点服务地址 (Base URL)', 'Please provide endpoint Base URL first'],
+  'pro.pull_key': ['用于拉取的密钥', 'Key used for discovery'],
+  'pro.pull_requires_key': ['请选择用于拉取模型的密钥', 'Choose the key used to discover models'],
   'pro.base_url_required': ['该提供商类型必须填写接入端点 Base URL', 'This provider type requires an endpoint Base URL'],
   'pro.alias_optional': ['别名 (可选)', 'alias (optional)'],
   'pro.level_none': ['关闭思考', 'Disable thinking'],

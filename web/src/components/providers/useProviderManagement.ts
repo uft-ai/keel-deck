@@ -107,6 +107,7 @@ export function useProviderManagement({
   // Endpoint models pull state & custom models expand state
   const modelFetchSeqRef = useRef<number>(0);
   const [isPullingModels, setIsPullingModels] = useState(false);
+  const [pullKeyID, setPullKeyID] = useState('');
   const [endpointModels, setEndpointModels] = useState<string[]>([]);
   const [isModelPickerOpen, setIsModelPickerOpen] = useState(false);
   const [expandedModelIds, setExpandedModelIds] = useState<Set<string>>(new Set());
@@ -118,12 +119,16 @@ export function useProviderManagement({
       return;
     }
 
-    // The first row that still names a stored key is the one to pull, not always
-    // the provider's first key. A typed secret or a changed connection is sent
-    // instead, and then no stored key is named.
-    const storedKey = formKeys.find((key) => key.authIndex && (key.apiKey || '').trim() === (key.storedAPIKey || '').trim());
-    const typedKey = formKeys.find((key) => key.apiKey && key.apiKey.trim() !== '');
-    const typedProxy = formKeys.find((key) => key.proxyUrl && key.proxyUrl.trim() !== '');
+    // Several keys require an explicit choice. One usable row can be selected
+    // without asking, and that one row supplies both its secret and its proxy.
+    const usableKeys = formKeys.filter((key) => (key.apiKey || '').trim() !== '' || (key.proxyUrl || '').trim() !== '');
+    const selectedKey = usableKeys.length > 1
+      ? usableKeys.find((key) => key.id === pullKeyID)
+      : usableKeys[0];
+    if (usableKeys.length > 1 && !selectedKey) {
+      toast.warning(t('pro.pull_requires_key'));
+      return;
+    }
 
     const seq = ++modelFetchSeqRef.current;
     setIsPullingModels(true);
@@ -135,11 +140,11 @@ export function useProviderManagement({
         family: formFamily,
         baseURL: rawUrl,
         storedBaseURL: editingProvider?.base_url,
-        apiKey: (storedKey ?? typedKey)?.apiKey || '',
-        storedAPIKey: storedKey?.storedAPIKey,
-        proxyURL: (storedKey ?? typedProxy)?.proxyUrl || '',
-        storedProxyURL: storedKey?.proxyUrl,
-        authIndex: storedKey?.authIndex,
+        apiKey: selectedKey?.apiKey || '',
+        storedAPIKey: selectedKey?.storedAPIKey,
+        proxyURL: selectedKey?.proxyUrl || '',
+        storedProxyURL: selectedKey?.storedProxyURL,
+        authIndex: selectedKey?.authIndex,
         headers: headersPayload(),
         storedHeaders: editingProvider?.headers,
       }));
@@ -601,6 +606,7 @@ export function useProviderManagement({
           isChanging: false,
           authIndex: k.auth_index,
           storedAPIKey: k.api_key || '',
+          storedProxyURL: k.proxy_url || '',
         }))
       );
       setExpandedKeyIds(new Set());
@@ -819,6 +825,8 @@ export function useProviderManagement({
     handleAddPickedModels,
     setEndpointModels,
     isPullingModels,
+    pullKeyID,
+    setPullKeyID,
     setIsPullingModels,
     modelFetchSeqRef,
     websiteInputState,

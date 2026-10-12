@@ -23,8 +23,8 @@ const stored: ModelPullDraft = {
   storedBaseURL: 'https://api.nan.builders/v1',
   apiKey: 'sk-stored',
   storedAPIKey: 'sk-stored',
-  proxyURL: '',
-  storedProxyURL: '',
+  proxyURL: 'http://stored.example',
+  storedProxyURL: 'http://stored.example',
   authIndex: 'nan-2',
   headers: { 'X-Tenant': 'keel' },
   storedHeaders: { 'X-Tenant': 'keel' },
@@ -52,6 +52,7 @@ assert.equal(changedURL.base_url, 'https://other.example/v1');
 const changedProxy = posted({ ...stored, proxyURL: 'http://proxy.example' });
 assert.equal('auth_index' in changedProxy, false);
 assert.equal(changedProxy.proxy_url, 'http://proxy.example');
+assert.notEqual(changedProxy.proxy_url, stored.storedProxyURL);
 
 const changedHeaders = posted({ ...stored, headers: { 'X-Tenant': 'other' } });
 assert.equal('auth_index' in changedHeaders, false);

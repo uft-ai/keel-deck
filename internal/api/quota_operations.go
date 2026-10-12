@@ -102,9 +102,10 @@ func (h *Handler) redeemQuotaCredit(ctx context.Context, client *management.Clie
 	}
 
 	// Re-read usage right away so the redeemed credit is reflected before the
-	// next scheduled poll.
+	// next scheduled poll. This credential was already proven to be Codex, so
+	// it has no configured NaN model list.
 	prior := h.loadPriorNormalizedQuota(ctx, authIndex)
-	refreshed, _ := svc.RefreshCredentialQuota(ctx, *foundFile, prior)
+	refreshed, _ := svc.RefreshCredentialQuotaModels(ctx, *foundFile, prior, nil)
 	if refreshed != nil && h.repo != nil && refreshed.Status != "error" && refreshed.Status != "stale" {
 		_ = h.persistNormalizedQuotaSnapshot(ctx, refreshed)
 	}

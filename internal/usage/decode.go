@@ -113,17 +113,21 @@ type Payload struct {
 	XForwardedFor *string    `json:"x_forwarded_for"`
 	UserAgent     *string    `json:"user_agent"`
 	Tokens        TokenStats `json:"tokens"`
-	Stream        *bool      `json:"stream"`
-	Failed        bool       `json:"failed"`
-	Fail          FailDetail `json:"fail"`
-	Generate      *bool      `json:"generate"`
-	Provider      string     `json:"provider"`
-	ExecutorType  string     `json:"executor_type"`
-	Model         string     `json:"model"`
-	Alias         *string    `json:"alias"`
-	Endpoint      string     `json:"endpoint"`
-	AuthType      string     `json:"auth_type"`
-	APIKey        string     `json:"api_key"`
+	// TokensReported is tri-state. Nil is a legacy record that omitted the
+	// field. False means the provider explicitly reported no usable counters.
+	// True means the counters were reported, including genuine zeros.
+	TokensReported *bool      `json:"tokens_reported,omitempty"`
+	Stream         *bool      `json:"stream"`
+	Failed         bool       `json:"failed"`
+	Fail           FailDetail `json:"fail"`
+	Generate       *bool      `json:"generate"`
+	Provider       string     `json:"provider"`
+	ExecutorType   string     `json:"executor_type"`
+	Model          string     `json:"model"`
+	Alias          *string    `json:"alias"`
+	Endpoint       string     `json:"endpoint"`
+	AuthType       string     `json:"auth_type"`
+	APIKey         string     `json:"api_key"`
 	// AccessProvider names the CPA access provider that authenticated the
 	// caller, and IsNativeKey reports whether the caller's key came from
 	// CPA's native configured-key provider. Both describe caller
@@ -210,6 +214,7 @@ type Event struct {
 	CacheReadTokens     int64
 	CacheCreationTokens int64
 	TotalTokens         int64
+	TokensReported      *bool
 }
 
 // DecodeEvent converts a raw queue message into an Event.
@@ -279,6 +284,7 @@ func DecodeEventWithFingerprinter(raw string, instanceID string, observedAt time
 		CacheReadTokens:     nonNegative(payload.Tokens.CacheReadTokens),
 		CacheCreationTokens: nonNegative(payload.Tokens.CacheCreationTokens),
 		TotalTokens:         totalTokens(payload.Tokens),
+		TokensReported:      payload.TokensReported,
 	}
 	event.ResponseModel = boundedSafe(payload.ResponseModel, 256)
 	event.ModelSubstituted = isServedModelSubstituted(event.Model, event.ModelAlias, event.ResponseModel)

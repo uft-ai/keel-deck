@@ -487,3 +487,132 @@ func TestQuotaOverviewAdvertisesPluginRefresh(t *testing.T) {
 			overview.Quotas[0].Capabilities)
 	}
 }
+
+func TestConfiguredNanQuotaSubjectsAreSecretFree(t *testing.T) {
+	const secret = "sk-nan-secret-value-1234"
+	const managementKey = "management-secret"
+	cpaServer := newFakeCPA(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("Authorization") != "Bearer "+managementKey {
+			writer.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/v8/management/credentials":
+			_, _ = writer.Write([]byte(`{"files":[{"name":"codex.json","auth_index":"codex-idx-1","type":"codex","provider":"codex"}]}`))
+		case "/v0/management/openai-compatibility":
+			_, _ = writer.Write([]byte(`{"openai-compatibility":[
+				{"name":"nan","base-url":"https://api.nan.builders/v1","api-key-entries":[
+					{"api-key":"` + secret + `","auth-index":"nan-1"},
+					{"api-key":"sk-second-secret-value","auth-index":"nan-2"},
+					{"api-key":"sk-missing-index-value"}
+				]},
+				{"name":"nan","disabled":true,"base-url":"https://api.nan.builders/v1","api-key-entries":[
+					{"api-key":"sk-disabled-secret-value","auth-index":"nan-disabled"},
+					{"api-key":"sk-repeat-secret-value","auth-index":"nan-repeat"}
+				]},
+				{"name":"other","base-url":"https://other.example/v1","api-key-entries":[
+					{"api-key":"sk-other-secret-value","auth-index":"other-1"}
+				]},
+				{"name":"nan","base-url":"https://api.nan.builders/v1","api-key-entries":[
+					{"api-key":"sk-repeat-again-secret","auth-index":"nan-repeat"}
+				]}
+			]}`))
+		default:
+			writer.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer cpaServer.Close()
+
+	handler := testHandler(t, "")
+	appServer := httptest.NewServer(handler.Router())
+	defer appServer.Close()
+	cipher, err := crypto.New("01234567890123456789012345678901")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciphertext, nonce, err := cipher.Encrypt([]byte(managementKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := handler.repo.UpsertInstance(context.Background(), domain.CPAInstance{
+		ID: "default", Name: "Default", BaseURL: cpaServer.URL,
+		UsageAddr: strings.TrimPrefix(cpaServer.URL, "http://"),
+		ManagementKeyCiphertext: ciphertext, ManagementKeyNonce: nonce,
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Jar: jar}
+	login, err := client.Post(appServer.URL+"/api/auth/login", "application/json", bytes.NewBufferString(`{"password":"management-secret"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	login.Body.Close()
+
+	response, err := client.Get(appServer.URL + "/api/v1/management/quota")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("overview = %d %s", response.StatusCode, body)
+	}
+	if bytes.Contains(body, []byte(secret)) || bytes.Contains(body, []byte("sk-")) {
+		t.Fatalf("overview contains a secret: %s", body)
+	}
+	var overview struct {
+		Quotas []quota.NormalizedQuota `json:"quotas"`
+	}
+	if err := json.Unmarshal(body, &overview); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]quota.NormalizedQuota{}
+	for _, item := range overview.Quotas {
+		seen[item.AuthIndex] = item
+	}
+	for _, want := range []string{"codex-idx-1", "nan-1", "nan-2", "nan-disabled"} {
+		if _, ok := seen[want]; !ok {
+			t.Fatalf("missing %s in %#v", want, overview.Quotas)
+		}
+	}
+	if _, ok := seen["nan-repeat"]; ok {
+		t.Fatal("duplicate index was listed")
+	}
+	if _, ok := seen["other-1"]; ok {
+		t.Fatal("unrelated provider was listed")
+	}
+	if seen["nan-1"].Provider != "nan" || seen["nan-1"].Type != "nan" || seen["nan-1"].Name != "nan nan-1" || seen["nan-disabled"].Disabled != true {
+		t.Fatalf("configured subjects = %#v", seen)
+	}
+	if seen["codex-idx-1"].Provider != "codex" {
+		t.Fatalf("oauth subject changed: %#v", seen["codex-idx-1"])
+	}
+
+	detail, err := client.Get(appServer.URL + "/api/v1/management/quota/nan-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer detail.Body.Close()
+	if detail.StatusCode != http.StatusOK {
+		payload, _ := io.ReadAll(detail.Body)
+		t.Fatalf("detail = %d %s", detail.StatusCode, payload)
+	}
+	missing, err := client.Get(appServer.URL + "/api/v1/management/quota/nan-repeat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer missing.Body.Close()
+	if missing.StatusCode != http.StatusNotFound {
+		t.Fatalf("duplicate detail = %d", missing.StatusCode)
+	}
+}

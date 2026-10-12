@@ -205,6 +205,9 @@ type UsageEventRow struct {
 	XForwardedFor  *string          `json:"x_forwarded_for,omitempty"`
 	UserAgent      *string          `json:"user_agent,omitempty"`
 	Tokens         usage.TokenStats `json:"tokens"`
+	// TokensReported is nil for a legacy record, false when the provider
+	// explicitly reported no counters, and true when counters were reported.
+	TokensReported *bool `json:"tokens_reported,omitempty"`
 	// ResourceID and ResourceName join the event back to the user-owned Oh My
 	// CPA resource record, which is what turns a raw request into something a
 	// user recognises. Both are null until the credential is triaged.
@@ -324,7 +327,7 @@ func (r *Repository) ListUsageEvents(ctx context.Context, filter UsageEventFilte
 		       e.service_tier, e.response_service_tier, e.failed, e.generate, e.stream,
 		       e.latency_ms, e.ttft_ms, e.client_ip, e.x_forwarded_for, e.user_agent,
 		       e.input_tokens, e.output_tokens, e.reasoning_tokens, e.cached_tokens,
-		       e.cache_read_tokens, e.cache_creation_tokens, e.total_tokens,
+		       e.cache_read_tokens, e.cache_creation_tokens, e.total_tokens, e.tokens_reported,
 		       d.id, d.cpa_resource_name AS resource_name,
 		       e.cost_nanos / 1000000000.0 AS cost_usd, e.pricing_status, e.price_version_id,
 		       e.response_model, e.model_substituted, e.fail_status_code
@@ -355,6 +358,7 @@ func (r *Repository) ListUsageEvents(ctx context.Context, filter UsageEventFilte
 		var streamVal sql.NullInt64
 		var resourceID, resourceName sql.NullString
 		var costUSD sql.NullFloat64
+		var tokensReported sql.NullInt64
 		if errScan := rows.Scan(
 			&row.ID, &row.InstanceID, &row.EventKey, &row.RequestID, &row.TimestampMS,
 			&row.Provider, &row.Endpoint, &row.ExecutorType, &row.AuthType, &row.AuthIndex,
@@ -363,7 +367,7 @@ func (r *Repository) ListUsageEvents(ctx context.Context, filter UsageEventFilte
 			&row.LatencyMS, &row.TTFTMS, &row.ClientIP, &row.XForwardedFor, &row.UserAgent,
 			&row.Tokens.InputTokens, &row.Tokens.OutputTokens, &row.Tokens.ReasoningTokens,
 			&row.Tokens.CachedTokens, &row.Tokens.CacheReadTokens, &row.Tokens.CacheCreationTokens,
-			&row.Tokens.TotalTokens, &resourceID, &resourceName, &costUSD, &row.PricingStatus, &row.PriceVersionID,
+			&row.Tokens.TotalTokens, &tokensReported, &resourceID, &resourceName, &costUSD, &row.PricingStatus, &row.PriceVersionID,
 			&row.ResponseModel, &row.ModelSubstituted, &row.FailStatusCode); errScan != nil {
 			return page, fmt.Errorf("scan usage event: %w", errScan)
 		}
@@ -384,6 +388,7 @@ func (r *Repository) ListUsageEvents(ctx context.Context, filter UsageEventFilte
 		if costUSD.Valid {
 			row.CostUSD = &costUSD.Float64
 		}
+		row.TokensReported = reportedTokens(tokensReported)
 		row.HasRequestLog = strings.TrimSpace(row.RequestID) != ""
 		page.Items = append(page.Items, row)
 	}
@@ -415,6 +420,7 @@ func (r *Repository) GetUsageEvent(ctx context.Context, id int64) (UsageEventRow
 	var isNativeKey sql.NullInt64
 	var resourceID, resourceName sql.NullString
 	var costUSD sql.NullFloat64
+	var tokensReported sql.NullInt64
 	err := r.SQL().QueryRowContext(ctx, `
 		SELECT e.id, e.instance_id, e.event_key, e.request_id, e.timestamp_ms,
 		       e.provider, e.endpoint, e.executor_type, e.auth_type, e.auth_index,
@@ -422,7 +428,7 @@ func (r *Repository) GetUsageEvent(ctx context.Context, id int64) (UsageEventRow
 		       e.service_tier, e.response_service_tier, e.failed, e.generate, e.stream,
 		       e.latency_ms, e.ttft_ms, e.client_ip, e.x_forwarded_for, e.user_agent,
 		       e.input_tokens, e.output_tokens, e.reasoning_tokens, e.cached_tokens,
-		       e.cache_read_tokens, e.cache_creation_tokens, e.total_tokens,
+		       e.cache_read_tokens, e.cache_creation_tokens, e.total_tokens, e.tokens_reported,
 		       d.id, d.cpa_resource_name AS resource_name,
 		       e.cost_nanos / 1000000000.0 AS cost_usd, e.pricing_status, e.price_version_id,
 		       e.response_model, e.model_substituted, e.fail_status_code, e.fail_body, e.response_headers,
@@ -444,7 +450,7 @@ func (r *Repository) GetUsageEvent(ctx context.Context, id int64) (UsageEventRow
 		&row.LatencyMS, &row.TTFTMS, &row.ClientIP, &row.XForwardedFor, &row.UserAgent,
 		&row.Tokens.InputTokens, &row.Tokens.OutputTokens, &row.Tokens.ReasoningTokens,
 		&row.Tokens.CachedTokens, &row.Tokens.CacheReadTokens, &row.Tokens.CacheCreationTokens,
-		&row.Tokens.TotalTokens, &resourceID, &resourceName, &costUSD, &row.PricingStatus, &row.PriceVersionID,
+		&row.Tokens.TotalTokens, &tokensReported, &resourceID, &resourceName, &costUSD, &row.PricingStatus, &row.PriceVersionID,
 		&row.ResponseModel, &row.ModelSubstituted, &row.FailStatusCode, &row.FailBody, &row.ResponseHeaders,
 		&row.AccessProvider, &isNativeKey)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -456,6 +462,7 @@ func (r *Repository) GetUsageEvent(ctx context.Context, id int64) (UsageEventRow
 	row.Failed = failed == 1
 	row.Generate = generate == 1
 	row.IsNativeKey = isNativeKey.Valid && isNativeKey.Int64 != 0
+	row.TokensReported = reportedTokens(tokensReported)
 	if streamVal.Valid {
 		isStream := streamVal.Int64 == 1
 		row.Stream = &isStream
@@ -598,6 +605,14 @@ type ClientKeyUsage struct {
 // is exactly the fingerprint a stored alias is keyed by. Records whose caller was
 // not a client key (a provider or endpoint fallback) are excluded: attributing
 // them here would show traffic against a key that never served it.
+func reportedTokens(value sql.NullInt64) *bool {
+	if !value.Valid {
+		return nil
+	}
+	reported := value.Int64 != 0
+	return &reported
+}
+
 func (r *Repository) ClientKeyUsage(ctx context.Context, instanceID string, fromMS, toMS int64) ([]ClientKeyUsage, error) {
 	result := []ClientKeyUsage{}
 	if r == nil || r.SQL() == nil {

@@ -66,6 +66,7 @@ var AllowedURLPrefixes = []string{
 	AntigravitySubscriptionURL,
 	"https://cli-chat-proxy.grok.com/v1/user",
 	XaiSettingsURL,
+	nanQuotaEndpoint,
 }
 
 // IsAllowedQuotaURL verifies that a target URL is in the strict quota allowlist.
@@ -114,6 +115,13 @@ type CPAClient interface {
 	FetchPluginQuota(ctx context.Context, pluginID, authIndex string) (json.RawMessage, error)
 }
 
+// PeriodLedger reads and submits one NaN period observation. A quota client
+// that does not implement it leaves the reading without enforcement delivery.
+type PeriodLedger interface {
+	GetPeriodExhaustion(ctx context.Context, authIndex, model string) (management.PeriodRead, error)
+	PutPeriodExhaustion(ctx context.Context, observation management.PeriodObservation) (management.PeriodRecord, error)
+}
+
 // Service manages live upstream quota fetching, normalization, and actions.
 type Service struct {
 	client CPAClient
@@ -145,6 +153,8 @@ func DetectProvider(fileType, provider string) string {
 		return "meta"
 	case strings.Contains(t, "devin") || strings.Contains(p, "devin"):
 		return "devin"
+	case t == "nan" || p == "nan" || p == "openai-compatibility-nan" || p == "openai-compatible-nan":
+		return "nan"
 	default:
 		if t != "" {
 			return t
@@ -177,7 +187,7 @@ func CapabilitiesForProvider(provider string) QuotaCapabilities {
 			ClearCooldownSupported: true,
 			ResetCreditSupported:   true,
 		}
-	case "claude", "antigravity", "kimi", "xai", "devin", "meta":
+	case "claude", "antigravity", "kimi", "xai", "devin", "meta", "nan":
 		return QuotaCapabilities{
 			RefreshSupported:       true,
 			ClearCooldownSupported: true,
@@ -237,6 +247,27 @@ func sanitizeError(statusCode int, rawBody []byte) string {
 	return fmt.Sprintf("HTTP %d", statusCode)
 }
 
+func (s *Service) fetchNanQuota(ctx context.Context, authIndex string) (NanQuotaReport, []QuotaWindow, error) {
+	response, err := s.SafeApiCall(ctx, authIndex, http.MethodGet, nanQuotaEndpoint, management.WithQuotaCredential(map[string]string{
+		"Accept": "application/json", "User-Agent": nanQuotaUserAgent,
+	}), "")
+	if err != nil {
+		return NanQuotaReport{}, nil, err
+	}
+	if response.StatusCode != http.StatusOK {
+		return NanQuotaReport{}, nil, fmt.Errorf("nan quota status %d", response.StatusCode)
+	}
+	body, err := response.NormalizedBody()
+	if err != nil {
+		return NanQuotaReport{}, nil, err
+	}
+	report, err := ParseNanQuota(body)
+	if err != nil {
+		return NanQuotaReport{}, nil, err
+	}
+	return report, NormalizeNanQuota(report), nil
+}
+
 func resolveAntigravityProjectID(file management.AuthFile) string {
 	if pid := strings.TrimSpace(file.ProjectID); pid != "" {
 		return pid
@@ -270,6 +301,12 @@ func resolveCodexAccountID(file management.AuthFile) string {
 
 // RefreshCredentialQuota performs a live upstream query using full AuthFile metadata.
 func (s *Service) RefreshCredentialQuota(ctx context.Context, file management.AuthFile, prior *NormalizedQuota) (*NormalizedQuota, error) {
+	return s.RefreshCredentialQuotaModels(ctx, file, prior, nil)
+}
+
+// RefreshCredentialQuotaModels is RefreshCredentialQuota with the exact
+// configured upstream models a NaN key must observe. Other providers ignore it.
+func (s *Service) RefreshCredentialQuotaModels(ctx context.Context, file management.AuthFile, prior *NormalizedQuota, models []string) (*NormalizedQuota, error) {
 	nowMS := time.Now().UnixMilli()
 	authIndex := strings.TrimSpace(file.AuthIndex)
 	stdProvider := DetectProvider(file.Type, file.Provider)
@@ -319,6 +356,71 @@ func (s *Service) RefreshCredentialQuota(ctx context.Context, file management.Au
 		}
 	} else {
 		switch stdProvider {
+		case "nan":
+			ledger, hasLedger := s.client.(PeriodLedger)
+			if !hasLedger {
+				fetchErr = errors.New("NaN period ledger is not configured")
+				break
+			}
+			models = exactModels(models)
+			if len(models) == 0 {
+				fetchErr = errors.New("NaN quota refresh has no configured model")
+				break
+			}
+			reads := make(map[string]management.PeriodRead, len(models))
+			var readErr error
+			for _, model := range models {
+				read, err := ledger.GetPeriodExhaustion(ctx, authIndex, model)
+				if err != nil {
+					readErr = err
+					result.PeriodDeliveries = append(result.PeriodDeliveries, PeriodDelivery{Model: model, Status: periodDeliveryStatus(err), Error: security.RedactText(err.Error())})
+					continue
+				}
+				reads[model] = read
+			}
+			report, windows, err := s.fetchNanQuota(ctx, authIndex)
+			if err != nil {
+				fetchErr = err
+				break
+			}
+			result.Windows = windows
+			if report.AccountPeriodStart != nil {
+				if result.RawSignals == nil {
+					result.RawSignals = map[string]string{}
+				}
+				result.RawSignals["nan_account_period_start"] = report.AccountPeriodStart.UTC().Format(time.RFC3339)
+			}
+			if readErr != nil && len(reads) == 0 {
+				break
+			}
+			fetchID := uuid.NewString()
+			for _, model := range models {
+				read, ok := reads[model]
+				if !ok {
+					continue
+				}
+				version := uint64(0)
+				if read.Record != nil {
+					version = read.Record.Version
+				}
+				observation, observationErr := NanPeriodObservation(PeriodObservationInput{
+					ObservationID:  fmt.Sprintf("deck-%s-%s-%d-%s", authIndex, model, version, fetchID),
+					BasedOnVersion: version, AuthIndex: authIndex, Model: model,
+					NotBefore: read.ObservedAt, Report: report,
+				})
+				if observationErr != nil {
+					result.PeriodDeliveries = append(result.PeriodDeliveries, PeriodDelivery{Model: model, Status: "not_submitted", Error: observationErr.Error()})
+					continue
+				}
+				record, putErr := ledger.PutPeriodExhaustion(ctx, observation)
+				if putErr != nil {
+					result.PeriodDeliveries = append(result.PeriodDeliveries, PeriodDelivery{Model: model, State: observation.State, Status: periodDeliveryStatus(putErr), Error: security.RedactText(putErr.Error())})
+					continue
+				}
+				blocked := record.Blocked
+				result.PeriodDeliveries = append(result.PeriodDeliveries, PeriodDelivery{Model: model, State: observation.State, Status: "accepted", Version: record.Version, Blocked: &blocked})
+			}
+
 		case "codex":
 			plan, windows, credits, err := s.fetchCodexQuota(ctx, file, nowMS)
 			if err != nil {

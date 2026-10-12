@@ -474,6 +474,20 @@ says so with its own status and copy. Every provider's window parser can produce
 that reading, and it is what an unrecognized upstream document shape now surfaces
 as (ADR 0071).
 
+NaN quota subjects also include configured OpenAI-compatible keys. A provider
+qualifies when its name is `nan`, ignoring case, or its base URL host is exactly
+`api.nan.builders`; a renamed provider on that host remains listed. The overview
+addresses each unique `auth_index` without returning the key. A missing or
+repeated index is reported as a diagnostic and cannot be refreshed. A gateway
+that has no compatibility route contributes none of these subjects.
+
+A NaN refresh reads Relay's period ledger before fetching quota. CPA may return
+the quota document as a JSON string inside `api-call`, and that string is
+unwrapped before parsing. The resulting observation uses the ledger's observed
+time and version. Relay decides whether the block changes. A rejected or
+unavailable delivery remains visible and does not turn the quota reading into a
+healthy allowance.
+
 ## Credential management actions
 
 `POST /api/v1/management/auth-files/refresh` accepts `name` and `auth_index` for

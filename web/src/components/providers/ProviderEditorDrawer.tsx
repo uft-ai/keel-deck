@@ -91,6 +91,8 @@ interface ProviderEditorDrawerProps extends Pick<
   | 'endpointModels'
   | 'setEndpointModels'
   | 'isPullingModels'
+  | 'pullKeyID'
+  | 'setPullKeyID'
   | 'modelFetchSeqRef'
   | 'websiteInputState'
   | 'handlePullModels'
@@ -191,6 +193,8 @@ export function ProviderEditorDrawer({
     endpointModels,
     setEndpointModels,
     isPullingModels,
+    pullKeyID,
+    setPullKeyID,
     modelFetchSeqRef,
     websiteInputState,
     handlePullModels,
@@ -680,6 +684,19 @@ export function ProviderEditorDrawer({
             onToggle={() => setModelsSectionOpen((prev) => !prev)}
           >
                 {/* Action Row: Fetch model list on right */}
+                {formKeys.filter((key) => (key.apiKey || '').trim() !== '' || (key.proxyUrl || '').trim() !== '').length > 1 && (
+                  <Select
+                    aria-label={t('pro.pull_key')}
+                    value={pullKeyID || undefined}
+                    placeholder={t('pro.pull_requires_key')}
+                    onChange={setPullKeyID}
+                    options={formKeys.flatMap((key, index) => (
+                      (key.apiKey || '').trim() !== '' || (key.proxyUrl || '').trim() !== ''
+                        ? [{ value: key.id, label: `${t('pro.api_key_label')} ${index + 1}${key.authIndex ? ` · ${key.authIndex}` : ''}` }]
+                        : []
+                    ))}
+                  />
+                )}
                 <div className={styles['section-actions']}>
                   <div className={styles['section-note']}>
                     {endpointModels.length > 0 && (

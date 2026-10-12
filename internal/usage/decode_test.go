@@ -200,6 +200,30 @@ func TestDecodeEventInfersTotalWhenAbsent(t *testing.T) {
 	}
 }
 
+func TestDecodeEventPreservesTokenReportingState(t *testing.T) {
+	legacy, err := DecodeEvent(`{"request_id":"legacy","tokens":{"input_tokens":0,"output_tokens":0}}`, "default", time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacy.TokensReported != nil || legacy.TotalTokens != 0 {
+		t.Fatalf("legacy = %+v", legacy.TokensReported)
+	}
+	missing, err := DecodeEvent(`{"request_id":"missing","tokens_reported":false,"tokens":{"input_tokens":0}}`, "default", time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if missing.TokensReported == nil || *missing.TokensReported {
+		t.Fatalf("missing = %+v", missing.TokensReported)
+	}
+	reported, err := DecodeEvent(`{"request_id":"reported","tokens_reported":true,"tokens":{"input_tokens":0,"output_tokens":0}}`, "default", time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reported.TokensReported == nil || !*reported.TokensReported || reported.InputTokens != 0 {
+		t.Fatalf("reported zero = %+v input %d", reported.TokensReported, reported.InputTokens)
+	}
+}
+
 func TestDecodeEventTreatsWebsocketWarmupAsNonGenerating(t *testing.T) {
 	// Older CPA builds omit "generate"; a successful zero-token websocket call
 	// is a warm-up and must not inflate token averages.

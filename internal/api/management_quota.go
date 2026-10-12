@@ -59,7 +59,7 @@ func (h *Handler) refreshCredentialQuota(writer http.ResponseWriter, request *ht
 	}
 
 	ctx := request.Context()
-	filesResp, err := client.AuthFiles(ctx)
+	subjects, err := quotaSubjects(ctx, client)
 	if err != nil {
 		writeCPAFacadeError(writer, err)
 		return
@@ -74,17 +74,15 @@ func (h *Handler) refreshCredentialQuota(writer http.ResponseWriter, request *ht
 		return h.recordAudit(request, "quota.refresh", "quota", file.AuthIndex, "attempt", map[string]any{"provider": "meta", "upstream_action": "key_exchange"})
 	}
 
-	fileMap := make(map[string]management.AuthFile)
-	for _, f := range filesResp.Files {
-		idx := strings.TrimSpace(f.AuthIndex)
-		if idx != "" {
-			fileMap[idx] = f
-		}
+	fileMap := make(map[string]quotaSubject, len(subjects))
+	for _, subject := range subjects {
+		fileMap[strings.TrimSpace(subject.File.AuthIndex)] = subject
 	}
 
 	targetIndex := strings.TrimSpace(req.AuthIndex)
 	if targetIndex != "" {
-		file, exists := fileMap[targetIndex]
+		subject, exists := fileMap[targetIndex]
+		file := subject.File
 		if !exists {
 			writeError(writer, http.StatusNotFound, fmt.Sprintf("credential with auth_index %q not found", targetIndex))
 			return
@@ -96,7 +94,7 @@ func (h *Handler) refreshCredentialQuota(writer http.ResponseWriter, request *ht
 		}
 		prior := h.loadPriorNormalizedQuota(ctx, targetIndex)
 		svc := quota.NewService(client)
-		refreshed, err := svc.RefreshCredentialQuota(ctx, file, prior)
+		refreshed, err := svc.RefreshCredentialQuotaModels(ctx, file, prior, subject.Models)
 		if err != nil {
 			writeError(writer, http.StatusBadGateway, fmt.Sprintf("refresh quota failed: %v", err))
 			return
@@ -143,8 +141,8 @@ func (h *Handler) refreshCredentialQuota(writer http.ResponseWriter, request *ht
 	}
 
 	for _, targetIndex := range targetIndexes {
-		if file, exists := fileMap[strings.TrimSpace(targetIndex)]; exists {
-			if err := auditMetaAttempt(file); err != nil {
+		if subject, exists := fileMap[strings.TrimSpace(targetIndex)]; exists {
+			if err := auditMetaAttempt(subject.File); err != nil {
 				writeAuditFailure(writer, "quota refresh attempt could not be audited")
 				return
 			}
@@ -157,25 +155,26 @@ func (h *Handler) refreshCredentialQuota(writer http.ResponseWriter, request *ht
 
 	for i, idx := range targetIndexes {
 		cleanIdx := strings.TrimSpace(idx)
-		file, exists := fileMap[cleanIdx]
+		subject, exists := fileMap[cleanIdx]
 		if !exists {
 			continue
 		}
+		file := subject.File
 		wg.Add(1)
-		go func(index int, authIdx string, f management.AuthFile) {
+		go func(index int, authIdx string, f management.AuthFile, models []string) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
 			prior := h.loadPriorNormalizedQuota(ctx, authIdx)
-			refreshed, rErr := svc.RefreshCredentialQuota(ctx, f, prior)
+			refreshed, rErr := svc.RefreshCredentialQuotaModels(ctx, f, prior, models)
 			if rErr == nil && refreshed != nil {
 				results[index] = refreshed
 				if h.repo != nil && refreshed.Status != "error" && refreshed.Status != "stale" {
 					_ = h.persistNormalizedQuotaSnapshot(ctx, refreshed)
 				}
 			}
-		}(i, cleanIdx, file)
+		}(i, cleanIdx, file, subject.Models)
 	}
 	wg.Wait()
 
@@ -436,38 +435,20 @@ func (h *Handler) getCredentialQuotaDetail(writer http.ResponseWriter, request *
 	}
 
 	ctx := request.Context()
-	filesResp, err := client.AuthFiles(ctx)
+	subjects, err := quotaSubjects(ctx, client)
 	if err != nil {
 		writeCPAFacadeError(writer, err)
 		return
 	}
-
-	var targetFile *management.AuthFile
-	for _, f := range filesResp.Files {
-		if strings.TrimSpace(f.AuthIndex) == authIndex {
-			targetFile = &f
-			break
-		}
-	}
-	if targetFile == nil {
+	subject, found := findQuotaSubject(subjects, authIndex)
+	if !found {
 		writeError(writer, http.StatusNotFound, fmt.Sprintf("credential %q not found", authIndex))
 		return
 	}
+	targetFile := subject.File
 
 	nowMS := h.now().UnixMilli()
-	stdProvider := quota.DetectProvider(targetFile.Type, targetFile.Provider)
-	caps := quota.CapabilitiesForFile(*targetFile)
-
-	normalized := quota.NormalizedQuota{
-		AuthIndex:    authIndex,
-		Name:         targetFile.Name,
-		Type:         targetFile.Type,
-		Provider:     stdProvider,
-		Disabled:     targetFile.Disabled,
-		ObservedAtMS: nowMS,
-		Capabilities: caps,
-		Windows:      []quota.QuotaWindow{},
-	}
+	normalized := normalizedQuotaForSubject(subject, nowMS)
 
 	if h.repo != nil {
 		if cooldowns, err := h.repo.BatchCorrelatedCooldowns(ctx, []string{authIndex}, nowMS); err == nil {
@@ -535,20 +516,17 @@ type quotaOverviewData struct {
 }
 
 func (h *Handler) buildQuotaOverview(ctx context.Context, client *management.Client) (quotaOverviewData, error) {
-	filesResp, err := client.AuthFiles(ctx)
+	subjects, err := quotaSubjects(ctx, client)
 	if err != nil {
 		return quotaOverviewData{}, err
 	}
 
-	authIndexes := make([]string, 0, len(filesResp.Files))
-	fileMap := make(map[string]management.AuthFile)
-	for _, file := range filesResp.Files {
-		authIndex := strings.TrimSpace(file.AuthIndex)
-		if authIndex == "" {
-			continue
-		}
+	authIndexes := make([]string, 0, len(subjects))
+	fileMap := make(map[string]management.AuthFile, len(subjects))
+	for _, subject := range subjects {
+		authIndex := strings.TrimSpace(subject.File.AuthIndex)
 		authIndexes = append(authIndexes, authIndex)
-		fileMap[authIndex] = file
+		fileMap[authIndex] = subject.File
 	}
 
 	nowMS := h.now().UnixMilli()

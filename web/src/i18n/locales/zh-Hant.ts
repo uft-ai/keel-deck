@@ -1986,6 +1986,8 @@ export const ZH_HANT: Readonly<Record<string, string>> = {
   "pro.pull_models_empty": "未取得到可用模型",
   "pro.models_applied": "已成功新增 {count} 個模型",
   "pro.pull_requires_base_url": "請先填寫接入端點服務地址 (Base URL)",
+  "pro.pull_key": "用於拉取的密鑰",
+  "pro.pull_requires_key": "請選擇用於拉取模型的密鑰",
   "pro.base_url_required": "該提供商類型必須填寫接入端點 Base URL",
   "pro.alias_optional": "別名 (可選)",
   "pro.level_none": "關閉思考",
