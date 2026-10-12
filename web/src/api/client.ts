@@ -802,6 +802,15 @@ export const api = {
     return request<UsageEventDetail>(`/usage/events/${id}`, { method: 'GET' });
   },
 
+  async getUsageEventInspector(id: number): Promise<import('../types/usageEvents').RequestInspector> {
+    return request(`/usage/events/${id}/inspector`, { method: 'GET' });
+  },
+
+  async exportUsageEventInspector(id: number): Promise<Blob> {
+    const { apiBaseUrl } = getAppConfig();
+    return downloadBlob(`${apiBaseUrl}/usage/events/${id}/inspector/export`);
+  },
+
   async downloadUsageEventRequestLog(id: number): Promise<Blob> {
     const { apiBaseUrl } = getAppConfig();
     return downloadBlob(`${apiBaseUrl}/usage/events/${id}/request-log`);

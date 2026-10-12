@@ -3,6 +3,7 @@ import fs from 'node:fs';
 
 import { sleep } from '../probe.mjs';
 import { pastDeadline, until } from '../harness.mjs';
+import { requestInspectorResponse } from '../request-inspector-fixture.mjs';
 
 /**
  * Probes for the request-record console: the column geometry and truncation, the
@@ -809,9 +810,16 @@ export async function requestListInteractions({ base, page, check }) {
       overflow: panel.scrollWidth - panel.clientWidth,
     };
   });
-  check('diagnostics names the failure, then its headers, before credential, client and log context',
-    diagnostics.sections.length === 5 && diagnostics.status === 'HTTP 502' && diagnostics.body === INTERACTION_FAILURE_BODY,
+  check('diagnostics names the failure, then its headers, before credential, client, inspection and log context',
+    diagnostics.sections.length === 6 && diagnostics.status === 'HTTP 502' && diagnostics.body === INTERACTION_FAILURE_BODY,
     JSON.stringify(diagnostics.sections));
+  // The inspector reads the handler-certified wire case, so a drifted mock or a
+  // malformed response shows up here as a missing section, not a blank drawer.
+  const inspectorSections = page.locator('.request-detail .request-inspector-section');
+  await until(async () => (await inspectorSections.count()) > 0, { label: 'request inspector sections' });
+  check('the request inspector renders every retained log section it was sent',
+    await inspectorSections.count() === requestInspectorResponse('retained-upstream-error').json.sections.length,
+    `sections=${await inspectorSections.count()}`);
   check('response headers are grouped as identifiers, limits and routing',
     JSON.stringify(diagnostics.groups) === JSON.stringify([
       ['cf-ray', 'x-request-id'], ['retry-after', 'x-ratelimit-remaining-requests'], ['cf-cache-status', 'server'],

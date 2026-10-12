@@ -2051,6 +2051,36 @@ the marker. The non-demo scan in `App.runQuotaResets` runs once at startup and
 then on a fixed one-minute ticker. A disabled decision uses the current
 configured subject, not the stored snapshot status.
 
+Streaming redaction retains only an unresolved credential boundary. A URL
+longer than 8 KiB is omitted with an explicit length-limit marker; it is not
+silently truncated. Ordinary conversation and tool text remains.
+
+Request inspection is session-only and no-store. Both
+`/usage/events/{id}/request-log` and `/usage/events/{id}/inspector` redact
+through one streaming redactor before browser bytes are written. Payload
+bodies are not stored in SQLite.
+
+The inspector streams the uncapped Relay log through the redactor into
+`internal/requestlog`, which reads at most a fixed scan budget and bounds each
+section separately (metadata and body), so a large client body cannot hide the
+upstream attempts after it. The response always carries the full DTO: capture
+state and reason, parse state, identity, the limits used, how much was read,
+whether the read reached the end, and how many sections were not kept. Each
+section reports its kind, attempt number, status, metadata (headers), body,
+total body bytes, truncation, binary omission, and Relay's own capture markers
+such as body truncation and `<missing>`. Identity compares the exact
+`Request ID:` line Relay writes; a log without that line is `unknown`, and a log
+for a different request is `mismatch` and its sections are withheld. A Relay
+404 is `expired_unknown`, because a never-captured request and a pruned one
+answer the same way. Relay's `409 capture_pending`, returned while the
+request's log file is still being assembled, is the `pending` state; export
+and download answer the same code before any bytes are sent, so an unfinished
+capture is never shown or saved. Relay's text format does not escape payload lines, so
+section boundaries are inferred from Relay's write order and reported as
+heuristic. `/inspector/export` is the full redacted log as an attachment with
+`nosniff`; a source stream that fails after bytes were sent ends with an
+explicit incomplete-export marker and an audited failure.
+
 `usage_events.tokens_reported` is nullable. Null preserves a legacy record,
 false records an explicit missing usage payload, and true records provider
 counters including zero. Existing token integer columns are unchanged.

@@ -1,0 +1,71 @@
+=== REQUEST INFO ===
+Version: dev
+Request ID: 01a12e30-d92f-7d85-b6a0-d6e8093d62ba
+URL: /v1/chat/completions
+Method: POST
+Downstream Transport: http
+Upstream Transport: http
+Timestamp: 2026-10-12T03:38:35.69589008Z
+
+
+=== HEADERS ===
+Authorization: Bearer sk-c...-123
+Content-Type: application/json
+
+
+=== REQUEST BODY ===
+{"model":"nan/qwen3.8-flash","messages":[{"role":"user","content":"line one\n=== API RESPONSE 9 ===\nnot a marker"}]}
+
+
+=== API REQUEST 1 ===
+Timestamp: 2026-10-12T03:38:35.69591583Z
+Upstream URL: https://api.nan.builders/v1/chat/completions
+HTTP Method: POST
+Auth: provider=openai-compatibility, auth_id=auth-1, label=nan, type=api_key value=sk-u....ret
+
+Headers:
+Authorization: Bearer sk-u...cret
+Content-Type: application/json
+
+Body:
+{"model":"qwen3.8-flash","messages":[]}
+
+=== API REQUEST 2 ===
+Timestamp: 2026-10-12T03:38:35.696019149Z
+Upstream URL: https://api.nan.builders/v1/chat/completions
+HTTP Method: POST
+
+Headers:
+Content-Type: application/json
+
+Body:
+{"model":"qwen3.8-flash","messages":[],"attempt":2}
+
+
+=== API RESPONSE 1 ===
+Timestamp: 2026-10-12T03:38:35.695998609Z
+
+Status: 429
+Headers:
+Content-Type: application/json
+Retry-After: 1
+
+Body:
+{"error":{"message":"rate limited","code":"rate_limit"}}
+
+=== API RESPONSE 2 ===
+Timestamp: 2026-10-12T03:38:35.696033379Z
+
+Status: 200
+Headers:
+Content-Type: application/json
+
+Body:
+{"id":"chatcmpl-1","choices":[{"message":{"content":"hi"}}],"usage":{"prompt_tokens":3,"completion_tokens":1}}
+
+
+=== RESPONSE ===
+Status: 200
+Content-Type: application/json; charset=utf-8
+
+{"choices":[{"message":{"content":"hi"}}],"id":"chatcmpl-1"}

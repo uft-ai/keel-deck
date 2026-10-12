@@ -3,6 +3,7 @@ package management
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -24,6 +25,29 @@ func (c *Client) DownloadRequestLog(ctx context.Context, requestID string) ([]by
 		return nil, ResponseMeta{}, err
 	}
 	return c.doBytes(request, 16*1024*1024)
+}
+
+// OpenRequestLog opens one request log without a 16 MiB cap.
+//
+// The caller closes the body. Streaming export uses this; the bounded
+// DownloadRequestLog remains for callers that need one complete small body.
+func (c *Client) OpenRequestLog(ctx context.Context, requestID string) (io.ReadCloser, error) {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" || strings.ContainsAny(requestID, "/\\") || strings.Contains(requestID, "..") {
+		return nil, errors.New("invalid request id")
+	}
+	request, err := c.newRequest(ctx, http.MethodGet, "/observability/logs/requests/"+url.PathEscape(requestID), nil, "")
+	if err != nil {
+		return nil, err
+	}
+	if err := c.requireManagementV8(ctx); err != nil {
+		return nil, err
+	}
+	response, _, err := c.send(request)
+	if err != nil {
+		return nil, err
+	}
+	return response.Body, nil
 }
 
 // DefaultLogsLimit and MaxLogsLimit bound one incremental log read.

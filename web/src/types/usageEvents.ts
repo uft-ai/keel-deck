@@ -91,6 +91,47 @@ export interface UsageEvent {
   price_version_id?: number | null;
 }
 
+/** One bounded section of a retained Relay request log. */
+export interface RequestInspectorSection {
+  kind:
+    | 'unrecognized'
+    | 'request_info'
+    | 'headers'
+    | 'request_body'
+    | 'websocket_timeline'
+    | 'api_websocket_timeline'
+    | 'api_request'
+    | 'api_error_response'
+    | 'api_response'
+    | 'response';
+  name: string;
+  /** Upstream attempt number; absent for unnumbered sections. */
+  attempt?: number;
+  status?: number;
+  meta?: string;
+  body?: string;
+  /** Every body byte read, including bytes not retained. */
+  body_bytes: number;
+  /** The section held more than `meta`/`body` show. */
+  truncated: boolean;
+  body_omitted?: boolean;
+  omission_reason?: string;
+  /** Relay's own capture notes, such as body truncation or a missing request. */
+  markers?: string[];
+}
+
+export interface RequestInspector {
+  capture_state: 'retained' | 'missing' | 'pending' | 'unknown' | 'expired_unknown';
+  capture_reason?: string;
+  parse_state: 'recognized' | 'partial' | 'unrecognized';
+  /** Section boundaries are inferred from Relay's write order, never guaranteed. */
+  boundaries: 'heuristic';
+  identity: { request_id: string; logged_request_id?: string; match: 'unknown' | 'matched' | 'mismatch' };
+  limits: { scan_bytes: number; section_bytes: number; max_sections: number };
+  preview: { bytes_read: number; eof: boolean; truncated: boolean; sections_omitted: number; read_error?: boolean };
+  sections: RequestInspectorSection[];
+}
+
 export interface UsageEventPage {
   window: { from: number; to: number; preset?: string };
   items: UsageEvent[];

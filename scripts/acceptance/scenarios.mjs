@@ -1,4 +1,5 @@
 import { modelSquare, modelSquareFixtures, modelSquareLedgerFixtures } from './probes/modelSquare.mjs';
+import { requestInspectorResponse } from './request-inspector-fixture.mjs';
 import { mobileConsole } from './probes/mobileConsole.mjs';
 import { routeRenderError, routeLazyError } from './probes/routeError.mjs';
 import { agentWorkspace, agentExternal, agentFailureCopy, agentStream, agentNarrow, agentLive, agentQuestion, agentViews, agentReplace, agentAttach, agentFixtures } from './probes/agent.mjs';
@@ -704,6 +705,7 @@ export const SCENARIOS = [
           (url) => /\/usage\/events\/\d+$/.test(url.pathname),
           (url) => interactionRecordDetail(Number(url.pathname.split('/').pop())),
         ],
+        [(url) => /\/usage\/events\/\d+\/inspector$/.test(url.pathname), () => requestInspectorResponse('retained-upstream-error')],
         [
           (url) => url.pathname.includes('/usage/events'),
           () => ({ items: interactionRecords, has_more: false, limit: 100 }),

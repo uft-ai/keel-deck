@@ -1,0 +1,47 @@
+=== REQUEST INFO ===
+Version: dev
+Request ID: 01a12e30-d930-7b09-8a7d-195454316e88
+URL: /v1/chat/completions
+Method: POST
+Downstream Transport: http
+Upstream Transport: http
+Timestamp: 2026-10-12T03:38:35.696724297Z
+
+
+=== HEADERS ===
+Content-Type: application/json
+Authorization: Bearer sk-c...-123
+
+
+=== REQUEST BODY ===
+{"model":"nan/qwen3.8-flash","messages":[]}
+
+
+=== API REQUEST 1 ===
+Timestamp: 2026-10-12T03:38:35.696739266Z
+Upstream URL: https://api.nan.builders/v1/chat/completions
+HTTP Method: POST
+
+Headers:
+Content-Type: application/json
+
+Body:
+{"model":"qwen3.8-flash"}
+
+
+=== API ERROR RESPONSE ===
+HTTP Status: 502
+{"error":{"message":"upstream unavailable"}}
+
+
+=== API RESPONSE 1 ===
+Timestamp: 2026-10-12T03:38:35.696762896Z
+
+Error: dial tcp: connection refused
+
+
+=== RESPONSE ===
+Status: 502
+Content-Type: application/json; charset=utf-8
+
+{"error":{"message":"upstream unavailable"}}

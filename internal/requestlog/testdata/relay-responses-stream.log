@@ -1,0 +1,50 @@
+=== REQUEST INFO ===
+Version: dev
+Request ID: 01a12e30-d930-73dc-a101-9fc35af51fb3
+URL: /v1/responses
+Method: POST
+Downstream Transport: http
+Upstream Transport: http
+Timestamp: 2026-10-12T03:38:35.696355048Z
+
+
+=== HEADERS ===
+Content-Type: application/json
+Authorization: Bearer sk-c...-123
+
+
+=== REQUEST BODY ===
+{"model":"nan/qwen3.6-native","input":"hi","stream":true}
+
+
+=== API REQUEST 1 ===
+Timestamp: 2026-10-12T03:38:35.696272478Z
+Upstream URL: https://api.nan.builders/v1/responses
+HTTP Method: POST
+
+Headers:
+Content-Type: application/json
+
+Body:
+{"model":"qwen3.6","input":"hi","stream":true}
+
+
+=== API RESPONSE 1 ===
+Timestamp: 2026-10-12T03:38:35.696306788Z
+
+Status: 200
+Headers:
+Content-Type: text/event-stream
+
+Body:
+event: response.created
+data: {"type":"response.created"}
+
+event: response.completed
+data: {"type":"response.completed","response":{"usage":{"input_tokens":2,"output_tokens":1}}}
+
+
+=== RESPONSE ===
+Status: 200
+Content-Type: text/event-stream
+

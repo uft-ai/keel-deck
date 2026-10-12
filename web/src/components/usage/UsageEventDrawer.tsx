@@ -35,6 +35,7 @@ import {
   isNonStreamingEvent,
 } from '../../types/usageEventMetrics';
 import { requestGroupName } from '../../types/usageEventLabels';
+import { RequestInspectorView } from './RequestInspectorView';
 import { useOverlayHistory } from '../../hooks/useOverlayHistory';
 import { CostBreakdownView } from '../pricing/CostBreakdownView';
 import { useToast } from '../feedback';
@@ -135,11 +136,15 @@ export const UsageEventDrawer: React.FC<UsageEventDrawerProps> = ({
     } catch (error) {
       // CPA keeps a per-request file only while request logging is on; its absence
       // is an answer about retention, not an outage to retry.
-      const isMissing = error instanceof ApiError
-        && (error.data as { code?: string } | null)?.code === 'request_log_not_found';
+      const code = error instanceof ApiError ? (error.data as { code?: string } | null)?.code : undefined;
+      const isMissing = code === 'request_log_not_found';
       // Confirming again cannot produce a file CPA does not hold.
       if (isMissing) setDownloadModalOpen(false);
-      toast.error(t(isMissing ? 'events.download_missing' : 'events.download_failed'));
+      toast.error(t(
+        isMissing ? 'events.download_missing'
+          : code === 'capture_pending' ? 'events.inspector_pending'
+            : 'events.download_failed',
+      ));
     } finally {
       setDownloading(false);
     }
@@ -623,6 +628,10 @@ export const UsageEventDrawer: React.FC<UsageEventDrawerProps> = ({
                         ['X-Forwarded-For', value(event.x_forwarded_for)],
                         ['User-Agent', value(event.user_agent)],
                       ]),
+                    )}
+                    {section(
+                      t('events.inspector'),
+                      <RequestInspectorView eventId={event.id} />,
                     )}
                     {section(
                       t('events.raw_log'),

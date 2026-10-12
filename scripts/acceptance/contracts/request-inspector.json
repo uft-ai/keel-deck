@@ -1,0 +1,156 @@
+{
+  "version": 1,
+  "description": "Inspector wire responses certified by internal/api request inspector contract test against the real handler; consumed by the typed client test and browser fixtures.",
+  "cases": [
+    {
+      "id": "retained-upstream-error",
+      "request_id": "01a12e30-d930-7b09-8a7d-195454316e88",
+      "relay": {
+        "status": 200,
+        "fixture": "relay-upstream-error.log"
+      },
+      "status": 200,
+      "response": {
+        "capture_state": "retained",
+        "parse_state": "recognized",
+        "boundaries": "heuristic",
+        "identity": {
+          "request_id": "01a12e30-d930-7b09-8a7d-195454316e88",
+          "logged_request_id": "01a12e30-d930-7b09-8a7d-195454316e88",
+          "match": "matched"
+        },
+        "limits": {
+          "scan_bytes": 67108864,
+          "section_bytes": 65536,
+          "max_sections": 64
+        },
+        "preview": {
+          "bytes_read": 901,
+          "eof": true,
+          "truncated": false,
+          "sections_omitted": 0
+        },
+        "sections": [
+          {
+            "kind": "request_info",
+            "name": "REQUEST INFO",
+            "meta": "Version: dev\nRequest ID: 01a12e30-d930-7b09-8a7d-195454316e88\nURL: /v1/chat/completions\nMethod: POST\nDownstream Transport: http\nUpstream Transport: http\nTimestamp: 2026-10-12T03:38:35.696724297Z",
+            "body_bytes": 0,
+            "truncated": false
+          },
+          {
+            "kind": "headers",
+            "name": "HEADERS",
+            "meta": "Content-Type: application/json\nAuthorization: [redacted]",
+            "body_bytes": 0,
+            "truncated": false
+          },
+          {
+            "kind": "request_body",
+            "name": "REQUEST BODY",
+            "body": "{\"model\":\"nan/qwen3.8-flash\",\"messages\":[]}",
+            "body_bytes": 46,
+            "truncated": false
+          },
+          {
+            "kind": "api_request",
+            "name": "API REQUEST 1",
+            "attempt": 1,
+            "meta": "Timestamp: 2026-10-12T03:38:35.696739266Z\nUpstream URL: https://api.nan.builders/v1/chat/completions\nHTTP Method: POST\n\nHeaders:\nContent-Type: application/json",
+            "body": "{\"model\":\"qwen3.8-flash\"}",
+            "body_bytes": 28,
+            "truncated": false
+          },
+          {
+            "kind": "api_error_response",
+            "name": "API ERROR RESPONSE",
+            "status": 502,
+            "meta": "HTTP Status: 502",
+            "body": "{\"error\":{\"message\":\"upstream unavailable\"}}",
+            "body_bytes": 47,
+            "truncated": false
+          },
+          {
+            "kind": "api_response",
+            "name": "API RESPONSE 1",
+            "attempt": 1,
+            "meta": "Timestamp: 2026-10-12T03:38:35.696762896Z\n\nError: dial tcp: connection refused",
+            "body_bytes": 0,
+            "truncated": false
+          },
+          {
+            "kind": "response",
+            "name": "RESPONSE",
+            "status": 502,
+            "meta": "Status: 502\nContent-Type: application/json; charset=utf-8",
+            "body": "{\"error\":{\"message\":\"upstream unavailable\"}}",
+            "body_bytes": 45,
+            "truncated": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "expired",
+      "request_id": "req_gone",
+      "relay": {
+        "status": 404,
+        "body": "{\"error\":\"log file not found\"}"
+      },
+      "status": 200,
+      "response": {
+        "capture_state": "expired_unknown",
+        "capture_reason": "request_log_not_found",
+        "parse_state": "unrecognized",
+        "boundaries": "heuristic",
+        "identity": {
+          "request_id": "req_gone",
+          "match": "unknown"
+        },
+        "limits": {
+          "scan_bytes": 67108864,
+          "section_bytes": 65536,
+          "max_sections": 64
+        },
+        "preview": {
+          "bytes_read": 0,
+          "eof": false,
+          "truncated": false,
+          "sections_omitted": 0
+        },
+        "sections": []
+      }
+    },
+    {
+      "id": "pending",
+      "request_id": "req_pending",
+      "relay": {
+        "status": 409,
+        "body": "{\"error\":\"capture_pending\"}"
+      },
+      "status": 200,
+      "response": {
+        "capture_state": "pending",
+        "capture_reason": "capture_pending",
+        "parse_state": "unrecognized",
+        "boundaries": "heuristic",
+        "identity": {
+          "request_id": "req_pending",
+          "match": "unknown"
+        },
+        "limits": {
+          "scan_bytes": 67108864,
+          "section_bytes": 65536,
+          "max_sections": 64
+        },
+        "preview": {
+          "bytes_read": 0,
+          "eof": false,
+          "truncated": false,
+          "sections_omitted": 0
+        },
+        "sections": []
+      }
+    }
+  ]
+}

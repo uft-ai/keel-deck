@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -525,6 +526,80 @@ func TestUsageEventRequestLogProxiedFromCPA(t *testing.T) {
 	}
 	if got := requested.Load().(string); got != "loggable" {
 		t.Fatalf("CPA fetched the wrong id: %q", got)
+	}
+}
+
+func TestUsageEventInspectorRedactsSplitSecrets(t *testing.T) {
+	secret := "sk-" + strings.Repeat("c", 24)
+	client, baseURL, repo := startDashboardTestServer(t, func(writer http.ResponseWriter, request *http.Request) {
+		if strings.HasPrefix(request.URL.Path, "/v8/management/observability/logs/requests/") {
+			_, _ = writer.Write([]byte("upstream " + secret[:10] + secret[10:] + " end"))
+			return
+		}
+		writer.WriteHeader(http.StatusNotFound)
+	})
+	now := time.Now().UTC()
+	if _, err := repo.InsertUsageEvents(context.Background(), []usage.Event{
+		eventFor("inspect", now.Add(-time.Minute), usage.TokenStats{TotalTokens: 1}, false),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	page, err := repo.ListUsageEvents(context.Background(), repository.UsageEventFilter{
+		InstanceID: "default", FromMS: now.Add(-time.Hour).UnixMilli(), ToMS: now.UnixMilli(),
+	})
+	if err != nil || len(page.Items) == 0 {
+		t.Fatal(err)
+	}
+	id := page.Items[0].ID
+	for _, path := range []string{"request-log", "inspector", "inspector/export"} {
+		response, payload := getJSON(t, client, fmt.Sprintf("%s/omc/api/v1/usage/events/%d/%s", baseURL, id, path))
+		if response.StatusCode != http.StatusOK || bytes.Contains(payload, []byte(secret)) {
+			t.Fatalf("%s = %d %s", path, response.StatusCode, payload)
+		}
+	}
+	_, inspector := getJSON(t, client, fmt.Sprintf("%s/omc/api/v1/usage/events/%d/inspector", baseURL, id))
+	if !bytes.Contains(inspector, []byte(`"match":"unknown"`)) || !bytes.Contains(inspector, []byte(`"parse_state":"unrecognized"`)) {
+		t.Fatalf("inspector = %s", inspector)
+	}
+}
+
+func TestUsageEventExportStreamsALogLargerThanTheLegacyCap(t *testing.T) {
+	secret := "github_pat_" + strings.Repeat("d", 80)
+	client, baseURL, repo := startDashboardTestServer(t, func(writer http.ResponseWriter, request *http.Request) {
+		if !strings.HasPrefix(request.URL.Path, "/v8/management/observability/logs/requests/") {
+			writer.WriteHeader(http.StatusNotFound)
+			return
+		}
+		flusher, _ := writer.(http.Flusher)
+		chunk := []byte(strings.Repeat("conversation ", 1024))
+		for written := 0; written < 17*1024*1024; written += len(chunk) {
+			_, _ = writer.Write(chunk)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		_, _ = writer.Write([]byte(secret + " tail"))
+	})
+	now := time.Now().UTC()
+	if _, err := repo.InsertUsageEvents(context.Background(), []usage.Event{
+		eventFor("large", now.Add(-time.Minute), usage.TokenStats{TotalTokens: 1}, false),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	page, err := repo.ListUsageEvents(context.Background(), repository.UsageEventFilter{
+		InstanceID: "default", FromMS: now.Add(-time.Hour).UnixMilli(), ToMS: now.UnixMilli(),
+	})
+	if err != nil || len(page.Items) != 1 {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"request-log", "inspector/export"} {
+		response, payload := getJSON(t, client, fmt.Sprintf("%s/omc/api/v1/usage/events/%d/%s", baseURL, page.Items[0].ID, path))
+		if response.StatusCode != http.StatusOK || bytes.Contains(payload, []byte(secret)) || !bytes.Contains(payload, []byte("conversation")) {
+			t.Fatalf("%s = %d leaked or dropped text", path, response.StatusCode)
+		}
+		if len(payload) < 16*1024*1024 {
+			t.Fatalf("%s = %d bytes, want the uncapped stream", path, len(payload))
+		}
 	}
 }
 

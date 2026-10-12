@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -708,24 +709,17 @@ func (h *Handler) downloadUsageEventRequestLog(writer http.ResponseWriter, reque
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), h.queryTimeout())
 	defer cancel()
-	payload, _, fetchErr := client.DownloadRequestLog(ctx, row.RequestID)
+	body, fetchErr := client.OpenRequestLog(ctx, row.RequestID)
 	if fetchErr != nil {
 		_ = h.recordAudit(request, "request_log.download", "request_log", row.RequestID, "failure", map[string]any{"error": fetchErr.Error()})
 		// CPA writes a per-request file only while request logging is on, and
 		// otherwise keeps just its newest few error logs. A 404 here is that
 		// file's absence, which the console explains differently from an outage.
-		var httpErr *management.HTTPError
-		if errors.As(fetchErr, &httpErr) && httpErr.StatusCode == http.StatusNotFound {
-			writeJSON(writer, http.StatusNotFound, map[string]string{
-				"error": "CPA holds no log file for this request",
-				"code":  requestLogNotFoundCode,
-			})
-			return
-		}
-		writeCPAFacadeError(writer, fetchErr)
+		writeRequestLogFetchError(writer, fetchErr)
 		return
 	}
-	if auditErr := h.recordAudit(request, "request_log.download", "request_log", row.RequestID, "success", map[string]any{"size_bytes": len(payload)}); auditErr != nil {
+	defer body.Close()
+	if auditErr := h.recordAudit(request, "request_log.download", "request_log", row.RequestID, "attempt", nil); auditErr != nil {
 		writeError(writer, http.StatusInternalServerError, "audit log failure; request log download aborted")
 		return
 	}
@@ -736,7 +730,20 @@ func (h *Handler) downloadUsageEventRequestLog(writer http.ResponseWriter, reque
 	if request.Method == http.MethodHead {
 		return
 	}
-	_, _ = writer.Write(payload)
+	stream := security.NewRedactionStream()
+	buffer := make([]byte, 64*1024)
+	for {
+		read, readErr := body.Read(buffer)
+		if read > 0 {
+			if _, writeErr := io.WriteString(writer, stream.Write(string(buffer[:read]))); writeErr != nil {
+				return
+			}
+		}
+		if readErr != nil {
+			_, _ = io.WriteString(writer, stream.Close())
+			return
+		}
+	}
 }
 
 // listUsageFacets returns the filter values actually present in a window.

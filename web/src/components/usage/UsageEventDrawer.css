@@ -285,6 +285,35 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
 }
+.request-inspector {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.request-inspector-section {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 12px;
+}
+.request-inspector-section header {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+.request-inspector-section pre {
+  max-height: 360px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.request-inspector-marker {
+  font-size: var(--text-sm);
+  font-family: var(--font-mono, monospace);
+  color: var(--warn);
+}
+.request-inspector > .ant-btn {
+  align-self: flex-start;
+}
 @media (max-width: 640px) {
   .request-detail .ant-drawer-body {
     padding: 16px;

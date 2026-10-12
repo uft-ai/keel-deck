@@ -243,6 +243,8 @@ func (h *Handler) routes() chi.Router {
 				v1.Get("/usage/events", h.listUsageEvents)
 				v1.Get("/usage/events/{id}", h.getUsageEvent)
 				v1.Get("/usage/events/{id}/request-log", h.downloadUsageEventRequestLog)
+				v1.Get("/usage/events/{id}/inspector", h.inspectUsageEventRequestLog)
+				v1.Get("/usage/events/{id}/inspector/export", h.exportUsageEventRequestLog)
 				v1.Get("/usage/facets", h.listUsageFacets)
 				v1.Get("/management/auth-files", h.listManagementAuthFiles)
 				v1.Get("/management/auth-files/safe-fields", h.getManagementAuthFileSafeFields)
