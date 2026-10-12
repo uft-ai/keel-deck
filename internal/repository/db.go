@@ -560,6 +560,8 @@ func migrationHook(version int) func(context.Context, *sql.Tx, *DB) error {
 		return sanitizeHistoricalDataTx
 	case 25:
 		return addReleaseCheckTruncatedTx
+	case 41:
+		return addUsageReportingColumnsTx
 	}
 	return nil
 }

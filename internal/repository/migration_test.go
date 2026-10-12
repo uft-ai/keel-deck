@@ -340,3 +340,251 @@ func TestBackupRestoreSmokeAndFreeSpaceCheck(t *testing.T) {
 		t.Fatalf("expected at most 2 retained backups, got %d", encFiles)
 	}
 }
+
+// TestUsageReportingColumnsConvergeFromEveryHistory covers the three schemas an upgrade to 041 can
+// start from. A fork revision once used version 39 for `tokens_reported`, so a database from that
+// revision has recorded 39 without the current 039's `access_provider` and `is_native_key`.
+func TestUsageReportingColumnsConvergeFromEveryHistory(t *testing.T) {
+	for _, testCase := range []struct {
+		name    string
+		through int
+		// preparing reproduces the history after the migrator stopped at `through`.
+		preparing func(t *testing.T, database *DB)
+		// verifying, when set, checks the rows recorded before the upgrade.
+		verifying func(t *testing.T, database *DB)
+		// wantBackups is the number of pre-migration backups the upgrade takes.
+		wantBackups int
+	}{
+		{
+			name:        "a fresh database",
+			through:     0,
+			preparing:   func(t *testing.T, database *DB) {},
+			wantBackups: 0,
+		},
+		{
+			name:        "an upstream database at 040",
+			through:     40,
+			preparing:   func(t *testing.T, database *DB) {},
+			wantBackups: 1,
+		},
+		{
+			name:    "a fork database that recorded the earlier 039 without 040",
+			through: 38,
+			preparing: func(t *testing.T, database *DB) {
+				if _, err := database.SQL.Exec(`ALTER TABLE usage_events ADD COLUMN tokens_reported INTEGER`); err != nil {
+					t.Fatalf("prepare the fork 039 schema: %v", err)
+				}
+				if _, err := database.SQL.Exec(`INSERT INTO schema_migrations(version, applied_at) VALUES (39, 1000)`); err != nil {
+					t.Fatalf("record the fork 039: %v", err)
+				}
+				if _, err := database.SQL.Exec(`INSERT INTO cpa_instances (id, name, base_url, usage_addr, management_key_ciphertext, management_key_nonce, created_at, updated_at)
+					VALUES ('default', 'Default', 'http://127.0.0.1:8317', '127.0.0.1:8317', x'00', x'00', 100, 100)`); err != nil {
+					t.Fatalf("record the instance that owns the fork usage event: %v", err)
+				}
+				if _, err := database.SQL.Exec(`INSERT INTO usage_events (instance_id, event_key, api_group_key, timestamp_ms, created_at_ms, tokens_reported)
+					VALUES ('default', 'fork-row', 'group', 1000, 1000, 1)`); err != nil {
+					t.Fatalf("record a usage event under the fork 039: %v", err)
+				}
+			},
+			verifying: func(t *testing.T, database *DB) {
+				var tokensReported sql.NullInt64
+				var accessProvider string
+				var isNativeKey int
+				if err := database.SQL.QueryRow(`SELECT tokens_reported, access_provider, is_native_key FROM usage_events WHERE event_key = 'fork-row'`).
+					Scan(&tokensReported, &accessProvider, &isNativeKey); err != nil {
+					t.Fatalf("read the usage event recorded before the upgrade: %v", err)
+				}
+				if !tokensReported.Valid || tokensReported.Int64 != 1 || accessProvider != "" || isNativeKey != 0 {
+					t.Fatalf("usage event after the upgrade = tokens_reported %v, access_provider %q, is_native_key %d; want 1, \"\", 0",
+						tokensReported, accessProvider, isNativeKey)
+				}
+			},
+			wantBackups: 1,
+		},
+		{
+			name:    "a database that has only some of the reporting columns",
+			through: 38,
+			preparing: func(t *testing.T, database *DB) {
+				if _, err := database.SQL.Exec(`ALTER TABLE usage_events ADD COLUMN access_provider TEXT NOT NULL DEFAULT ''`); err != nil {
+					t.Fatalf("prepare a partial schema: %v", err)
+				}
+				if _, err := database.SQL.Exec(`INSERT INTO schema_migrations(version, applied_at) VALUES (39, 1000)`); err != nil {
+					t.Fatalf("record 039: %v", err)
+				}
+			},
+			wantBackups: 1,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			ctx := context.Background()
+			path := filepath.Join(t.TempDir(), "usage.db")
+			backupDir := filepath.Join(t.TempDir(), "backups")
+			cipher, err := crypto.New("01234567890123456789012345678901")
+			if err != nil {
+				t.Fatal(err)
+			}
+			options := []OpenOption{WithMigrationBackup(cipher, backupDir, 3)}
+			if testCase.through > 0 {
+				options = append(options, withMigrationsUntil(testCase.through))
+			}
+			database, err := Open(ctx, path, options...)
+			if err != nil {
+				t.Fatalf("open database: %v", err)
+			}
+			t.Cleanup(func() { _ = database.Close() })
+			testCase.preparing(t, database)
+			if got := countMigrationBackups(t, backupDir); got != 0 {
+				t.Fatalf("backups before the upgrade = %d, want 0", got)
+			}
+
+			database.migrateUntil = 0
+			if err := database.Migrate(ctx); err != nil {
+				t.Fatalf("migrating from this history failed: %v", err)
+			}
+			assertUsageReportingColumns(t, database.SQL)
+			assertQuotaResetGrantsColumn(t, database.SQL)
+			if testCase.verifying != nil {
+				testCase.verifying(t, database)
+			}
+			applied := countAppliedMigrations(t, database.SQL)
+			if want := countMigrationFiles(t); applied != want {
+				t.Fatalf("applied migrations = %d, want %d", applied, want)
+			}
+			if got := countMigrationBackups(t, backupDir); got != testCase.wantBackups {
+				t.Fatalf("pre-migration backups = %d, want %d", got, testCase.wantBackups)
+			}
+
+			// A second start finds nothing pending: no backup, no change to the ledger.
+			if err := database.Migrate(ctx); err != nil {
+				t.Fatalf("second start failed: %v", err)
+			}
+			if got := countAppliedMigrations(t, database.SQL); got != applied {
+				t.Fatalf("applied migrations after a second start = %d, want %d", got, applied)
+			}
+			if got := countMigrationBackups(t, backupDir); got != testCase.wantBackups {
+				t.Fatalf("pre-migration backups after a second start = %d, want %d", got, testCase.wantBackups)
+			}
+		})
+	}
+}
+
+// TestUsageReportingMigrationAddsColumnsOnlyThroughItsHook pins the reason 041 is a hook: the
+// earlier fork 039 must not return under that number, and 041 must not add a column in SQL.
+func TestUsageReportingMigrationAddsColumnsOnlyThroughItsHook(t *testing.T) {
+	if _, err := migrations.Files.ReadFile("039_usage_events_tokens_reported.sql"); err == nil {
+		t.Fatal("the fork's earlier 039 is present again; version 39 belongs to the access-provider migration")
+	}
+	if migrationHook(41) == nil {
+		t.Fatal("migration 041 has no hook, so the usage reporting columns would never be added")
+	}
+	script, err := migrations.Files.ReadFile("041_usage_events_reporting_columns.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(script), "\n") {
+		statement := strings.TrimSpace(line)
+		if statement == "" || strings.HasPrefix(statement, "--") {
+			continue
+		}
+		if strings.Contains(strings.ToUpper(statement), "ADD COLUMN") {
+			t.Fatalf("migration 041 adds a column in SQL (%q): an unconditional ADD COLUMN fails on one of the histories", statement)
+		}
+	}
+}
+
+func assertUsageReportingColumns(t *testing.T, database *sql.DB) {
+	t.Helper()
+	want := map[string]struct {
+		columnType   string
+		notNull      bool
+		defaultValue sql.NullString
+	}{
+		"access_provider": {columnType: "TEXT", notNull: true, defaultValue: sql.NullString{String: "''", Valid: true}},
+		"is_native_key":   {columnType: "INTEGER", notNull: true, defaultValue: sql.NullString{String: "0", Valid: true}},
+		"tokens_reported": {columnType: "INTEGER"},
+	}
+	rows, err := database.Query(`SELECT name, type, "notnull", dflt_value FROM pragma_table_info('usage_events')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	for rows.Next() {
+		var name, columnType string
+		var notNull int
+		var defaultValue sql.NullString
+		if err := rows.Scan(&name, &columnType, &notNull, &defaultValue); err != nil {
+			t.Fatal(err)
+		}
+		expected, ok := want[name]
+		if !ok {
+			continue
+		}
+		seen[name] = true
+		if columnType != expected.columnType || (notNull == 1) != expected.notNull || defaultValue != expected.defaultValue {
+			t.Errorf("usage_events.%s = %s notnull=%d default=%v, want %s notnull=%t default=%v",
+				name, columnType, notNull, defaultValue, expected.columnType, expected.notNull, expected.defaultValue)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	for name := range want {
+		if !seen[name] {
+			t.Errorf("usage_events.%s is missing", name)
+		}
+	}
+}
+
+func assertQuotaResetGrantsColumn(t *testing.T, database *sql.DB) {
+	t.Helper()
+	var count int
+	if err := database.QueryRow(`SELECT COUNT(1) FROM pragma_table_info('quota_snapshots') WHERE name = 'reset_grants_json'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatal("quota_snapshots.reset_grants_json is missing")
+	}
+}
+
+func countAppliedMigrations(t *testing.T, database *sql.DB) int {
+	t.Helper()
+	var count int
+	if err := database.QueryRow(`SELECT COUNT(1) FROM schema_migrations`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	return count
+}
+
+func countMigrationFiles(t *testing.T) int {
+	t.Helper()
+	entries, err := migrations.Files.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".sql") {
+			count++
+		}
+	}
+	return count
+}
+
+func countMigrationBackups(t *testing.T, directory string) int {
+	t.Helper()
+	entries, err := os.ReadDir(directory)
+	if os.IsNotExist(err) {
+		return 0
+	}
+	if err != nil {
+		t.Fatalf("read backup directory: %v", err)
+	}
+	count := 0
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".db.enc") {
+			count++
+		}
+	}
+	return count
+}
