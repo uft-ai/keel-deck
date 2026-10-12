@@ -39,7 +39,7 @@ import {
   ConfigSourceResponse,
   ConfigSourceSaveResponse,
 } from '../types/configManagement';
-import { ClientAPIKeyItem, ClientKeyUsageItem, ProviderItem, SaveProviderPayload } from '../types/providers';
+import { ClientAPIKeyItem, ClientKeyUsageItem, ProviderItem, ProviderModelPull, SaveProviderPayload } from '../types/providers';
 import { GatewayModelItem } from '../types/gatewayModels';
 import { OAuthProviderItem, StartOAuthResponse, OAuthStatusResponse, OAuthCallbackResponse, OAuthCancelResponse } from '../types/oauth';
 import { QuotaOverviewResponse, CredentialQuotaDetailResponse, QuotaItem } from '../types/quota';
@@ -705,8 +705,8 @@ export const api = {
     api_key?: string;
     proxy_url?: string;
     headers?: Record<string, string>;
-  }): Promise<{ models: string[]; total: number }> {
-    return request<{ models: string[]; total: number }>('/management/providers/pull-models', {
+  }): Promise<ProviderModelPull> {
+    return request<ProviderModelPull>('/management/providers/pull-models', {
       method: 'POST',
       body: JSON.stringify(payload),
     });

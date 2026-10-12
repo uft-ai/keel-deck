@@ -1,20 +1,11 @@
 /**
  * Certifies the model-pull bodies the drawer posts.
  *
- * The page calls pullProviderModels, which JSON.stringifies this payload and
- * POSTs it to /management/providers/pull-models. Importing the whole client
- * here would also load the uncommitted quota module, so the test checks the
- * payload and that exact request shape instead.
+ * The rendered provider-model-defaults component test exercises the real client
+ * transport; this suite owns the mutually exclusive credential decisions.
  */
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { modelPullPayload, type ModelPullDraft } from '../web/src/components/providers/managementProviders.ts';
-
-const client = readFileSync(new URL('../web/src/api/client.ts', import.meta.url), 'utf8');
-assert.match(
-  client,
-  /async pullProviderModels\(payload:[\s\S]*?return request<\{ models: string\[\]; total: number \}>\('\/management\/providers\/pull-models', \{\s*method: 'POST',\s*body: JSON\.stringify\(payload\),/,
-);
 
 const stored: ModelPullDraft = {
   providerId: 'openai-compat-0',

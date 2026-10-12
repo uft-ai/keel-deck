@@ -188,10 +188,17 @@ func (h *Handler) pullProviderModels(writer http.ResponseWriter, request *http.R
 		return
 	}
 
-	writeJSON(writer, http.StatusOK, map[string]any{
+	response := map[string]any{
 		"models": models,
 		"total":  len(models),
-	})
+	}
+	if family == "" || family == openAICompatibilityFamily {
+		if defaults, source := nanModelDefaults(baseURL, models); source != nil {
+			response["model_defaults"] = defaults
+			response["metadata"] = source
+		}
+	}
+	writeJSON(writer, http.StatusOK, response)
 }
 
 func fetchEndpointModels(ctx context.Context, rawBaseURL, apiKey, proxyStr, protocol string, customHeaders map[string]string) ([]string, error) {

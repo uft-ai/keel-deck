@@ -83,6 +83,13 @@ export interface ProviderModelItem {
   options?: ProviderModelOptions;
 }
 
+export interface ProviderModelPull {
+  models: string[];
+  total: number;
+  model_defaults?: Record<string, ProviderModelItem>;
+  metadata?: { source: string; checked_at: string; basis: 'documented' };
+}
+
 /** How a provider treats a setting the gateway also has globally. */
 export type ProviderOverride = 'inherit' | 'enabled' | 'disabled';
 

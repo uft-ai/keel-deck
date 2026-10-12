@@ -14,6 +14,7 @@ import { lookupProviderFamily } from '../../types/providerFamilies';
 import { modelsToAdd } from '../../utils/modelOptions';
 import type {
   ProviderItem,
+  ProviderModelItem,
   SaveProviderPayload,
   SaveProviderKeyItem,
   SaveProviderModelItem,
@@ -109,6 +110,7 @@ export function useProviderManagement({
   const [isPullingModels, setIsPullingModels] = useState(false);
   const [pullKeyID, setPullKeyID] = useState('');
   const [endpointModels, setEndpointModels] = useState<string[]>([]);
+  const [endpointDefaults, setEndpointDefaults] = useState<Record<string, ProviderModelItem>>({});
   const [isModelPickerOpen, setIsModelPickerOpen] = useState(false);
   const [expandedModelIds, setExpandedModelIds] = useState<Set<string>>(new Set());
 
@@ -133,6 +135,7 @@ export function useProviderManagement({
     const seq = ++modelFetchSeqRef.current;
     setIsPullingModels(true);
     setEndpointModels([]);
+    setEndpointDefaults({});
     setIsModelPickerOpen(false);
     try {
       const res = await api.pullProviderModels(modelPullPayload({
@@ -161,6 +164,7 @@ export function useProviderManagement({
         )
       ).sort((a, b) => a.localeCompare(b));
       setEndpointModels(models);
+      setEndpointDefaults(res.model_defaults || {});
       if (models.length > 0) {
         // A fetch is almost always followed by choosing from it, so the list opens
         // as a picker rather than leaving the operator to add rows one by one.
@@ -232,9 +236,9 @@ export function useProviderManagement({
         id: `mdl-${stamp}-${i}`,
         name,
         alias: '',
-        image: false,
-        thinking: { levels: [] },
-        options: EMPTY_MODEL_OPTIONS_DRAFT,
+        image: endpointDefaults[name]?.image || false,
+        thinking: { levels: endpointDefaults[name]?.thinking?.levels || [] },
+        options: readModelOptionsDraft(endpointDefaults[name]?.options),
       })),
     ]);
     toast.success(t('pro.models_applied', { count: added.length }));
@@ -565,6 +569,7 @@ export function useProviderManagement({
     modelFetchSeqRef.current++;
     setFormModels([]);
     setEndpointModels([]);
+    setEndpointDefaults({});
     setIsPullingModels(false);
     setExpandedModelIds(new Set());
     setKeysSectionOpen(true);
@@ -673,6 +678,7 @@ export function useProviderManagement({
     }
     modelFetchSeqRef.current++;
     setEndpointModels([]);
+    setEndpointDefaults({});
     setIsPullingModels(false);
     setExpandedModelIds(new Set());
 

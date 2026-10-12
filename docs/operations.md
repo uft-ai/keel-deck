@@ -514,3 +514,21 @@ failure is logged without tokens or uploaded key material.
 The public demonstration's Agent and Playground offer one browser-local recorded example
 each. Send/retry/cancel do not invoke a provider or write the Worker. Other questions are
 refused. The server-side demo security classification is unchanged; ADR 0092 documents replay.
+
+## NaN model discovery defaults
+
+For an OpenAI-compatible provider whose base host is `api.nan.builders`, model
+pull returns `model_defaults` alongside the discovered IDs, plus `metadata` with
+the source URL, check date and evidence basis. The source is NaN's OpenAPI, checked
+2026-10-12. Only newly picked models receive these editable defaults. Refreshing
+discovery does not replace an existing alias or operator override, and unknown
+models remain selectable without invented capabilities or limits.
+
+Defaults distinguish chat, embeddings, rerank, speech, transcription and the two
+image models. Qwen Image is generation-only; FLUX also accepts reference edits.
+The documented 1M context is represented as a nominal 1,000,000 tokens; no
+undocumented maximum output is supplied. Qwen 3.6 and Gemma context stay unknown.
+Explicit reasoning levels retain `none` without generic low-effort coercion.
+Create a second Qwen 3.6 entry with alias `qwen3.6-native` and native operations
+`responses` and `completions` when exact native behavior is wanted; the ordinary
+alias uses translated Responses.
