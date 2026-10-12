@@ -28,8 +28,13 @@ const BASELINE = {
   'internal/api/management_provider_writes_test.go': 1,
   'internal/api/management_system_release_test.go': 4,
   'internal/api/playground_test.go': 1,
+  // The pace of a slow log stream is the contract: progress must outlast the request and
+  // server write timeouts, so the gateway fixture waits between parts and before answering.
+  'internal/api/request_log_stream_test.go': 3,
   'internal/api/usage_ingest_test.go': 1,
   'internal/api/usage_provider_key_masks_test.go': 1,
+  // The same contract one layer down: a steady stream slower than the stall limit per read.
+  'internal/cpa/management/client_logs_stream_test.go': 1,
   'internal/pricing/pricing_test.go': 2,
   'internal/release/service_test.go': 5,
   'internal/repository/audit_test.go': 1,

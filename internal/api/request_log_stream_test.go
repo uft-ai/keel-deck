@@ -200,6 +200,115 @@ func TestRequestInspectorRecordsAnOutcomeForEveryRead(t *testing.T) {
 	}
 }
 
+// A full log download outlasts the request timeout while the gateway keeps
+// sending, and a gateway that stops ends the download with the incomplete marker.
+func TestGatewayLogDownloadIsBoundedByProgressNotDuration(t *testing.T) {
+	const wait = 200 * time.Millisecond
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	serve := func(writer http.ResponseWriter, request *http.Request) {
+		flusher := writer.(http.Flusher)
+		switch strings.TrimPrefix(request.URL.Path, "/v8/management/observability") {
+		case "/logs/requests/steady01":
+			_, _ = writer.Write([]byte("=== REQUEST INFO ===\nRequest ID: steady01\n\n=== REQUEST BODY ===\n"))
+			for index := 0; index < 8; index++ {
+				_, _ = writer.Write([]byte("chunk Bearer " + gatewayLogSecret + "\n"))
+				flusher.Flush()
+				time.Sleep(wait / 3)
+			}
+			_, _ = writer.Write([]byte("end\n"))
+		case "/logs/requests/stalled1":
+			_, _ = writer.Write([]byte("=== REQUEST INFO ===\nRequest ID: stalled1\n\n=== REQUEST BODY ===\nAuthorization: Bearer " + gatewayLogSecret + "\n"))
+			flusher.Flush()
+			select {
+			case <-release:
+			case <-request.Context().Done():
+			}
+		default:
+			writer.WriteHeader(http.StatusNotFound)
+		}
+	}
+	client, baseURL, repo := startDashboardTestServer(t, serve, func(handler *Handler) {
+		handler.cfg.RequestTimeout = wait
+	})
+
+	started := time.Now()
+	response, payload := getJSON(t, client, baseURL+"/omc/api/v1/management/request-logs/steady01")
+	if elapsed := time.Since(started); elapsed <= wait {
+		t.Fatalf("the steady log took %s, so it did not outlast the %s timeout", elapsed, wait)
+	}
+	text := string(payload)
+	if response.StatusCode != http.StatusOK || !strings.HasSuffix(text, "end\n") || strings.Contains(text, exportIncompleteMarker) {
+		t.Fatalf("steady log = %d %q, want the whole log", response.StatusCode, text)
+	}
+	if strings.Contains(text, gatewayLogSecret) || strings.Count(text, "chunk ") != 8 {
+		t.Fatalf("steady log was not redacted line by line: %q", text)
+	}
+
+	response, payload = getJSON(t, client, baseURL+"/omc/api/v1/management/request-logs/stalled1")
+	text = string(payload)
+	if response.StatusCode != http.StatusOK || !strings.HasSuffix(text, exportIncompleteMarker) || strings.Contains(text, gatewayLogSecret) {
+		t.Fatalf("stalled log = %d %q, want a redacted prefix and the incomplete marker", response.StatusCode, text)
+	}
+
+	events, err := repo.ListAuditEvents(context.Background(), 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcomes := requestLogAuditOutcomes(events, "request_log.download")
+	if !outcomes["steady01"]["success"] || outcomes["steady01"]["failure"] {
+		t.Errorf("steady log audit = %v, want success", outcomes["steady01"])
+	}
+	if !outcomes["stalled1"]["failure"] || outcomes["stalled1"]["success"] {
+		t.Errorf("stalled log audit = %v, want failure", outcomes["stalled1"])
+	}
+}
+
+// The app's server ends every response at its write timeout. A log download
+// moves that deadline with each write, so a log that keeps arriving outlasts
+// it, and so does an answer that came late from the gateway.
+func TestGatewayLogDownloadOutlastsTheServerWriteTimeout(t *testing.T) {
+	const writeTimeout = 150 * time.Millisecond
+	serve := func(writer http.ResponseWriter, request *http.Request) {
+		flusher := writer.(http.Flusher)
+		// Each answer starts after the server's whole write timeout has passed.
+		time.Sleep(2 * writeTimeout)
+		switch strings.TrimPrefix(request.URL.Path, "/v8/management/observability") {
+		case "/logs/requests/steady02":
+			_, _ = writer.Write([]byte("=== REQUEST INFO ===\nRequest ID: steady02\n\n=== REQUEST BODY ===\n"))
+			for index := 0; index < 6; index++ {
+				_, _ = writer.Write([]byte("chunk Bearer " + gatewayLogSecret + "\n"))
+				flusher.Flush()
+				time.Sleep(writeTimeout)
+			}
+			_, _ = writer.Write([]byte("end\n"))
+		default:
+			writer.WriteHeader(http.StatusNotFound)
+		}
+	}
+	client, baseURL, _ := startDashboardTestServerWriting(t, writeTimeout, serve, func(handler *Handler) {
+		handler.gatewayLogWriteWait = 2 * time.Second
+	})
+
+	started := time.Now()
+	response, payload := getJSON(t, client, baseURL+"/omc/api/v1/management/request-logs/steady02")
+	if elapsed := time.Since(started); elapsed <= 4*writeTimeout {
+		t.Fatalf("the steady log took %s, so it did not outlast the %s write timeout", elapsed, writeTimeout)
+	}
+	text := string(payload)
+	if response.StatusCode != http.StatusOK || !strings.HasSuffix(text, "end\n") || strings.Contains(text, exportIncompleteMarker) {
+		t.Fatalf("steady log = %d %q, want the whole log", response.StatusCode, text)
+	}
+	if strings.Contains(text, gatewayLogSecret) || strings.Count(text, "chunk ") != 6 {
+		t.Fatalf("steady log was not redacted line by line: %q", text)
+	}
+
+	response, payload = getJSON(t, client, baseURL+"/omc/api/v1/management/request-logs/missing2")
+	if response.StatusCode != http.StatusNotFound || !strings.Contains(string(payload), requestLogNotFoundCode) {
+		t.Fatalf("late missing answer = %d %s, want the 404", response.StatusCode, payload)
+	}
+}
+
 // No gateway log route asks the gateway for a log it cannot audit first.
 func TestGatewayLogRoutesFailClosedWithoutAnAudit(t *testing.T) {
 	fixture := &gatewayLogFixture{}

@@ -50,7 +50,7 @@ a message naming the variable.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `OMCPA_CPA_USAGE_ADDR` | host and port of `OMCPA_CPA_BASE_URL` | `host:port` of CPA's usage stream |
-| `OMCPA_REQUEST_TIMEOUT` | `15s` | Timeout for ordinary CPA management calls |
+| `OMCPA_REQUEST_TIMEOUT` | `15s` | Timeout for ordinary CPA management calls. A request-log download instead uses it as the longest wait for each next part, so a large log is not cut while it keeps arriving |
 | `OMCPA_CPA_TLS_SKIP_VERIFY` | `false` | Skip certificate verification when CPA uses a private certificate |
 
 ### Usage collection

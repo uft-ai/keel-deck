@@ -39,6 +39,12 @@ Rules that keep the suite fast and honest:
   a route you hold and release), an element state, `until(...)` from
   `scripts/acceptance/harness.mjs`, a Go channel, or an injected interval or clock.
   `scripts/fixed-waits.test.mjs` fails when a fixed wait is added.
+  The slow request-log tests are a recorded exception: the CPA fixture in
+  `internal/api/request_log_stream_test.go` and
+  `internal/cpa/management/client_logs_stream_test.go` sleeps between log parts and
+  before answering, because the contract is that steady progress outlasts the real
+  `net/http` request and write deadlines. Only elapsed time can exercise those
+  deadlines. Stall and cancellation cases in the same files still wait on signals.
   After changing the viewport, wait for responsive controls to adopt their target state
   and call `settleLayout(page)` before measuring geometry. A viewport acknowledgement
   can precede React's breakpoint update and ResizeObserver-driven layout.

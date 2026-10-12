@@ -3,11 +3,14 @@ package management
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"time"
 )
 
 // OpenRequestLog opens one CPA request log by request id without a size cap.
@@ -35,19 +38,85 @@ func (c *Client) OpenRequestErrorLog(ctx context.Context, name string) (io.ReadC
 	return c.openLog(ctx, "/observability/logs/errors/"+url.PathEscape(name))
 }
 
+// openLog opens one log file as a stream.
+//
+// A log may be large or written slowly, so the read has no total deadline.
+// The gateway must answer within the client's timeout and then deliver each
+// next part within that same wait; a stalled read ends with ErrLogStreamStalled.
+// Cancelling ctx ends the read at any time.
 func (c *Client) openLog(ctx context.Context, path string) (io.ReadCloser, error) {
-	request, err := c.newRequest(ctx, http.MethodGet, path, nil, "")
-	if err != nil {
-		return nil, err
-	}
 	if err := c.requireManagementV8(ctx); err != nil {
 		return nil, err
 	}
-	response, _, err := c.send(request)
+	ctx, cancel := context.WithCancel(ctx)
+	watch := newStallWatch(c.waitTimeout, cancel)
+	request, err := c.newRequest(ctx, http.MethodGet, path, nil, "")
 	if err != nil {
+		watch.stop()
+		cancel()
 		return nil, err
 	}
-	return response.Body, nil
+	watch.arm()
+	response, _, err := c.sendThrough(c.streamClient, request)
+	watch.disarm()
+	if err != nil {
+		watch.stop()
+		cancel()
+		if watch.fired() {
+			return nil, fmt.Errorf("%w: no answer within %s", ErrLogStreamStalled, c.waitTimeout)
+		}
+		return nil, err
+	}
+	return &stallBoundBody{body: response.Body, watch: watch, cancel: cancel}, nil
+}
+
+// ErrLogStreamStalled reports a log read whose gateway stopped sending.
+var ErrLogStreamStalled = errors.New("CPA log stream stalled")
+
+// stallWatch cancels a read when one wait lasts longer than its limit.
+type stallWatch struct {
+	limit   time.Duration
+	timer   *time.Timer
+	expired atomic.Bool
+}
+
+func newStallWatch(limit time.Duration, cancel context.CancelFunc) *stallWatch {
+	watch := &stallWatch{limit: limit}
+	watch.timer = time.AfterFunc(time.Hour, func() {
+		watch.expired.Store(true)
+		cancel()
+	})
+	watch.timer.Stop()
+	return watch
+}
+
+func (w *stallWatch) arm()        { w.timer.Reset(w.limit) }
+func (w *stallWatch) disarm()     { w.timer.Stop() }
+func (w *stallWatch) stop()       { w.timer.Stop() }
+func (w *stallWatch) fired() bool { return w.expired.Load() }
+
+// stallBoundBody is a log body whose every read must make progress within the
+// watch's limit.
+type stallBoundBody struct {
+	body   io.ReadCloser
+	watch  *stallWatch
+	cancel context.CancelFunc
+}
+
+func (b *stallBoundBody) Read(buffer []byte) (int, error) {
+	b.watch.arm()
+	read, err := b.body.Read(buffer)
+	b.watch.disarm()
+	if err != nil && !errors.Is(err, io.EOF) && b.watch.fired() {
+		return read, fmt.Errorf("%w: nothing arrived for %s", ErrLogStreamStalled, b.watch.limit)
+	}
+	return read, err
+}
+
+func (b *stallBoundBody) Close() error {
+	b.watch.stop()
+	b.cancel()
+	return b.body.Close()
 }
 
 // DefaultLogsLimit and MaxLogsLimit bound one incremental log read.

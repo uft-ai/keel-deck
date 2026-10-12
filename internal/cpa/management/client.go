@@ -26,9 +26,13 @@ func newManagementTransport(insecure bool) *http.Transport {
 }
 
 type Client struct {
-	baseURL      string
-	management   string
-	httpClient   *http.Client
+	baseURL    string
+	management string
+	httpClient *http.Client
+	// streamClient has no total timeout. A stream bounds its own waits for
+	// headers and between reads, so a large log that keeps arriving is not cut.
+	streamClient *http.Client
+	waitTimeout  time.Duration
 	configBackup ConfigBackup
 }
 
@@ -64,7 +68,9 @@ func NewClient(baseURL, managementKey string, timeout time.Duration, tlsSkipVeri
 		// Authorization to a redirect on the same hostname, whatever its port or
 		// scheme. CPA's management API never redirects, so a 3xx is returned as the
 		// answer instead of followed: the key reaches the configured origin only.
-		httpClient: &http.Client{Timeout: timeout, Transport: transport, CheckRedirect: refuseRedirect},
+		httpClient:   &http.Client{Timeout: timeout, Transport: transport, CheckRedirect: refuseRedirect},
+		streamClient: &http.Client{Transport: transport, CheckRedirect: refuseRedirect},
+		waitTimeout:  timeout,
 	}, nil
 }
 
@@ -193,8 +199,12 @@ func (c *Client) sendBytes(request *http.Request, maxBytes int64) ([]byte, Respo
 // answer is returned as an *HTTPError with the body closed; a 2xx answer is
 // returned open for the caller to read.
 func (c *Client) send(request *http.Request) (*http.Response, ResponseMeta, error) {
+	return c.sendThrough(c.httpClient, request)
+}
+
+func (c *Client) sendThrough(httpClient *http.Client, request *http.Request) (*http.Response, ResponseMeta, error) {
 	request.Header.Set("Authorization", "Bearer "+c.management)
-	response, err := c.httpClient.Do(request)
+	response, err := httpClient.Do(request)
 	if err != nil {
 		return nil, ResponseMeta{}, fmt.Errorf("CPA request failed: %w", err)
 	}

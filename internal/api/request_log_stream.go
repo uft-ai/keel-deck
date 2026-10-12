@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // requestLogIdentityScanBytes bounds the read that finds the logged request id.
@@ -38,7 +39,11 @@ func (h *Handler) serveRedactedGatewayLog(writer http.ResponseWriter, request *h
 		writeError(writer, http.StatusInternalServerError, read.abortMessage)
 		return
 	}
+	output := newProgressDeadlineWriter(writer, h.logWriteWait())
 	body, err := read.open(request.Context())
+	// The audit and the gateway's answer may have used up the server's write
+	// timeout, so the first write gets a fresh deadline like every later one.
+	output.extend()
 	if err != nil {
 		_ = h.recordAudit(request, read.action, read.targetType, read.targetID, "failure", map[string]any{"error": err.Error()})
 		read.fetchError(writer, err)
@@ -65,11 +70,45 @@ func (h *Handler) serveRedactedGatewayLog(writer http.ResponseWriter, request *h
 		return
 	}
 	counted := &countedReader{reader: source}
-	if streamErr := streamRedactedRequestLog(writer, counted); streamErr != nil {
+	if streamErr := streamRedactedRequestLog(output, counted); streamErr != nil {
 		_ = h.recordAudit(request, read.action, read.targetType, read.targetID, "failure", map[string]any{"error": streamErr.Error(), "size_bytes": counted.read})
 		return
 	}
 	_ = h.recordAudit(request, read.action, read.targetType, read.targetID, "success", map[string]any{"size_bytes": counted.read})
+}
+
+// gatewayLogWriteWait bounds one write of a log stream to the browser. The
+// server's whole-response write timeout would otherwise cut a long download, so
+// each write moves the deadline instead: a browser that keeps reading gets the
+// whole log, and one that stops reading is dropped.
+const gatewayLogWriteWait = 30 * time.Second
+
+// logWriteWait is gatewayLogWriteWait unless a test set a shorter wait.
+func (h *Handler) logWriteWait() time.Duration {
+	if h.gatewayLogWriteWait > 0 {
+		return h.gatewayLogWriteWait
+	}
+	return gatewayLogWriteWait
+}
+
+type progressDeadlineWriter struct {
+	writer     http.ResponseWriter
+	controller *http.ResponseController
+	wait       time.Duration
+}
+
+func newProgressDeadlineWriter(writer http.ResponseWriter, wait time.Duration) *progressDeadlineWriter {
+	return &progressDeadlineWriter{writer: writer, controller: http.NewResponseController(writer), wait: wait}
+}
+
+// extend moves the connection's write deadline wait past now.
+func (w *progressDeadlineWriter) extend() {
+	_ = w.controller.SetWriteDeadline(time.Now().Add(w.wait))
+}
+
+func (w *progressDeadlineWriter) Write(data []byte) (int, error) {
+	w.extend()
+	return w.writer.Write(data)
 }
 
 // loggedRequestID reads the "Request ID:" line from the REQUEST INFO section at

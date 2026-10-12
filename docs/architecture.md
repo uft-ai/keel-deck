@@ -2081,9 +2081,13 @@ redacts through one streaming redactor before browser bytes are written. Every
 read writes an audited attempt first and fails closed without it, then records
 `success` or `failure`. The file routes share `serveRedactedGatewayLog`: the
 whole file is streamed with no size cap, and a source failure ends the stream
-with an explicit incomplete marker. The management client's total request
-timeout (`OMCPA_REQUEST_TIMEOUT`) still bounds each read, so a very large or slow
-log can end with that marker. One identity rule (`requestIDMatches`) serves the
+with an explicit incomplete marker. These reads have no total time limit, so a
+large log that keeps arriving is delivered whole. `OMCPA_REQUEST_TIMEOUT`
+instead bounds each wait: for the gateway's answer and for each next part of
+the file. A gateway that stops sending ends the download with that marker.
+Each browser write moves its own deadline forward, so the server's whole-response
+write timeout does not cut a reader that keeps up, while a stalled browser is
+still dropped. One identity rule (`requestIDMatches`) serves the
 inspector and the file routes: the logged `Request ID:` must equal the expected
 id, except that an expected id of exactly eight characters, Relay's short form,
 matches a longer logged id ending with it. A request log whose `Request ID:`

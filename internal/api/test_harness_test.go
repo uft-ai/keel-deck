@@ -39,6 +39,18 @@ func startDashboardTestServer(t *testing.T, handler func(http.ResponseWriter, *h
 // whose stored configuration file is storedYAML.
 func startDashboardTestServerStoring(t *testing.T, storedYAML string, handler func(http.ResponseWriter, *http.Request), hooks ...func(*Handler)) (*http.Client, string, *repository.Repository) {
 	t.Helper()
+	return startDashboardTestServerWith(t, storedYAML, 0, handler, hooks...)
+}
+
+// startDashboardTestServerWriting is startDashboardTestServer behind an HTTP
+// server with the whole-response writeTimeout the app's own server sets.
+func startDashboardTestServerWriting(t *testing.T, writeTimeout time.Duration, handler func(http.ResponseWriter, *http.Request), hooks ...func(*Handler)) (*http.Client, string, *repository.Repository) {
+	t.Helper()
+	return startDashboardTestServerWith(t, "config-version: 8\n", writeTimeout, handler, hooks...)
+}
+
+func startDashboardTestServerWith(t *testing.T, storedYAML string, writeTimeout time.Duration, handler func(http.ResponseWriter, *http.Request), hooks ...func(*Handler)) (*http.Client, string, *repository.Repository) {
+	t.Helper()
 	cpaServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.Header.Get("Authorization") != "Bearer management-secret-value" {
 			writer.WriteHeader(http.StatusUnauthorized)
@@ -101,7 +113,9 @@ func startDashboardTestServerStoring(t *testing.T, storedYAML string, handler fu
 	for _, hook := range hooks {
 		hook(appHandler)
 	}
-	server := httptest.NewServer(appHandler.Router())
+	server := httptest.NewUnstartedServer(appHandler.Router())
+	server.Config.WriteTimeout = writeTimeout
+	server.Start()
 	t.Cleanup(server.Close)
 
 	jar, err := cookiejar.New(nil)
