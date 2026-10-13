@@ -13,7 +13,6 @@ import { resolveProviderIcon } from '../../types/providerIcons';
 import { pluginOAuthLogoFor, type PluginOAuthLogos } from '../../types/pluginOAuthProviders';
 import type { ProviderItem } from '../../types/providers';
 import { matchProviderFamily } from '../../types/providerFamilies';
-import { NAN_PROVIDER } from '../../types/providerKinds';
 import { successRateTone } from '../../types/usageEventMetrics';
 import { ResponsiveList } from '../common/ResponsiveList';
 import { StatusLabel } from '../common/StatusLabel';
@@ -190,18 +189,6 @@ export function ProviderTable({
       key: 'protocol',
       render: (_, record) => {
         const meta = matchProviderFamily(record.family, record.protocol);
-        if (record.provider_kind === NAN_PROVIDER.kind) {
-          // The provider is the identity; the compatible protocol it speaks is secondary.
-          return (
-            <div className={styles['provider-kind']}>
-              <Tag className={styles['protocol-tag']}>
-                <LobeIcon iconId={NAN_PROVIDER.iconId} size={13} />
-                <span>{NAN_PROVIDER.label}</span>
-              </Tag>
-              <span className={styles['provider-kind-protocol']}>{meta ? t(meta.labelKey) : record.protocol}</span>
-            </div>
-          );
-        }
         if (!meta) {
           return (
             <Tag className={styles['protocol-tag']}>

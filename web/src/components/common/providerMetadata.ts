@@ -1,4 +1,5 @@
 import { resolveProviderIcon } from '../../types/providerIconIds';
+import { NAN_PROVIDER } from '../../types/providerKinds';
 
 export interface ProviderMetadata {
   id: string;
@@ -41,6 +42,9 @@ export const CREDENTIAL_PROVIDERS: Record<string, ProviderMetadata> = {
   doubao: { id: 'doubao', label: 'Doubao', iconId: 'Doubao' },
   spark: { id: 'spark', label: 'Spark', iconId: 'Spark' },
   openai: { id: 'openai', label: 'OpenAI', iconId: 'OpenAI' },
+  // Reached only by a server-verified kind: a configured key on NaN's official host, or a
+  // login file of type `nan`. A compatible entry's display name never selects it.
+  nan: { id: NAN_PROVIDER.kind, label: NAN_PROVIDER.label, iconId: NAN_PROVIDER.iconId },
 };
 
 export function getCredentialProviderMetadata(providerKey: string): ProviderMetadata {

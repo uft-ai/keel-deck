@@ -1,9 +1,8 @@
 /**
  * Known providers behind the generic OpenAI-compatible family.
  *
- * The server derives `provider_kind` from the endpoint on every read, and this module
- * applies the same host rule where no server value exists yet: the unsaved editor and
- * icon lookups. The host is the evidence; a provider named "nan" elsewhere is not NaN.
+ * The editor preset fills these values, and new-entry discovery checks the host. The
+ * host is the evidence; a provider named "nan" elsewhere is not NaN.
  */
 export const NAN_PROVIDER = {
   kind: 'nan',

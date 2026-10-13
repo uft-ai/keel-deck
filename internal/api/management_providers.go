@@ -75,10 +75,6 @@ type ProviderItemDTO struct {
 	// absolute http/https URL is ever reported, because the list renders it as a
 	// link.
 	Website string `json:"website,omitempty"`
-
-	// ProviderKind names a known provider behind a generic family, derived from the
-	// endpoint on every read and never stored. Only "nan" exists today.
-	ProviderKind string `json:"provider_kind,omitempty"`
 }
 
 // providerConfigFamilySpec describes one of CPA's config API-key credential
@@ -363,7 +359,6 @@ func (h *Handler) readProviderItems(ctx context.Context, client *management.Clie
 				ProxyConfigured: false,
 				RuntimePolicy:   providerRuntimePolicyDTO(entry.DisableCooling, entry.RequestRetry, entry.RequestScopedErrors, compatCapabilities),
 				Behavior:        &ProviderBehaviorDTO{SupportPromptCacheKey: &isPromptCacheKeySupported},
-				ProviderKind:    providerKindForBaseURL(entry.BaseURL),
 			})
 		}
 	}

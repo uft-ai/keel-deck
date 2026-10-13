@@ -8,18 +8,6 @@ type modelPullMetadata struct {
 	Basis     string `json:"basis"`
 }
 
-// nanProviderKind is the read-side identity of a compatible entry that calls NaN.Builders.
-const nanProviderKind = "nan"
-
-// providerKindForBaseURL derives the provider identity the console shows for a
-// compatible entry. Nothing stores it, so the endpoint stays the only source.
-func providerKindForBaseURL(baseURL string) string {
-	if management.IsNanBaseURL(baseURL) {
-		return nanProviderKind
-	}
-	return ""
-}
-
 // NaN discovery supplies availability, while its dated OpenAPI supplies these defaults.
 // Unknown limits stay unset; the catalog never adds a model the selected key did not list.
 func nanModelDefaults(baseURL string, discovered []string) (map[string]ProviderModelDTO, *modelPullMetadata) {

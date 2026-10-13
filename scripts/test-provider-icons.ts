@@ -34,6 +34,8 @@ const catalogIds = new Set(LOBE_ICON_CATALOG.map((item) => item.id));
  * asserting the file here would test the checkout rather than the code.
  */
 function iconIdIsRenderable(iconId: string): boolean {
+  // NaN.Builders' mark is bundled beside the catalog (LobeIcon's BUNDLED_MARK_URLS); its file is checked below.
+  if (iconId === NAN_PROVIDER.iconId) return true;
   return catalogIds.has(iconId) && lobeIconSlug(iconId).length > 0;
 }
 
@@ -64,6 +66,9 @@ test('the named credential rows carry the mark of the provider they name', () =>
   assert.equal(getCredentialProviderMetadata('DEViN').iconId, 'Devin');
   assert.equal(getCredentialProviderMetadata('  meta ').iconId, 'Meta');
   assert.equal(getCredentialProviderMetadata('not-a-brand').iconId, '');
+  // A quota row reaches `nan` only through the server's host rule or a login file of that type.
+  assert.deepEqual(getCredentialProviderMetadata('nan'), { id: 'nan', label: 'NaN.Builders', iconId: 'NanBuilders' });
+  assert.equal(credentialProviderIconId('nan', 'any key label'), 'NanBuilders');
 });
 
 test('a provider the table has not named still resolves through the icon catalog', () => {
@@ -217,20 +222,21 @@ test('the named rows never point at a mark the vendored catalog does not carry',
   }
 });
 
-test('the official NaN.Builders endpoint shows its own mark, not one found inside the host', () => {
-  // Fuzzy matching finds `pi` inside `api.nan.builders`; the endpoint decides first.
+test('the NaN.Builders keyword resolves its mark like any other brand, ahead of `pi` in its host', () => {
+  // The two-letter catalog keyword `pi` sits inside `api.nan.builders`; the longer brand keyword wins.
   for (const baseURL of ['https://api.nan.builders/v1', 'https://API.NAN.BUILDERS/v1', 'api.nan.builders']) {
-    assert.equal(resolveProviderIcon('openai-compatibility', 'My inference', baseURL), NAN_PROVIDER.iconId);
+    assert.equal(resolveProviderIcon('openai-compatibility', 'Team', baseURL), NAN_PROVIDER.iconId);
   }
   assert.equal(getProviderDefaultIcon('openai-compatibility', 'nan', 'https://api.nan.builders/v1'), NAN_PROVIDER.iconId);
+  assert.equal(resolveProviderIcon('openai-compatibility', 'NaN.Builders', 'https://gateway.example/v1'), NAN_PROVIDER.iconId);
   // The bundled file is the unchanged official artwork recorded in docs/architecture.md.
   const mark = readFileSync(new URL('../web/src/assets/provider-marks/nan-builders.png', import.meta.url));
   assert.equal(createHash('sha256').update(mark).digest('hex'), '971b2a24d9230261d5ddd8f9357635fdfb2b3682e0d952506d835857e3c08b07');
 });
 
-test('a provider named nan on another host is not given the NaN.Builders mark', () => {
-  for (const baseURL of ['https://relay.example.test/v1', 'https://api.nan.builders.example/v1', 'https://api.nan.builders@evil.test/v1']) {
-    assert.notEqual(resolveProviderIcon('openai-compatibility', 'nan', baseURL), NAN_PROVIDER.iconId);
+test('the bare name nan is not the NaN.Builders keyword', () => {
+  assert.notEqual(resolveProviderIcon('openai-compatibility', 'nan', 'https://relay.example.test/v1'), NAN_PROVIDER.iconId);
+  for (const baseURL of ['https://api.nan.builders.example/v1', 'https://api.nan.builders@evil.test/v1']) {
     assert.equal(isNanBaseURL(baseURL), false);
   }
 });

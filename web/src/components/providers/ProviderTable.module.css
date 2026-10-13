@@ -105,18 +105,6 @@
   line-height: 16px;
 }
 
-.provider-kind {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-}
-
-.provider-kind-protocol {
-  color: var(--meta);
-  font-size: var(--text-sm);
-}
-
 .muted {
   color: var(--meta);
   font-size: var(--text-md);

@@ -143,9 +143,6 @@ export interface ProviderItem {
    *  field, so it is stored beside the display name and always an absolute
    *  http/https URL or absent. */
   website?: string;
-  /** A known provider behind a generic family, derived by the server from the endpoint on
-   *  every read and never stored. `nan` is NaN.Builders. */
-  provider_kind?: string;
   prefix?: string;
   priority?: number;
   disable_cooling?: boolean;
