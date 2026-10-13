@@ -988,8 +988,10 @@ boundaries. `AuthGate`, `ShellLoading` and the route recovery fallback remain
 eager so sign-in and recovery do not wait for authenticated code. Brand/provider marks are copied from the pinned
 `@lobehub/icons-static-svg` package into `web/public/lobe-icons` and referenced
 as SVG URLs. A provider the catalog does not carry can ship its own published mark
-under `web/public/provider-marks`, listed in `BUNDLED_PROVIDER_MARKS`
-(`web/src/types/providerKinds.ts`). `nan-builders.png` is an unchanged copy of
+under `web/src/assets/provider-marks`. `LobeIcon` imports each file, so the build
+emits it under `assets/` and the existing static asset route serves it; a file in
+`web/public` outside `lobe-icons` would fall back to `index.html`.
+`nan-builders.png` is an unchanged copy of
 NaN.Builders' published logo, `https://nan.builders/brand/nan-isotipo-color.png`
 (the logo in the site's organization metadata; 1024×1024 PNG, SHA-256
 `971b2a24d9230261d5ddd8f9357635fdfb2b3682e0d952506d835857e3c08b07`). The site states

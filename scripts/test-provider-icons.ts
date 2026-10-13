@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import {
@@ -8,7 +10,7 @@ import {
 } from '../web/src/components/common/providerMetadata.ts';
 import { LOBE_ICON_CATALOG, lobeIconSlug } from '../web/src/types/lobeIconCatalog.ts';
 import { getProviderDefaultIcon, providerIconId, resolveProviderIcon } from '../web/src/types/providerIconIds.ts';
-import { BUNDLED_PROVIDER_MARKS, isNanBaseURL, NAN_PROVIDER } from '../web/src/types/providerKinds.ts';
+import { isNanBaseURL, NAN_PROVIDER } from '../web/src/types/providerKinds.ts';
 import { BUILTIN_OAUTH_PROVIDERS } from '../web/src/pages/oauthProviderLogic.ts';
 import {
   isRenderableLogoURL,
@@ -221,7 +223,9 @@ test('the official NaN.Builders endpoint shows its own mark, not one found insid
     assert.equal(resolveProviderIcon('openai-compatibility', 'My inference', baseURL), NAN_PROVIDER.iconId);
   }
   assert.equal(getProviderDefaultIcon('openai-compatibility', 'nan', 'https://api.nan.builders/v1'), NAN_PROVIDER.iconId);
-  assert.ok(BUNDLED_PROVIDER_MARKS[NAN_PROVIDER.iconId], 'the NaN.Builders mark ships with the dashboard');
+  // The bundled file is the unchanged official artwork recorded in docs/architecture.md.
+  const mark = readFileSync(new URL('../web/src/assets/provider-marks/nan-builders.png', import.meta.url));
+  assert.equal(createHash('sha256').update(mark).digest('hex'), '971b2a24d9230261d5ddd8f9357635fdfb2b3682e0d952506d835857e3c08b07');
 });
 
 test('a provider named nan on another host is not given the NaN.Builders mark', () => {

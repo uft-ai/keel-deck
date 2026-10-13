@@ -887,6 +887,8 @@ func contentType(name string) string {
 		return "image/svg+xml"
 	case strings.HasSuffix(name, ".json"):
 		return "application/json"
+	case strings.HasSuffix(name, ".png"):
+		return "image/png"
 	default:
 		return "application/octet-stream"
 	}

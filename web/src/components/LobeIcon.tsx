@@ -5,7 +5,8 @@ import { customIconID, resolveProviderArtwork, type CustomIcon } from '../types/
 import React, { memo, useEffect, useState } from 'react';
 import { LOBE_ICON_CATALOG, lobeIconSlug } from '../types/lobeIconCatalog';
 import { isRenderableLogoURL } from '../types/pluginOAuthProviders';
-import { BUNDLED_PROVIDER_MARKS } from '../types/providerKinds';
+import { NAN_PROVIDER } from '../types/providerKinds';
+import nanBuildersMark from '../assets/provider-marks/nan-builders.png';
 import { CloudServerOutlined } from './icons';
 
 export { getProviderDefaultIcon } from '../types/providerIconIds';
@@ -25,6 +26,11 @@ const WHITE_GLYPH_COLOR_ICONS = new Set(['Kimi']);
 
 const TOC_BY_ID = new Map(LOBE_ICON_CATALOG.map((item) => [item.id, item]));
 
+// Provider-published artwork beside the Lobe catalog; source and hash are recorded
+// in docs/architecture.md. Importing places each file under /assets/, which the
+// server already serves; a file in web/public would fall back to index.html.
+const BUNDLED_MARK_URLS: Record<string, string> = { [NAN_PROVIDER.iconId]: nanBuildersMark };
+
 export const LobeIcon: React.FC<LobeIconProps> = memo(({
   iconId,
   size = 24,
@@ -35,11 +41,11 @@ export const LobeIcon: React.FC<LobeIconProps> = memo(({
 }) => {
   const customID = customIconID(iconId);
   if (customID) return <CustomIconImage id={customID} size={size} className={className} style={style} loading={loading} />;
-  const bundled = iconId ? BUNDLED_PROVIDER_MARKS[iconId] : undefined;
+  const bundled = iconId ? BUNDLED_MARK_URLS[iconId] : undefined;
   if (bundled) {
     return (
       <img
-        src={`${import.meta.env.BASE_URL}${bundled}`}
+        src={bundled}
         width={size}
         height={size}
         className={className}
@@ -116,8 +122,8 @@ export function resolveMarkArtwork(
     const icon = customIcons.find((item) => item.id === customID);
     return icon ? { url: api.customIconURL(customID, icon.revision), isMono: false } : null;
   }
-  const bundled = iconId ? BUNDLED_PROVIDER_MARKS[iconId] : undefined;
-  if (bundled) return { url: `${import.meta.env.BASE_URL}${bundled}`, isMono: false };
+  const bundled = iconId ? BUNDLED_MARK_URLS[iconId] : undefined;
+  if (bundled) return { url: bundled, isMono: false };
   const metadata = iconId ? TOC_BY_ID.get(iconId) : undefined;
   if (!iconId || !metadata) return null;
   const slug = lobeIconSlug(iconId);

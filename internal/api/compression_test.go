@@ -264,6 +264,21 @@ func TestStaticGzipGETAndHEADHaveMatchingHeaders(t *testing.T) {
 	}
 }
 
+// A bundled provider mark is an image: the browser must receive its type, unchanged.
+func TestStaticPNGAssetKeepsItsImageType(t *testing.T) {
+	payload := []byte("\x89PNG\r\n\x1a\nfixture")
+	request := httptest.NewRequest(http.MethodGet, "/omc/assets/nan-builders-x1.png", nil)
+	request.Header.Set("Accept-Encoding", "gzip")
+	recorder := httptest.NewRecorder()
+	serveAssetRepresentation(recorder, request, "assets/nan-builders-x1.png", payload)
+	if got := recorder.Header().Get("Content-Type"); got != "image/png" {
+		t.Fatalf("content type = %q", got)
+	}
+	if recorder.Header().Get("Content-Encoding") != "" || !bytes.Equal(recorder.Body.Bytes(), payload) {
+		t.Fatal("PNG bytes changed")
+	}
+}
+
 func TestRouterCompressesAPIUnderConfiguredBasePath(t *testing.T) {
 	for _, base := range []string{"/", "/omc"} {
 		handler := testHandler(t, base)

@@ -16,15 +16,6 @@ export const NAN_PROVIDER = {
   iconId: 'NanBuilders',
 } as const;
 
-/**
- * Brand marks bundled beside the Lobe catalog, keyed by icon id and relative to the
- * app's base path. Each file is the provider's own published artwork; its source and
- * hash are recorded in docs/architecture.md.
- */
-export const BUNDLED_PROVIDER_MARKS: Record<string, string> = {
-  [NAN_PROVIDER.iconId]: 'provider-marks/nan-builders.png',
-};
-
 /** Whether an endpoint, or a bare host, is NaN.Builders' official API host. */
 export function isNanBaseURL(value?: string): boolean {
   const text = (value || '').trim();
