@@ -563,7 +563,7 @@ func TestUsageEventInspectorRedactsSplitSecrets(t *testing.T) {
 	}
 }
 
-func TestUsageEventExportStreamsALogLargerThanTheLegacyCap(t *testing.T) {
+func TestUsageEventRequestLogStreamsALogLargerThanTheLegacyCap(t *testing.T) {
 	secret := "github_pat_" + strings.Repeat("d", 80)
 	client, baseURL, repo := startDashboardTestServer(t, func(writer http.ResponseWriter, request *http.Request) {
 		if !strings.HasPrefix(request.URL.Path, "/v8/management/observability/logs/requests/") {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -38,6 +39,7 @@ type inspectorPayload struct {
 		EOF             bool  `json:"eof"`
 		Truncated       bool  `json:"truncated"`
 		SectionsOmitted int   `json:"sections_omitted"`
+		ReadError       bool  `json:"read_error"`
 	} `json:"preview"`
 	Sections []requestlog.Section `json:"sections"`
 }
@@ -166,34 +168,76 @@ func TestUsageEventInspectorMapsMissingLogs(t *testing.T) {
 	}
 }
 
-func TestUsageEventInspectorReadsPastLargeSectionsAndRedacts(t *testing.T) {
+// The inspector's parser reads past a 17 MiB section to later attempts and
+// redacts a credential split across reads. This is the parser's own cost, so it
+// is measured without the HTTP route's total timeout.
+func TestInspectRequestLogReadsPastLargeSectionsAndRedacts(t *testing.T) {
 	secret := "sk-" + strings.Repeat("c", 24)
+	parts := []io.Reader{strings.NewReader("=== REQUEST INFO ===\nRequest ID: large\n\n=== REQUEST BODY ===\n")}
+	chunk := strings.Repeat("conversation ", 1024)
+	for written := 0; written < 17*1024*1024; written += len(chunk) {
+		parts = append(parts, strings.NewReader(chunk))
+	}
+	parts = append(parts,
+		strings.NewReader("\n\n=== API REQUEST 1 ===\nBody:\n{\"api_key\":\""+secret[:10]),
+		strings.NewReader(secret[10:]+"\"}\n\n=== API RESPONSE 1 ===\nStatus: 200\n\nBody:\nfinal answer\n"),
+	)
+	limits := requestlog.DefaultLimits()
+	response := newRequestInspectorResponse("large", limits)
+	started := time.Now()
+	inspectRequestLog(&response, "large", io.MultiReader(parts...), limits)
+	t.Logf("parsed %d bytes in %s", response.Preview.BytesRead, time.Since(started))
+	if response.Preview.BytesRead < 17*1024*1024 || !response.Preview.EOF || response.ParseState != "recognized" {
+		t.Fatalf("preview = %+v", response.Preview)
+	}
+	if len(response.Sections) != 4 || !response.Sections[1].Truncated || response.Sections[3].Body != "final answer" {
+		t.Fatalf("later attempts were lost: %d sections", len(response.Sections))
+	}
+	if strings.Contains(response.Sections[2].Body, secret) {
+		t.Fatal("split secret reached the inspector")
+	}
+}
+
+// The inspector keeps its total timeout. A gateway that stops inside a
+// credential is answered as a read error with no fragment of that credential.
+func TestUsageEventInspectorTimeoutLeaksNoPartialCredential(t *testing.T) {
+	secret := "sk-" + strings.Repeat("t", 40)
 	client, baseURL, repo := startDashboardTestServer(t, func(writer http.ResponseWriter, request *http.Request) {
 		if !strings.HasPrefix(request.URL.Path, inspectorLogPath) {
 			writer.WriteHeader(http.StatusNotFound)
 			return
 		}
-		_, _ = writer.Write([]byte("=== REQUEST INFO ===\nRequest ID: large\n\n=== REQUEST BODY ===\n"))
-		chunk := []byte(strings.Repeat("conversation ", 1024))
-		for written := 0; written < 17*1024*1024; written += len(chunk) {
-			_, _ = writer.Write(chunk)
+		_, _ = writer.Write([]byte("=== REQUEST INFO ===\nRequest ID: stuck\n\n=== API REQUEST 1 ===\nHeaders:\nAuthorization: Bearer " + secret[:12]))
+		if flusher, ok := writer.(http.Flusher); ok {
+			flusher.Flush()
 		}
-		_, _ = writer.Write([]byte("\n\n=== API REQUEST 1 ===\nBody:\n{\"api_key\":\"" + secret[:10]))
-		_, _ = writer.Write([]byte(secret[10:] + "\"}\n\n=== API RESPONSE 1 ===\nStatus: 200\n\nBody:\nfinal answer\n"))
+		<-request.Context().Done()
+	}, func(handler *Handler) {
+		handler.cfg.RequestTimeout = 300 * time.Millisecond
 	})
-	inspector := readInspector(t, client, baseURL, seedInspectorEvent(t, repo, "large"))
-	if inspector.Preview.BytesRead < 17*1024*1024 || !inspector.Preview.EOF || inspector.ParseState != "recognized" {
-		t.Fatalf("preview = %+v", inspector.Preview)
+	id := seedInspectorEvent(t, repo, "stuck")
+	response, payload := getJSON(t, client, fmt.Sprintf("%s/omc/api/v1/usage/events/%d/inspector", baseURL, id))
+	var inspector inspectorPayload
+	if err := json.Unmarshal(payload, &inspector); err != nil {
+		t.Fatalf("decode %s: %v", payload, err)
 	}
-	if len(inspector.Sections) != 4 || !inspector.Sections[1].Truncated || inspector.Sections[3].Body != "final answer" {
-		t.Fatalf("later attempts were lost: %d sections", len(inspector.Sections))
+	if response.StatusCode != http.StatusOK || inspector.CaptureState != "retained" || !inspector.Preview.ReadError || inspector.Preview.EOF {
+		t.Fatalf("stuck inspector = %d %+v", response.StatusCode, inspector.Preview)
 	}
-	if strings.Contains(inspector.Sections[2].Body, secret) {
-		t.Fatal("split secret reached the inspector")
+	if strings.Contains(string(payload), secret[3:12]) {
+		t.Fatalf("a credential fragment reached the inspector: %s", payload)
+	}
+	events, err := repo.ListAuditEvents(context.Background(), 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcomes := requestLogAuditOutcomes(events, "request_log.inspect")
+	if !outcomes["stuck"]["failure"] || outcomes["stuck"]["success"] {
+		t.Fatalf("stuck inspector audit = %v, want one failure", outcomes["stuck"])
 	}
 }
 
-func TestUsageEventExportIsAnAttachmentAndMarksStreamFailure(t *testing.T) {
+func TestUsageEventRequestLogIsAnAttachmentAndMarksStreamFailure(t *testing.T) {
 	client, baseURL, repo := startDashboardTestServer(t, func(writer http.ResponseWriter, request *http.Request) {
 		if !strings.HasPrefix(request.URL.Path, inspectorLogPath) {
 			writer.WriteHeader(http.StatusNotFound)
@@ -212,7 +256,7 @@ func TestUsageEventExportIsAnAttachmentAndMarksStreamFailure(t *testing.T) {
 	}
 }
 
-func TestUsageEventExportMapsMissingLog(t *testing.T) {
+func TestUsageEventRequestLogMapsMissingLog(t *testing.T) {
 	client, baseURL, repo := startDashboardTestServer(t, func(writer http.ResponseWriter, request *http.Request) {
 		writer.WriteHeader(http.StatusNotFound)
 	})
