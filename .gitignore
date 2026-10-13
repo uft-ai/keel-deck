@@ -44,7 +44,9 @@ caddy-config/
 
 # Local debugging: real CPA binary/config and dotenv
 .env
+.env.*
 !.env.example
+*.runtime.env
 
 # Air hot-reload artifacts
 .air.toml.bak
