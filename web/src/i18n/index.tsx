@@ -2296,6 +2296,7 @@ const DICT: Record<string, [string, string]> = {
   'pro.discover_requires_key': ['请先填写至少一个密钥', 'Add at least one key first'],
   'pro.discover_failed': ['密钥 {keys} 未能读取模型列表。表单未更改。', 'Key {keys} could not read the model list. The form is unchanged.'],
   'pro.discover_empty': ['密钥 {keys} 返回的模型列表为空。表单未更改。', 'Key {keys} returned no models. The form is unchanged.'],
+  'pro.discover_draft_changed': ['读取期间表单已更改。已读取的模型已加入表单，请检查后再次保存。', 'The form changed while the models were read. The models are in the form; check it and save again.'],
   'pro.discover_mismatch': ['密钥 {keys} 返回的模型不同（{models}）。表单未更改。请为不同的模型列表使用单独的条目。', 'Keys {keys} list different models ({models}). The form is unchanged. Use a separate entry for each different model list.'],
   'pro.discover_added': ['已添加 {added} 个新模型；{omitted} 个已保存的模型未在列表中，已保留。请保存以生效。', 'Added {added} new models; {omitted} saved models were not listed and are kept. Save to apply.'],
   'pro.model_enabled': ['启用', 'Enabled'],

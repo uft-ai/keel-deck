@@ -67,6 +67,26 @@ export function useProviderIconOverrides() {
   );
 
   /**
+   * clearProviderIcon removes a row's override, under its id and under the
+   * display name an older console may have keyed it by, so the row falls back
+   * to the mark its endpoint and name derive. Nothing is written when neither
+   * key is stored.
+   */
+  const clearProviderIcon = React.useCallback(
+    (id: string, legacyName?: string) => {
+      const icons = { ...currentProviderIcons() };
+      const keys = [id, legacyName].filter((key): key is string => Boolean(key) && key! in icons);
+      if (keys.length === 0) return Promise.resolve({ ok: true });
+      for (const key of keys) delete icons[key];
+      return setProviderIcons(icons).then((result) => {
+        if (result.ok) void queryClient.invalidateQueries({ queryKey: CUSTOM_ICONS_QUERY_KEY });
+        return result;
+      });
+    },
+    [currentProviderIcons, setProviderIcons, queryClient],
+  );
+
+  /**
    * shiftCachedProviderIcons replays a provider delete's re-keying of the icon
    * overlay into this console's cache, without writing it back.
    *
@@ -99,5 +119,5 @@ export function useProviderIconOverrides() {
     [queryClient],
   );
 
-  return { providerIcons, writeProviderIcon, shiftCachedProviderIcons };
+  return { providerIcons, writeProviderIcon, clearProviderIcon, shiftCachedProviderIcons };
 }

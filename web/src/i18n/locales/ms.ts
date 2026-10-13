@@ -2028,6 +2028,7 @@ export const MS: Readonly<Record<string, string>> = {
   "pro.discover_requires_key": "Tambah sekurang-kurangnya satu kunci dahulu",
   "pro.discover_failed": "Kunci {keys} tidak dapat membaca senarai model. Borang tidak berubah.",
   "pro.discover_empty": "Kunci {keys} tidak mengembalikan model. Borang tidak berubah.",
+  "pro.discover_draft_changed": "Borang berubah semasa model dibaca. Model telah dimasukkan ke dalam borang; semak dan simpan semula.",
   "pro.discover_mismatch": "Kunci {keys} menyenaraikan model yang berbeza ({models}). Borang tidak berubah. Gunakan entri berasingan untuk setiap senarai model yang berbeza.",
   "pro.discover_added": "{added} model baharu ditambah; {omitted} model tersimpan tidak disenaraikan dan dikekalkan. Simpan untuk menggunakannya.",
   "pro.model_enabled": "Didayakan",

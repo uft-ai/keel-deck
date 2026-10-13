@@ -290,7 +290,7 @@ export function ProviderEditorDrawer({
             </Button>
             <Button
               type="primary"
-              loading={createProviderMutation.isPending || updateProviderMutation.isPending}
+              loading={createProviderMutation.isPending || updateProviderMutation.isPending || isDiscovering}
               disabled={isDemo}
               title={isDemo ? t('demo.blocked') : undefined}
               onClick={handleSaveProvider}

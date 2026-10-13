@@ -2028,6 +2028,7 @@ export const ZH_HANT: Readonly<Record<string, string>> = {
   "pro.discover_requires_key": "請先填寫至少一個密鑰",
   "pro.discover_failed": "密鑰 {keys} 未能讀取模型列表。表單未變更。",
   "pro.discover_empty": "密鑰 {keys} 回傳的模型列表為空。表單未變更。",
+  "pro.discover_draft_changed": "讀取期間表單已變更。已讀取的模型已加入表單，請檢查後再次儲存。",
   "pro.discover_mismatch": "密鑰 {keys} 回傳的模型不同（{models}）。表單未變更。請為不同的模型列表使用單獨的條目。",
   "pro.discover_added": "已新增 {added} 個新模型；{omitted} 個已儲存的模型未在列表中，已保留。請儲存以生效。",
   "pro.model_enabled": "啟用",

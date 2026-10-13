@@ -3413,8 +3413,17 @@ differing model names. A successful read appends one enabled row for each name
 no row uses, keeps every existing row (omitted and disabled ones included) and
 reports how many were added and omitted. It is a form change; routing changes
 only when the operator saves. A new NaN.Builders entry cannot be saved until a
-read for the current endpoint, keys and headers succeeds; the save performs that
-read when needed. The selected-key picker stays read-only.
+read for the current family, endpoint, keys and headers succeeds; the save performs
+that read when needed. A second Save during that read does nothing. When any other
+field changes during the read, the read rows stay in the form but nothing is saved;
+the operator saves the edited draft. The selected-key picker stays read-only.
+Legacy keys listed after the key entries join the agreement check. This guard
+belongs to the editor: an API or agent request still saves the list it sends.
+
+A save stores a provider icon override only when the operator chose the mark.
+Otherwise it removes any override under the row id and its legacy display-name
+key, so the row keeps the mark its endpoint and name derive. A stored override
+equal to that derived mark was written by an older save and is treated as derived.
 
 ### NaN availability in quota views
 

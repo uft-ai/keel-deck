@@ -57,7 +57,7 @@ export const ProvidersPage: React.FC = () => {
   const t = useT();
   const toast = useToast();
 
-  const { providerIcons, writeProviderIcon, shiftCachedProviderIcons } = useProviderIconOverrides();
+  const { providerIcons, writeProviderIcon, clearProviderIcon, shiftCachedProviderIcons } = useProviderIconOverrides();
   // A plugin-registered provider's own logo outranks everything the console stores
   // for it, because the plugin owns that provider's identity.
   const pluginLogos = usePluginOAuthLogos();
@@ -157,6 +157,7 @@ export const ProvidersPage: React.FC = () => {
     t,
     providerIcons,
     writeProviderIcon,
+    clearProviderIcon,
     shiftCachedProviderIcons,
     settleProviderRow,
   });

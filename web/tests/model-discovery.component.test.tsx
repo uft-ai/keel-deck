@@ -38,7 +38,7 @@ function renderEditor() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const toast = { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn(), pending: () => vi.fn(), dismiss: vi.fn() };
   const view = renderHook(() => useProviderManagement({
-    toast, t: (key: string) => key, providerIcons: {}, writeProviderIcon: async () => ({ ok: true }),
+    toast, t: (key: string) => key, providerIcons: {}, writeProviderIcon: async () => ({ ok: true }), clearProviderIcon: async () => ({ ok: true }),
     shiftCachedProviderIcons: vi.fn(), settleProviderRow: vi.fn(),
   }), { wrapper: ({ children }) => <QueryClientProvider client={client}>{children}</QueryClientProvider> });
   return { ...view, toast, client };
@@ -190,6 +190,103 @@ it('a new NaN.Builders entry saves only after the account list is read', async (
     await act(async () => result.current.handleSaveProvider());
     expect(saves).toHaveLength(1);
     expect(pulls.at(-1)).toMatchObject({ api_key: 'sk-b' });
+  } finally {
+    unmount();
+    client.clear();
+  }
+});
+
+it('a save that waits for the read never saves a draft edited meanwhile', async () => {
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const saves: Array<Record<string, unknown>> = [];
+  let reads = 0;
+  vi.stubGlobal('fetch', vi.fn(async (input: string, options: RequestInit) => {
+    if (input.endsWith('/pull-models')) {
+      reads += 1;
+      await held;
+      return json({ models: ['qwen3.8-flash'], total: 1 });
+    }
+    if (options.method === 'POST') saves.push(JSON.parse(String(options.body)));
+    return json({ status: 'ok', id: 'openai-compat-0' });
+  }));
+  const { result, unmount, toast, client } = renderEditor();
+  try {
+    act(() => result.current.handleOpenCreate());
+    act(() => {
+      result.current.setFormBaseURL('https://api.nan.builders/v1');
+      result.current.setFormKeys(keys('sk-a'));
+      result.current.setFormName('first name');
+    });
+    let first!: Promise<void>;
+    act(() => { first = result.current.handleSaveProvider(); });
+    // A second click while the first save waits starts nothing.
+    await act(async () => result.current.handleSaveProvider());
+    expect(reads).toBe(1);
+    act(() => result.current.setFormName('edited name'));
+    release();
+    await act(async () => first);
+    expect(saves).toHaveLength(0);
+    expect(toast.warning).toHaveBeenCalledWith('pro.discover_draft_changed');
+    expect(result.current.formModels.map((model) => model.name)).toEqual(['qwen3.8-flash']);
+
+    // The next save writes the edited draft from the read it already has.
+    await act(async () => result.current.handleSaveProvider());
+    expect(reads).toBe(1);
+    expect(saves).toHaveLength(1);
+    expect(saves[0]).toMatchObject({ name: 'edited name', family: 'openai-compatibility' });
+  } finally {
+    unmount();
+    client.clear();
+  }
+});
+
+it('a family change during the read is a new connection', async () => {
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const saves: unknown[] = [];
+  vi.stubGlobal('fetch', vi.fn(async (input: string, options: RequestInit) => {
+    if (input.endsWith('/pull-models')) {
+      await held;
+      return json({ models: ['late-model'], total: 1 });
+    }
+    if (options.method === 'POST') saves.push(options.body);
+    return json({ status: 'ok', id: 'openai-compat-0' });
+  }));
+  const { result, unmount, client } = renderEditor();
+  try {
+    act(() => result.current.handleOpenCreate());
+    act(() => {
+      result.current.setFormBaseURL('https://api.nan.builders/v1');
+      result.current.setFormKeys(keys('sk-a'));
+    });
+    let pending!: Promise<void>;
+    act(() => { pending = result.current.handleSaveProvider(); });
+    act(() => result.current.setFormFamily('claude'));
+    release();
+    await act(async () => pending);
+    expect(saves).toHaveLength(0);
+    expect(result.current.formModels).toEqual([]);
+  } finally {
+    unmount();
+    client.clear();
+  }
+});
+
+it('a key listed only in the legacy key list joins the agreement check', async () => {
+  // A stored key is read through its auth index; a legacy key has none.
+  const { pulls } = stubGateway({ a1: ['one'], 'sk-legacy': ['one', 'two'] });
+  const { result, unmount, toast, client } = renderEditor();
+  try {
+    act(() => result.current.handleOpenEdit({
+      id: 'openai-compat-0', family: 'openai-compatibility', name: 'Relay', base_url: 'https://relay.example/v1',
+      key_entries: [{ index: 0, api_key: 'sk-a', auth_index: 'a1' }, { index: 1, api_key: 'sk-legacy' }],
+      models: [], model_entries: [],
+    } as never));
+    await act(async () => result.current.handleDiscoverAllModels());
+    expect(pulls).toHaveLength(2);
+    expect(pulls[1]).toMatchObject({ api_key: 'sk-legacy' });
+    expect(toast.error).toHaveBeenCalledWith('pro.discover_mismatch');
   } finally {
     unmount();
     client.clear();

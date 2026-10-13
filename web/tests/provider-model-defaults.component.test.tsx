@@ -25,7 +25,7 @@ it('applies discovered defaults only to newly selected models and preserves an e
   vi.stubGlobal('fetch', fetch);
   const { result, unmount } = renderHook(() => useProviderManagement({
     toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn(), pending: () => vi.fn(), dismiss: vi.fn() },
-    t: key => key, providerIcons: {}, writeProviderIcon: async () => ({ ok: true }),
+    t: key => key, providerIcons: {}, writeProviderIcon: async () => ({ ok: true }), clearProviderIcon: async () => ({ ok: true }),
     shiftCachedProviderIcons: vi.fn(), settleProviderRow: vi.fn(),
   }), { wrapper: ({ children }) => <QueryClientProvider client={client}>{children}</QueryClientProvider> });
   const existing = { id: 'native', name: 'qwen3.6', alias: 'qwen3.6-native', image: false,

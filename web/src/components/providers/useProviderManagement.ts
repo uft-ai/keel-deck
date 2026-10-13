@@ -61,6 +61,7 @@ export function useProviderManagement({
   t,
   providerIcons,
   writeProviderIcon,
+  clearProviderIcon,
   shiftCachedProviderIcons,
   settleProviderRow,
 }: {
@@ -68,6 +69,7 @@ export function useProviderManagement({
   t: ReturnType<typeof useT>;
   providerIcons: Record<string, string>;
   writeProviderIcon: (id: string, icon: string) => Promise<{ ok: boolean }>;
+  clearProviderIcon: (id: string, legacyName?: string) => Promise<{ ok: boolean }>;
   shiftCachedProviderIcons: (id: string) => void;
   settleProviderRow: (id: string, isEnabled: boolean) => void;
 }) {
@@ -188,6 +190,7 @@ export function useProviderManagement({
   // What a discovery was read through. A save compares it with the form, so a
   // changed endpoint, key or header needs a new discovery.
   const connectionSignature = () => JSON.stringify([
+    formFamily,
     formBaseURL.trim(),
     servingKeys(formKeys).map((key) => [(key.apiKey || '').trim(), key.authIndex || '', (key.proxyUrl || '').trim()]),
     headersPayload(),
@@ -200,6 +203,15 @@ export function useProviderManagement({
   const currentSignatureRef = useRef('');
   const currentModelsRef = useRef<FormModelItem[]>(formModels);
   const latestDiscoveryRef = useRef(0);
+  // Everything a save writes besides the model rows. A save that waits for a
+  // discovery compares it afterwards, so an edit made meanwhile is never saved
+  // from the older render.
+  const draftSignature = () => JSON.stringify([
+    connectionSignature(), formName, formWebsite, formPrefix, formPriority, formDisabled,
+    formPolicy, formBehavior, formKeys, formHeaders, formIcon, iconManuallySelected,
+  ]);
+  const currentDraftRef = useRef('');
+  const saveInFlightRef = useRef(false);
 
   /**
    * Reads the account's model list through every key and adds an enabled row for
@@ -588,14 +600,15 @@ export function useProviderManagement({
 
 
   const createProviderMutation = useMutation({
-    mutationFn: ({ payload }: { payload: SaveProviderPayload; icon: string }) =>
+    mutationFn: ({ payload }: { payload: SaveProviderPayload; icon: string | null }) =>
       api.createManagementProvider(payload),
     // The icon is written only once the create has named the row it added. A
     // create stores a positional id server-side, and the table resolves an id
     // key before a name key, so an override stored under the display name alone
-    // could be shadowed by whatever id the new row landed on.
+    // could be shadowed by whatever id the new row landed on. A derived mark is
+    // not stored at all, so it keeps following the row's endpoint and name.
     onSuccess: async (data, variables) => {
-      const result = await writeProviderIcon(data.id, variables.icon);
+      const result = variables.icon === null ? { ok: true } : await writeProviderIcon(data.id, variables.icon);
       if (!result.ok) { handleCloseProviderDrawer(); void queryClient.invalidateQueries({ queryKey: ['management-providers'] }); return; }
       toast.success(t('pro.provider_created'));
       handleCloseProviderDrawer();
@@ -608,10 +621,15 @@ export function useProviderManagement({
   });
 
   const updateProviderMutation = useMutation({
-    mutationFn: ({ id, payload }: { id: string; payload: SaveProviderPayload; icon: string }) =>
+    mutationFn: ({ id, payload }: { id: string; payload: SaveProviderPayload; icon: string | null; legacyName?: string }) =>
       api.updateManagementProvider(id, payload),
+    // Without a chosen mark, the save removes any stored override so the row
+    // goes back to the mark its endpoint and name derive.
     onSuccess: async (data, variables) => {
-      const result = await writeProviderIcon(data.id, variables.icon);
+      const result =
+        variables.icon === null
+          ? await clearProviderIcon(data.id, variables.legacyName)
+          : await writeProviderIcon(data.id, variables.icon);
       if (!result.ok) { handleCloseProviderDrawer(); void queryClient.invalidateQueries({ queryKey: ['management-providers'] }); return; }
       toast.success(t('pro.provider_updated'));
       handleCloseProviderDrawer();
@@ -686,13 +704,13 @@ export function useProviderManagement({
     setIsPolicyChecked(false);
 
     setFormTestModel('auto');
-    const existingIcon = resolveProviderIcon(
-      providerIcons,
-      provider,
-      getProviderDefaultIcon(provider.family, provider.name, provider.base_url),
-    );
+    const defaultIcon = getProviderDefaultIcon(provider.family, provider.name, provider.base_url);
+    const existingIcon = resolveProviderIcon(providerIcons, provider, defaultIcon);
     setFormIcon(existingIcon);
-    setIconManuallySelected(Boolean(providerIcons[provider.id] || providerIcons[provider.name]));
+    // A stored override equal to the derived mark was written by an older save
+    // that stored every mark; treating it as derived lets it follow the endpoint.
+    const storedIcon = providerIcons[provider.id] || providerIcons[provider.name];
+    setIconManuallySelected(Boolean(storedIcon) && storedIcon !== defaultIcon);
     // Populate keys (plaintext — the tool mirrors the CPA config file as-is)
     if (provider.key_entries && provider.key_entries.length > 0) {
       setFormKeys(
@@ -785,11 +803,24 @@ export function useProviderManagement({
     let rows = formModels;
     // A new NaN.Builders entry starts from the account's own list: the save reads
     // it through every key unless the current connection was already read.
+    // One save at a time: a second click while the first waits does nothing.
     if (!editingProvider && formFamily === 'openai-compatibility' && isNanBaseURL(formBaseURL)
       && discoveredSignature !== connectionSignature()) {
-      const discovered = await discoverAllModels();
-      if (!discovered) return;
-      rows = discovered;
+      if (saveInFlightRef.current) return;
+      saveInFlightRef.current = true;
+      const draft = draftSignature();
+      try {
+        const discovered = await discoverAllModels();
+        if (!discovered) return;
+        if (currentDraftRef.current !== draft) {
+          // The read rows are in the form; the operator saves the edited draft.
+          toast.warning(t('pro.discover_draft_changed'));
+          return;
+        }
+        rows = discovered;
+      } finally {
+        saveInFlightRef.current = false;
+      }
     }
     if (lookupProviderFamily(formFamily)?.requiresBaseURL && !formBaseURL.trim()) {
       toast.warning(t('pro.base_url_required'));
@@ -870,16 +901,18 @@ export function useProviderManagement({
 
     // The icon travels with the write rather than being stored here: it is keyed
     // by the id the server answers with, and for a create that id does not exist
-    // until the row does.
+    // until the row does. Only a mark the operator chose is stored.
+    const icon = iconManuallySelected ? formIcon : null;
     if (editingProvider) {
-      updateProviderMutation.mutate({ id: editingProvider.id, payload, icon: formIcon });
+      updateProviderMutation.mutate({ id: editingProvider.id, payload, icon, legacyName: editingProvider.name });
     } else {
-      createProviderMutation.mutate({ payload, icon: formIcon });
+      createProviderMutation.mutate({ payload, icon });
     }
   };
 
   currentSignatureRef.current = connectionSignature();
   currentModelsRef.current = formModels;
+  currentDraftRef.current = draftSignature();
 
   return {
     createProviderMutation,
