@@ -319,6 +319,43 @@ export async function dashboardModelPanels({ base, page, check }) {
     }, width));
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
+  // The restore is a resize like any in the sweep, and the ring repaints after it. The centring check
+  // below reads the paint, so it waits until the canvas fills the restored ring frame and the ink
+  // holds still across two frames; otherwise it measures a drawing sized for an earlier width.
+  await until(() => page.evaluate(() => new Promise((resolve) => {
+    const canvas = document.querySelector('.model-ring canvas');
+    if (!canvas) { resolve(false); return; }
+    const inkBox = () => {
+      const probe = document.createElement('canvas');
+      probe.width = canvas.width;
+      probe.height = canvas.height;
+      const context = probe.getContext('2d');
+      context.drawImage(canvas, 0, 0);
+      const { data } = context.getImageData(0, 0, probe.width, probe.height);
+      let minX = Infinity; let maxX = -1; let minY = Infinity; let maxY = -1;
+      for (let y = 0; y < probe.height; y += 1) {
+        for (let x = 0; x < probe.width; x += 1) {
+          if (data[(y * probe.width + x) * 4 + 3] > 40) {
+            minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+            minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+          }
+        }
+      }
+      return `${canvas.width}x${canvas.height}:${minX},${minY},${maxX},${maxY}`;
+    };
+    const box = canvas.getBoundingClientRect();
+    const frame = document.querySelector('.model-ring-frame').getBoundingClientRect();
+    const fitsFrame = Math.abs(box.width - frame.width) <= 1 && Math.abs(box.height - frame.height) <= 1;
+    const before = inkBox();
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const after = inkBox();
+      window.__ringRepaint = { canvas: [box.width, box.height], frame: [frame.width, frame.height], before, after };
+      resolve(fitsFrame && !before.endsWith(':Infinity,Infinity,-1,-1') && after === before);
+    }));
+  })), { label: 'the ring to repaint at the restored width' })
+    .catch(async (error) => {
+      throw new Error(`${error.message}: ${JSON.stringify(await page.evaluate(() => window.__ringRepaint))}`);
+    });
   check(
     'no column is painted outside the card at any width',
     sweep.every((entry) => entry.listOverflow <= 0 && entry.sharePastCard <= 0),
