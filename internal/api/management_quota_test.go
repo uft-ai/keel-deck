@@ -493,7 +493,7 @@ func TestQuotaOverviewAdvertisesPluginRefresh(t *testing.T) {
 func TestConfiguredQuotaSubjectsFollowHostAndRefuseAmbiguousIndexes(t *testing.T) {
 	const secret = "sk-nan-secret-value-1234"
 	const managementKey = "management-secret"
-	var upstreamCalls atomic.Int32
+	var upstreamCalls, validCalls atomic.Int32
 	cpaServer := newFakeCPA(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.Header.Get("Authorization") != "Bearer "+managementKey {
 			writer.WriteHeader(http.StatusUnauthorized)
@@ -508,9 +508,31 @@ func TestConfiguredQuotaSubjectsFollowHostAndRefuseAmbiguousIndexes(t *testing.T
 				{"name":"claude.json","auth_index":"shared-1","type":"claude","provider":"claude"}
 			]}`))
 		case "/v8/management/requests/api-call", "/v8/management/availability/period-exhaustion":
-			// No provider read or ledger call may happen for an ambiguous or non-NaN index.
-			upstreamCalls.Add(1)
-			writer.WriteHeader(http.StatusServiceUnavailable)
+			// Only renamed-1, a valid selected subject, may be read. No provider read or
+			// ledger call may happen for an ambiguous or non-NaN index.
+			raw, _ := io.ReadAll(request.Body)
+			var call struct {
+				AuthIndex string `json:"auth_index"`
+			}
+			_ = json.Unmarshal(raw, &call)
+			if call.AuthIndex == "" {
+				call.AuthIndex = request.URL.Query().Get("auth_index")
+			}
+			if call.AuthIndex != "renamed-1" {
+				upstreamCalls.Add(1)
+				writer.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			validCalls.Add(1)
+			switch {
+			case request.URL.Path == "/v8/management/requests/api-call":
+				periodEnd := time.Now().Add(30 * 24 * time.Hour).UTC().Format(time.RFC3339)
+				_, _ = writer.Write([]byte(`{"status_code":200,"body":"{\"models\":[{\"model\":\"qwen3.8-flash\",\"tokensUsed\":1,\"cap\":10,\"remaining\":9,\"periodEnd\":\"` + periodEnd + `\"}]}"}`))
+			case request.Method == http.MethodPut:
+				_, _ = writer.Write([]byte(`{"record":{"auth_index":"renamed-1","model":"qwen3.8-flash","version":1}}`))
+			default:
+				_, _ = writer.Write([]byte(`{"record":null,"observed_at":"` + time.Now().UTC().Format(time.RFC3339Nano) + `"}`))
+			}
 		case "/v0/management/openai-compatibility":
 			_, _ = writer.Write([]byte(`{"openai-compatibility":[
 				{"name":"nan","base-url":"https://api.nan.builders/v1","api-key-entries":[
@@ -531,7 +553,7 @@ func TestConfiguredQuotaSubjectsFollowHostAndRefuseAmbiguousIndexes(t *testing.T
 				{"name":"nan","base-url":"http://172.31.77.10:8090/v1","api-key-entries":[
 					{"api-key":"sk-elsewhere-secret-value","auth-index":"nan-elsewhere"}
 				]},
-				{"name":"Renamed","base-url":"https://API.nan.builders/v1","api-key-entries":[
+				{"name":"Renamed","base-url":"https://API.nan.builders/v1","models":[{"name":"qwen3.8-flash"}],"api-key-entries":[
 					{"api-key":"sk-renamed-secret-value","auth-index":"renamed-1"},
 					{"api-key":"sk-shared-secret-value","auth-index":"shared-1"}
 				]}
@@ -681,6 +703,29 @@ func TestConfiguredQuotaSubjectsFollowHostAndRefuseAmbiguousIndexes(t *testing.T
 	batch.Body.Close()
 	if batch.StatusCode != http.StatusOK || batchBody.Total != 0 || !reflect.DeepEqual(batchBody.Diagnostics, wantDiagnostics[1:]) {
 		t.Fatalf("batch = %d %#v", batch.StatusCode, batchBody)
+	}
+	// A mixed batch refreshes its valid subject and still reports the ambiguous one.
+	mixed, err := client.Post(appServer.URL+"/api/v1/management/quota/refresh", "application/json",
+		bytes.NewBufferString(`{"auth_indexes":["shared-1","renamed-1"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mixedBody struct {
+		Quotas      []quota.NormalizedQuota `json:"quotas"`
+		Total       int                     `json:"total"`
+		Diagnostics []quotaDiagnostic       `json:"diagnostics"`
+	}
+	if err := json.NewDecoder(mixed.Body).Decode(&mixedBody); err != nil {
+		t.Fatal(err)
+	}
+	mixed.Body.Close()
+	if mixed.StatusCode != http.StatusOK || mixedBody.Total != 1 || mixedBody.Quotas[0].AuthIndex != "renamed-1" ||
+		mixedBody.Quotas[0].Error != "" || !reflect.DeepEqual(mixedBody.Diagnostics, wantDiagnostics[1:]) {
+		t.Fatalf("mixed batch = %d %#v", mixed.StatusCode, mixedBody)
+	}
+	// The valid subject took the ledger read, the provider read and the ledger write.
+	if calls := validCalls.Load(); calls != 3 {
+		t.Fatalf("valid subject calls = %d, want 3", calls)
 	}
 	// The agent's quota tool refuses the same index with its existing non-retryable code.
 	if _, err := handler.operationsService().RefreshQuota(context.Background(), "shared-1"); err == nil || err.Error() != "resource_conflict" {
