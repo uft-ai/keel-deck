@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func TestNanConfiguredQuotaSubjectsStaySecretFreeAndUnambiguous(t *testing.T) {
+func TestConfiguredQuotaSubjectsFollowHostStaySecretFreeAndUnambiguous(t *testing.T) {
 	const secret = "sk-nan-secret-value-1234"
 	providers := []map[string]any{
 		{"name": "nan", "base-url": "https://api.nan.builders/v1", "api-key-entries": []any{
@@ -29,6 +29,10 @@ func TestNanConfiguredQuotaSubjectsStaySecretFreeAndUnambiguous(t *testing.T) {
 		}},
 		{"name": "Lookalike", "base-url": "https://api.nan.builders.example/v1", "api-key-entries": []any{
 			map[string]any{"api-key": "sk-lookalike-secret-value", "auth-index": "lookalike-1"},
+		}},
+		// The name selects nothing: an entry named nan on another host has no quota reader.
+		{"name": "nan", "base-url": "http://172.31.77.10:8090/v1", "api-key-entries": []any{
+			map[string]any{"api-key": "sk-elsewhere-secret-value", "auth-index": "nan-elsewhere"},
 		}},
 		{"name": "nan", "base-url": "https://api.nan.builders/v1", "api-key-entries": []any{
 			map[string]any{"api-key": "sk-repeat-again-secret", "auth-index": "nan-repeat"},
@@ -50,7 +54,7 @@ func TestNanConfiguredQuotaSubjectsStaySecretFreeAndUnambiguous(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := client.NanConfiguredQuotaSubjects(context.Background())
+	got, err := client.ConfiguredQuotaSubjects(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,6 +97,9 @@ func TestNanConfiguredQuotaSubjectsStaySecretFreeAndUnambiguous(t *testing.T) {
 	if _, ok := got.Subject("lookalike-1"); ok {
 		t.Fatal("lookalike host was selectable")
 	}
+	if _, ok := got.Subject("nan-elsewhere"); ok {
+		t.Fatal("an entry named nan on another host was selectable")
+	}
 	reasons := map[string]ConfiguredQuotaDiagnostic{}
 	for _, diagnostic := range got.Diagnostics {
 		reasons[diagnostic.Reason] = diagnostic
@@ -100,12 +107,12 @@ func TestNanConfiguredQuotaSubjectsStaySecretFreeAndUnambiguous(t *testing.T) {
 	if len(reasons) != 2 || reasons["missing_auth_index"].Channel != "openai-compatible-nan" {
 		t.Fatalf("diagnostics = %#v", got.Diagnostics)
 	}
-	if reasons["duplicate_auth_index"].Count != 2 {
+	if reasons["duplicate_auth_index"].Count != 2 || reasons["duplicate_auth_index"].AuthIndex != "nan-repeat" {
 		t.Fatalf("duplicate diagnostic = %#v", reasons["duplicate_auth_index"])
 	}
 }
 
-func TestNanConfiguredQuotaSubjectsAllowNoKeys(t *testing.T) {
+func TestConfiguredQuotaSubjectsAllowNoKeys(t *testing.T) {
 	server := newV8Server(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		_, _ = writer.Write([]byte(`{"openai-compatibility":[{"name":"other","api-key-entries":[{"api-key":"sk-other","auth-index":"other-1"}]}]}`))
 	}))
@@ -114,7 +121,7 @@ func TestNanConfiguredQuotaSubjectsAllowNoKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := client.NanConfiguredQuotaSubjects(context.Background())
+	got, err := client.ConfiguredQuotaSubjects(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

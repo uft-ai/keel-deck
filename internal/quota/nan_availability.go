@@ -1,45 +1,12 @@
 package quota
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/oh-my-cpa/oh-my-cpa/internal/cpa/management"
 )
-
-func exactModels(models []string) []string {
-	seen := map[string]struct{}{}
-	result := make([]string, 0, len(models))
-	for _, model := range models {
-		name := strings.TrimSpace(model)
-		if name == "" {
-			continue
-		}
-		if _, duplicate := seen[name]; duplicate {
-			continue
-		}
-		seen[name] = struct{}{}
-		result = append(result, name)
-	}
-	return result
-}
-
-func periodDeliveryStatus(err error) string {
-	var httpErr *management.HTTPError
-	if errors.As(err, &httpErr) {
-		switch httpErr.StatusCode {
-		case 409:
-			return PeriodDeliveryRejected
-		case 503:
-			return PeriodDeliveryUnavailable
-		default:
-			return PeriodDeliveryRejected
-		}
-	}
-	return PeriodDeliveryUnavailable
-}
 
 // PeriodObservationInput is the evidence one NaN model can submit.
 //

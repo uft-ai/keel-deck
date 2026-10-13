@@ -146,6 +146,8 @@ export interface QuotaItem {
   name: string;
   type: string;
   provider: string;
+  /** Where the credential comes from: a login or plugin file, or a configured API key. */
+  source: 'auth_file' | 'configured_key';
   disabled: boolean;
   status: 'idle' | 'loading' | 'healthy' | 'warning' | 'exhausted' | 'cooldown' | 'error' | 'stale' | 'unpublished';
   observed_at_ms: number;
@@ -195,6 +197,14 @@ export interface QuotaOverviewResponse {
   summary: QuotaOverviewSummary;
   quotas: QuotaItem[];
   total: number;
+  /** Auth indexes claimed by more than one credential. They have no row and are never read. */
+  diagnostics?: QuotaSubjectDiagnostic[];
+}
+
+export interface QuotaSubjectDiagnostic {
+  reason: 'duplicate_auth_index';
+  auth_index: string;
+  count: number;
 }
 
 export interface CredentialQuotaDetailResponse {

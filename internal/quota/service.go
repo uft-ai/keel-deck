@@ -153,7 +153,9 @@ func DetectProvider(fileType, provider string) string {
 		return "meta"
 	case strings.Contains(t, "devin") || strings.Contains(p, "devin"):
 		return "devin"
-	case t == "nan" || p == "nan" || p == "openai-compatibility-nan" || p == "openai-compatible-nan":
+	case t == "nan":
+		// A file of type nan, or a configured key whose endpoint host is NaN's. A
+		// provider name never selects NaN: an entry called nan may call any host.
 		return "nan"
 	default:
 		if t != "" {
@@ -357,26 +359,10 @@ func (s *Service) RefreshCredentialQuotaModels(ctx context.Context, file managem
 	} else {
 		switch stdProvider {
 		case "nan":
-			ledger, hasLedger := s.client.(PeriodLedger)
-			if !hasLedger {
-				fetchErr = errors.New("NaN period ledger is not configured")
+			periods, err := readPeriodLedger(ctx, s.client, result, models)
+			if err != nil {
+				fetchErr = err
 				break
-			}
-			models = exactModels(models)
-			if len(models) == 0 {
-				fetchErr = errors.New("NaN quota refresh has no configured model")
-				break
-			}
-			reads := make(map[string]management.PeriodRead, len(models))
-			var readErr error
-			for _, model := range models {
-				read, err := ledger.GetPeriodExhaustion(ctx, authIndex, model)
-				if err != nil {
-					readErr = err
-					result.PeriodDeliveries = append(result.PeriodDeliveries, PeriodDelivery{Model: model, Status: periodDeliveryStatus(err), Error: security.RedactText(err.Error())})
-					continue
-				}
-				reads[model] = read
 			}
 			report, windows, err := s.fetchNanQuota(ctx, authIndex)
 			if err != nil {
@@ -384,53 +370,19 @@ func (s *Service) RefreshCredentialQuotaModels(ctx context.Context, file managem
 				break
 			}
 			result.Windows = windows
-			for i := range result.Windows {
-				if read, ok := reads[result.Windows[i].Model]; ok {
-					blocked := read.Record != nil && read.Record.Blocked
-					result.Windows[i].InferenceBlocked = &blocked
-				}
-			}
+			periods.markBlocked(result)
 			if report.AccountPeriodStart != nil {
 				if result.RawSignals == nil {
 					result.RawSignals = map[string]string{}
 				}
 				result.RawSignals["nan_account_period_start"] = report.AccountPeriodStart.UTC().Format(time.RFC3339)
 			}
-			if readErr != nil && len(reads) == 0 {
-				break
-			}
-			fetchID := uuid.NewString()
-			for _, model := range models {
-				read, ok := reads[model]
-				if !ok {
-					continue
-				}
-				version := uint64(0)
-				if read.Record != nil {
-					version = read.Record.Version
-				}
-				observation, observationErr := NanPeriodObservation(PeriodObservationInput{
-					ObservationID:  fmt.Sprintf("deck-%s-%s-%d-%s", authIndex, model, version, fetchID),
-					BasedOnVersion: version, AuthIndex: authIndex, Model: model,
+			periods.deliver(ctx, result, func(id, model string, version uint64, read management.PeriodRead) (management.PeriodObservation, error) {
+				return NanPeriodObservation(PeriodObservationInput{
+					ObservationID: id, BasedOnVersion: version, AuthIndex: authIndex, Model: model,
 					NotBefore: read.ObservedAt, Report: report,
 				})
-				if observationErr != nil {
-					result.PeriodDeliveries = append(result.PeriodDeliveries, PeriodDelivery{Model: model, Status: "not_submitted", Error: observationErr.Error()})
-					continue
-				}
-				record, putErr := ledger.PutPeriodExhaustion(ctx, observation)
-				if putErr != nil {
-					result.PeriodDeliveries = append(result.PeriodDeliveries, PeriodDelivery{Model: model, State: observation.State, Status: periodDeliveryStatus(putErr), Error: security.RedactText(putErr.Error())})
-					continue
-				}
-				blocked := record.Blocked
-				result.PeriodDeliveries = append(result.PeriodDeliveries, PeriodDelivery{Model: model, State: observation.State, Status: "accepted", Version: record.Version, Blocked: &blocked})
-				for i := range result.Windows {
-					if result.Windows[i].Model == model {
-						result.Windows[i].InferenceBlocked = &blocked
-					}
-				}
-			}
+			})
 
 		case "codex":
 			plan, windows, credits, err := s.fetchCodexQuota(ctx, file, nowMS)

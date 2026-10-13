@@ -281,13 +281,13 @@ export const CredentialQuotaPanel: React.FC<CredentialQuotaPanelProps> = ({
               // is readable here without the panel outgrowing the row it shares.
               <ul className="quota-list">
                 {board.rows.map((row) => <CredentialQuotaRowView key={row.key} row={row} nowMS={nowMS}
-                  onInspect={row.provider === 'nan' ? () => setSelectedAuthIndex(row.key) : undefined} />)}
+                  onInspect={row.configuredKey ? () => setSelectedAuthIndex(row.key) : undefined} />)}
               </ul>
             ) : (
               <p className="empty-copy quota-all-disabled">{t('dash.quota.all_disabled')}</p>
             )}
             <div className="quota-foot">
-              {board.rows.some(row => row.provider === 'nan') && (
+              {board.rows.some(row => row.configuredKey) && (
                 <Link to="/ai-providers" className="quota-foot-link">{t('nav.providers')}</Link>
               )}
               <Link to="/oauth-management" className="quota-foot-link">

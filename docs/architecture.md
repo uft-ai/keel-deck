@@ -2062,18 +2062,25 @@ A refresh that succeeds without publishing a window is recorded as an
 nobody has read, and a window's identity — its id, label and kind — comes from the
 duration the payload states rather than from the slot it arrived in (ADR 0071).
 
-Quota subjects come from two sources. Auth files remain the OAuth subjects.
-`NanConfiguredQuotaSubjects` adds an OpenAI-compatible key whose provider name is
-exactly `nan`, ignoring case, or whose base URL host is exactly
-`api.nan.builders`. A renamed NaN provider therefore stays observable. The
-subject keeps that provider's usage channel and its unique `auth_index`; its
-label names the index and contains no secret. Missing and duplicate indexes are
-diagnostics, not selections, and a disabled provider stays visible but cannot be
-refreshed. A gateway without the compatibility route contributes no configured
-subjects, so the auth-file overview still loads. These subjects are not written
-back as auth files. A NaN refresh reads
+Quota subjects come from two sources (ADR 0096). Auth files remain the OAuth
+subjects. `ConfiguredQuotaSubjects` adds an OpenAI-compatible key whose base URL
+host belongs to a provider with a configured-key quota reader; today only
+`api.nan.builders`, compared without case, qualifies. The provider name never
+qualifies a key: a renamed NaN provider stays observable and an entry named `nan`
+on another host is no subject. The subject keeps that provider's usage channel and
+its unique `auth_index`; its label names the index and contains no secret.
+`quotaSubjects` counts claims across both sources. An index claimed more than once
+has no subject: the overview omits it and lists it under `diagnostics`
+(`duplicate_auth_index`), a batch refresh skips and reports it, a targeted refresh
+or detail read answers `409` with that code, and the scheduler skips it with one
+warning per change. Each overview item carries `source` (`auth_file` or
+`configured_key`), and the dashboard merges configured-key rows by that source. A
+disabled provider stays visible but cannot be refreshed. A gateway without the
+compatibility route contributes no configured subjects, so the auth-file overview
+still loads. These subjects are not written back as auth files. A NaN refresh reads
 `GET /v8/management/availability/period-exhaustion` before its quota fetch and
-submits one observation with `PUT` on that route. The GET's `observed_at`
+submits one observation with `PUT` on that route; `internal/quota/period_delivery.go`
+owns both ledger steps for any provider case that maps its reading to observations. The GET's `observed_at`
 becomes `not_before`, and its version becomes `based_on_version`. CPA's
 `api-call` body is unwrapped when it is a JSON string. Delivery failure is
 stored beside the reading; it is not a successful allowance.

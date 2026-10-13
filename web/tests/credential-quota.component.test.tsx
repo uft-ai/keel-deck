@@ -19,7 +19,7 @@ const HOUR_MS = 3_600_000;
 
 it('shows configured NaN subjects without an OAuth file and refreshes the same key', () => {
   const nan = quota('nan-key', [{ id: 'nan:qwen', label: 'qwen', scope: 'model', model: 'qwen', remaining_percent: 80 }],
-    { provider: 'nan', type: 'nan', name: 'My NaN key' });
+    { provider: 'nan', type: 'nan', source: 'configured_key', name: 'My NaN key' });
   const board = buildCredentialQuotaBoard([], [nan]);
   expect(board.rows).toHaveLength(1);
   expect(board.rows[0].primary).toBe('My NaN key');
@@ -28,6 +28,14 @@ it('shows configured NaN subjects without an OAuth file and refreshes the same k
   nan.windows[0].inference_blocked = true;
   expect(buildCredentialQuotaBoard([], [nan]).rows[0].state).toBe('problem');
   expect(buildCredentialQuotaBoard([], [{ ...nan, disabled: true }]).disabledCount).toBe(1);
+});
+
+it('adds rows by their configured-key source, not by provider name', () => {
+  const windows: QuotaWindow[] = [{ id: 'm', label: 'm', scope: 'model', model: 'm', remaining_percent: 50 }];
+  const configured = quota('other-key', windows, { provider: 'other', type: 'other', source: 'configured_key' });
+  const nanFile = quota('nan-file', windows, { provider: 'nan', type: 'nan' });
+  const board = buildCredentialQuotaBoard([], [configured, nanFile]);
+  expect(board.rows.map(row => [row.key, row.configuredKey])).toEqual([['other-key', true]]);
 });
 
 it('keeps provider allowance visible while renewal and inference availability are unconfirmed', () => {
@@ -49,7 +57,7 @@ it('opens every NaN model window from the dashboard without an OAuth file', asyn
   const item = quota('nan-key', [
     { id: 'qwen', label: 'Qwen allowance', model: 'qwen', scope: 'model', remaining_percent: 80 },
     { id: 'glm', label: 'GLM allowance', model: 'glm', scope: 'model', remaining_percent: 30 },
-  ], { provider: 'nan', type: 'nan', name: 'My NaN key' });
+  ], { provider: 'nan', type: 'nan', source: 'configured_key', name: 'My NaN key' });
   render(<QuotaSurface files={[]} quotas={[item]} />);
   fireEvent.click(screen.getByRole('button', { name: 'Details My NaN key' }));
   const drawer = await screen.findByRole('dialog');
@@ -80,6 +88,7 @@ function quota(authIndex: string, windows: QuotaWindow[], overrides: Partial<Quo
     name: authIndex,
     type: 'codex',
     provider: 'codex',
+    source: 'auth_file',
     disabled: false,
     status: 'healthy',
     observed_at_ms: NOW_MS,

@@ -197,7 +197,11 @@ func (h *Handler) operationsService() *operations.Service {
 		if err != nil {
 			return operations.Quota{}, err
 		}
-		subject, found := findQuotaSubject(subjects, authIndex)
+		subject, found, ambiguous := subjects.find(authIndex)
+		if ambiguous {
+			// More than one credential claims this index; no read may pick one.
+			return operations.Quota{}, errors.New("resource_conflict")
+		}
 		if found {
 			file := subject.File
 			h.agent.refreshMu.Lock()

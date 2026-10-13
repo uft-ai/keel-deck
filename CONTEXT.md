@@ -396,13 +396,16 @@ and the places it deliberately differs from the hand-tuned values it replaced.
   clock runs behind hides every record newer than that clock, and no refresh
   brings them back. The console may still estimate the bounds locally to print
   them.
-- **Configured Quota Subject**: A NaN API key observed from the OpenAI-compatible
-  provider list rather than from an auth file. It qualifies when the provider name
-  is exactly `nan`, ignoring case, or when its base URL host is exactly
-  `api.nan.builders`, so renaming the provider does not hide the key. Its identity
-  is the key's unique `auth_index`; the label names that index and never a secret.
-  A missing or repeated index is a diagnostic and is not selected. The subject is
-  not an OAuth credential and does not join the auth-file collection.
+- **Configured Quota Subject**: An API key observed from the OpenAI-compatible
+  provider list rather than from an auth file. It qualifies only when its base URL
+  host belongs to a provider with a configured-key quota reader; today that is
+  `api.nan.builders`, ignoring case. The provider name is a label and never
+  qualifies a key, so a renamed NaN provider stays a subject and an entry named
+  `nan` elsewhere is none (ADR 0096). Its identity is the key's unique
+  `auth_index`; the label names that index and never a secret. A missing index is
+  not selected. An index claimed by more than one credential, across auth files and
+  configured keys, has no subject and is reported as `duplicate_auth_index`. The
+  subject is not an OAuth credential and does not join the auth-file collection.
 - **Token Report State**: Whether a request's counters were reported. An omitted
   `tokens_reported` is unknown and stays null. `false` means the provider
   explicitly published no usable counters. `true` means the counters were

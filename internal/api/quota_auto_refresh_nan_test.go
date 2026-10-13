@@ -1,9 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -62,7 +64,9 @@ func newNanLedgerHandler(t *testing.T, fixture *nanLedgerFixture) *Handler {
 		case "/v0/management/openai-compatibility":
 			_, _ = writer.Write([]byte(`{"openai-compatibility":[` +
 				`{"name":"nan","base-url":"https://api.nan.builders/v1","models":[{"name":"qwen3.8-flash","alias":"fast"}],"api-key-entries":[{"api-key":"sk-enabled","auth-index":"` + nanEnabledIndex + `"},{"api-key":"sk-amb","auth-index":"` + nanAmbiguousIndex + `"}]},` +
-				`{"name":"nan","disabled":true,"base-url":"https://api.nan.builders/v1","models":[{"name":"qwen3.8-flash"}],"api-key-entries":[{"api-key":"sk-disabled","auth-index":"` + nanDisabledIndex + `"}]}]}`))
+				`{"name":"nan","disabled":true,"base-url":"https://api.nan.builders/v1","models":[{"name":"qwen3.8-flash"}],"api-key-entries":[{"api-key":"sk-disabled","auth-index":"` + nanDisabledIndex + `"}]},` +
+				// The name selects nothing: this key on another host is never read.
+				`{"name":"nan","base-url":"http://172.31.77.10:8090/v1","models":[{"name":"qwen3.8-flash"}],"api-key-entries":[{"api-key":"sk-elsewhere","auth-index":"5555555555555555"}]}]}`))
 		case "/v8/management/availability/period-exhaustion":
 			if request.Method == http.MethodPut {
 				var observation struct {
@@ -170,6 +174,27 @@ func TestQuotaAutoRefreshReadsEachConfiguredNanKeyOnce(t *testing.T) {
 	}
 	if calls := fixture.take(); len(calls) != 0 {
 		t.Fatalf("later rounds called %q", calls)
+	}
+}
+
+func TestQuotaAutoRefreshWarnsOnceAboutAnAmbiguousIndex(t *testing.T) {
+	fixture := &nanLedgerFixture{putStatus: http.StatusOK}
+	handler := newNanLedgerHandler(t, fixture)
+	var logs bytes.Buffer
+	handler.logger = slog.New(slog.NewTextHandler(&logs, nil))
+
+	runNanRound(t, handler)
+	runNanRound(t, handler)
+	if count := strings.Count(logs.String(), "duplicate_auth_index"); count != 1 {
+		t.Fatalf("warnings = %d, want one for an unchanged diagnostic set:\n%s", count, logs.String())
+	}
+	if !strings.Contains(logs.String(), nanAmbiguousIndex+":2") {
+		t.Fatalf("warning does not name the index and its claims:\n%s", logs.String())
+	}
+	for _, call := range fixture.take() {
+		if strings.Contains(call, nanAmbiguousIndex) || strings.Contains(call, "5555555555555555") {
+			t.Fatalf("scheduler read a key it must skip: %q", call)
+		}
 	}
 }
 

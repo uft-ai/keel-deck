@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"maps"
 	"slices"
 	"strings"
@@ -38,6 +39,8 @@ type quotaAutoRefreshState struct {
 	// lastRoundError keeps a gateway that stays unreachable from logging the same warning
 	// every minute: a failure is logged when it starts or changes, and recovery once.
 	lastRoundError string
+	// lastDiagnostics is the ambiguous index set last warned about, in the same once-per-change way.
+	lastDiagnostics string
 }
 
 // quotaAutoRefreshRound summarizes one round for the service log.
@@ -100,39 +103,19 @@ func (h *Handler) runQuotaAutoRefreshRound(ctx context.Context) (quotaAutoRefres
 	if err != nil {
 		return quotaAutoRefreshRound{}, err
 	}
-	filesResp, err := client.AuthFiles(ctx)
+	// The same subject list as the quota pages: auth files and configured keys, with an
+	// index more than one credential claims left out and reported once.
+	subjects, err := quotaSubjects(ctx, client)
 	if err != nil {
 		return quotaAutoRefreshRound{}, err
 	}
-	// Configured NaN keys are credentials too; each carries the exact models its read
-	// observes. A gateway without the compatibility list simply has none.
-	configured, err := client.NanConfiguredQuotaSubjects(ctx)
-	if err != nil {
-		return quotaAutoRefreshRound{}, err
-	}
-
-	// An index two credentials claim is the workspace's ambiguity diagnostic, not a
-	// credential: reading it would store an observation that belongs to neither. The
-	// claims are counted across auth files and configured keys together.
-	subjectsByIndex := make(map[string]quotaSubject, len(filesResp.Files)+len(configured.Subjects))
-	claims := make(map[string]int, len(filesResp.Files)+len(configured.Subjects))
-	for _, file := range filesResp.Files {
-		authIndex := strings.TrimSpace(file.AuthIndex)
-		if authIndex == "" {
-			continue
-		}
-		claims[authIndex]++
-		subjectsByIndex[authIndex] = quotaSubject{File: file, Source: "auth_file"}
-	}
-	for _, subject := range configured.Subjects {
-		claims[subject.AuthIndex]++
-		subjectsByIndex[subject.AuthIndex] = configuredQuotaSubject(subject)
-	}
-	authIndexes := make([]string, 0, len(subjectsByIndex))
-	for authIndex := range subjectsByIndex {
-		if claims[authIndex] == 1 {
-			authIndexes = append(authIndexes, authIndex)
-		}
+	h.logQuotaSubjectDiagnostics(subjects.Diagnostics)
+	subjectsByIndex := make(map[string]quotaSubject, len(subjects.Subjects))
+	authIndexes := make([]string, 0, len(subjects.Subjects))
+	for _, subject := range subjects.Subjects {
+		authIndex := strings.TrimSpace(subject.File.AuthIndex)
+		subjectsByIndex[authIndex] = subject
+		authIndexes = append(authIndexes, authIndex)
 	}
 	if len(authIndexes) == 0 {
 		return quotaAutoRefreshRound{}, nil
@@ -241,6 +224,25 @@ func (h *Handler) logQuotaAutoRefreshFailure(err error) {
 		return
 	}
 	h.logger.Warn("automatic quota refresh round failed", "error", message)
+}
+
+// logQuotaSubjectDiagnostics warns when the set of ambiguous auth indexes changes, so
+// a lasting conflict is logged once rather than every minute.
+func (h *Handler) logQuotaSubjectDiagnostics(diagnostics []quotaDiagnostic) {
+	parts := make([]string, 0, len(diagnostics))
+	for _, diagnostic := range diagnostics {
+		parts = append(parts, fmt.Sprintf("%s:%d", diagnostic.AuthIndex, diagnostic.Count))
+	}
+	current := strings.Join(parts, ",")
+	h.quotaAutoRefresh.mu.Lock()
+	previous := h.quotaAutoRefresh.lastDiagnostics
+	h.quotaAutoRefresh.lastDiagnostics = current
+	h.quotaAutoRefresh.mu.Unlock()
+	if h.logger == nil || current == previous || current == "" {
+		return
+	}
+	h.logger.Warn("automatic quota refresh skips auth indexes claimed by more than one credential",
+		"reason", duplicateAuthIndex, "auth_indexes", current)
 }
 
 func (s *quotaAutoRefreshState) snapshotAttempts() map[string]int64 {

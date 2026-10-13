@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// ConfiguredQuotaSubject is one NaN key that can be observed without an auth file.
+// ConfiguredQuotaSubject is one configured key that can be observed without an auth file.
 //
 // The secret never leaves the management client. Label is a display mask, and
 // Channel is the usage label CPA derives from the configured provider name.
@@ -24,13 +24,15 @@ type ConfiguredQuotaSubject struct {
 
 // ConfiguredQuotaDiagnostic names a key that cannot be selected. It carries no
 // secret and no position: a missing or repeated index is not resolved by either.
+// AuthIndex is set for a repeated index, so callers can count it with other claims.
 type ConfiguredQuotaDiagnostic struct {
-	Channel string `json:"channel"`
-	Reason  string `json:"reason"`
-	Count   int    `json:"count,omitempty"`
+	Channel   string `json:"channel"`
+	Reason    string `json:"reason"`
+	AuthIndex string `json:"auth_index,omitempty"`
+	Count     int    `json:"count,omitempty"`
 }
 
-// ConfiguredQuotaSubjects is the secret-free result of reading NaN keys.
+// ConfiguredQuotaSubjects is the secret-free result of reading configured keys.
 type ConfiguredQuotaSubjects struct {
 	Subjects    []ConfiguredQuotaSubject
 	Diagnostics []ConfiguredQuotaDiagnostic
@@ -51,18 +53,18 @@ func (subjects ConfiguredQuotaSubjects) Subject(authIndex string) (ConfiguredQuo
 	return subject, true
 }
 
-// NanConfiguredQuotaSubjects enumerates OpenAI-compatible NaN providers.
-// A provider qualifies when its name is exactly nan, ignoring case, or its
-// base URL host is api.nan.builders. A renamed provider therefore keeps its
-// quota subject. The channel still uses the configured name, because that is
-// the usage label CPA writes. Keys without an auth index, and an index claimed
-// more than once, become diagnostics rather than a positional or masked
-// selection.
-func (c *Client) NanConfiguredQuotaSubjects(ctx context.Context) (ConfiguredQuotaSubjects, error) {
+// ConfiguredQuotaSubjects enumerates the OpenAI-compatible keys whose endpoint
+// host belongs to a provider with a configured-key quota reader. Today only
+// NaN's host qualifies. The name never does: an entry named nan on another host
+// gets no subject, and a renamed entry on NaN's host keeps one. The channel
+// still uses the configured name, because that is the usage label CPA writes.
+// Keys without an auth index, and an index claimed more than once, become
+// diagnostics rather than a positional or masked selection.
+func (c *Client) ConfiguredQuotaSubjects(ctx context.Context) (ConfiguredQuotaSubjects, error) {
 	response, err := c.OpenAICompatibility(ctx)
 	if IsMissingCapability(err) {
 		// An older gateway has no compatibility list. That is no configured
-		// NaN key, not a failure of the auth-file quota overview.
+		// key, not a failure of the auth-file quota overview.
 		return ConfiguredQuotaSubjects{Subjects: []ConfiguredQuotaSubject{}, Diagnostics: []ConfiguredQuotaDiagnostic{}}, nil
 	}
 	if err != nil {
@@ -76,7 +78,8 @@ func (c *Client) NanConfiguredQuotaSubjects(ctx context.Context) (ConfiguredQuot
 	claims := map[string]*claim{}
 	order := make([]string, 0)
 	for _, entry := range response.Entries {
-		if !isNanQuotaProvider(entry) {
+		provider := configuredQuotaProvider(entry.BaseURL)
+		if provider == "" {
 			continue
 		}
 		channel := OpenAICompatibilityLabelPrefix + strings.ToLower(strings.TrimSpace(entry.Name))
@@ -93,10 +96,10 @@ func (c *Client) NanConfiguredQuotaSubjects(ctx context.Context) (ConfiguredQuot
 			if current == nil {
 				order = append(order, authIndex)
 				current = &claim{subject: ConfiguredQuotaSubject{
-					Provider:  "nan",
+					Provider:  provider,
 					Channel:   channel,
 					AuthIndex: authIndex,
-					Label:     nanQuotaLabel(entry.Name, authIndex),
+					Label:     configuredQuotaLabel(entry.Name, authIndex),
 					Disabled:  entry.Disabled,
 					Models:    configuredUpstreamModels(entry.Models),
 				}}
@@ -112,9 +115,10 @@ func (c *Client) NanConfiguredQuotaSubjects(ctx context.Context) (ConfiguredQuot
 		current := claims[authIndex]
 		if current.count != 1 {
 			result.Diagnostics = append(result.Diagnostics, ConfiguredQuotaDiagnostic{
-				Channel: current.subject.Channel,
-				Reason:  "duplicate_auth_index",
-				Count:   current.count,
+				Channel:   current.subject.Channel,
+				Reason:    "duplicate_auth_index",
+				AuthIndex: authIndex,
+				Count:     current.count,
 			})
 			continue
 		}
@@ -147,15 +151,23 @@ func configuredUpstreamModels(models []ModelAlias) []string {
 	return names
 }
 
-func isNanQuotaProvider(entry OpenAICompatibility) bool {
-	if strings.EqualFold(strings.TrimSpace(entry.Name), "nan") {
-		return true
-	}
-	parsed, err := url.Parse(strings.TrimSpace(entry.BaseURL))
+// IsNanBaseURL reports whether an endpoint is NaN.Builders' official API host.
+// It is Deck's one NaN host check: a provider named nan elsewhere is not NaN.
+func IsNanBaseURL(baseURL string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
 	return err == nil && strings.EqualFold(parsed.Hostname(), "api.nan.builders")
 }
 
-func nanQuotaLabel(name, authIndex string) string {
+// configuredQuotaProvider names the quota reader for a configured endpoint, or
+// returns "" when no reader exists for its host.
+func configuredQuotaProvider(baseURL string) string {
+	if IsNanBaseURL(baseURL) {
+		return "nan"
+	}
+	return ""
+}
+
+func configuredQuotaLabel(name, authIndex string) string {
 	// The label names the key by its runtime index. A masked secret still
 	// exposes a recoverable prefix, so it is not used as a quota label.
 	return fmt.Sprintf("%s %s", strings.TrimSpace(name), authIndex)

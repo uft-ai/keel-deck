@@ -18,6 +18,8 @@ import (
 // embedded normalized quota, so older clients still see the summary they expect.
 type QuotaItemDTO struct {
 	quota.NormalizedQuota
+	// Source is the list the credential came from: auth_file or configured_key.
+	Source           string                                `json:"source"`
 	Quota            *managementQuotaObservation           `json:"quota,omitempty"`
 	ModelQuotas      map[string]managementQuotaObservation `json:"model_quotas,omitempty"`
 	QuotaExceeded    bool                                  `json:"quota_exceeded"`
@@ -74,15 +76,19 @@ func (h *Handler) refreshCredentialQuota(writer http.ResponseWriter, request *ht
 		return h.recordAudit(request, "quota.refresh", "quota", file.AuthIndex, "attempt", map[string]any{"provider": "meta", "upstream_action": "key_exchange"})
 	}
 
-	fileMap := make(map[string]quotaSubject, len(subjects))
-	for _, subject := range subjects {
+	fileMap := make(map[string]quotaSubject, len(subjects.Subjects))
+	for _, subject := range subjects.Subjects {
 		fileMap[strings.TrimSpace(subject.File.AuthIndex)] = subject
 	}
 
 	targetIndex := strings.TrimSpace(req.AuthIndex)
 	if targetIndex != "" {
-		subject, exists := fileMap[targetIndex]
+		subject, exists, ambiguous := subjects.find(targetIndex)
 		file := subject.File
+		if ambiguous {
+			writeDuplicateAuthIndex(writer, targetIndex)
+			return
+		}
 		if !exists {
 			writeError(writer, http.StatusNotFound, fmt.Sprintf("credential with auth_index %q not found", targetIndex))
 			return
@@ -193,10 +199,22 @@ func (h *Handler) refreshCredentialQuota(writer http.ResponseWriter, request *ht
 		}
 	}
 
+	// A selected index that more than one credential claims was skipped above,
+	// because fileMap holds only unambiguous subjects; report it with the results.
+	diagnostics := []quotaDiagnostic{}
+	for _, targetIndex := range targetIndexes {
+		for _, diagnostic := range subjects.Diagnostics {
+			if diagnostic.AuthIndex == targetIndex {
+				diagnostics = append(diagnostics, diagnostic)
+			}
+		}
+	}
+
 	writeJSON(writer, http.StatusOK, map[string]any{
-		"status": "ok",
-		"quotas": out,
-		"total":  len(out),
+		"status":      "ok",
+		"quotas":      out,
+		"total":       len(out),
+		"diagnostics": diagnostics,
 	})
 }
 
@@ -478,7 +496,11 @@ func (h *Handler) getCredentialQuotaDetail(writer http.ResponseWriter, request *
 		writeCPAFacadeError(writer, err)
 		return
 	}
-	subject, found := findQuotaSubject(subjects, authIndex)
+	subject, found, ambiguous := subjects.find(authIndex)
+	if ambiguous {
+		writeDuplicateAuthIndex(writer, authIndex)
+		return
+	}
 	if !found {
 		writeError(writer, http.StatusNotFound, fmt.Sprintf("credential %q not found", authIndex))
 		return
@@ -548,9 +570,10 @@ func (h *Handler) getCredentialQuotaDetail(writer http.ResponseWriter, request *
 }
 
 type quotaOverviewData struct {
-	Summary quota.QuotaOverviewSummary `json:"summary"`
-	Quotas  []QuotaItemDTO             `json:"quotas"`
-	Total   int                        `json:"total"`
+	Summary     quota.QuotaOverviewSummary `json:"summary"`
+	Quotas      []QuotaItemDTO             `json:"quotas"`
+	Total       int                        `json:"total"`
+	Diagnostics []quotaDiagnostic          `json:"diagnostics"`
 }
 
 func (h *Handler) buildQuotaOverview(ctx context.Context, client *management.Client) (quotaOverviewData, error) {
@@ -559,12 +582,14 @@ func (h *Handler) buildQuotaOverview(ctx context.Context, client *management.Cli
 		return quotaOverviewData{}, err
 	}
 
-	authIndexes := make([]string, 0, len(subjects))
-	fileMap := make(map[string]management.AuthFile, len(subjects))
-	for _, subject := range subjects {
+	authIndexes := make([]string, 0, len(subjects.Subjects))
+	fileMap := make(map[string]management.AuthFile, len(subjects.Subjects))
+	sources := make(map[string]string, len(subjects.Subjects))
+	for _, subject := range subjects.Subjects {
 		authIndex := strings.TrimSpace(subject.File.AuthIndex)
 		authIndexes = append(authIndexes, authIndex)
 		fileMap[authIndex] = subject.File
+		sources[authIndex] = subject.Source
 	}
 
 	nowMS := h.now().UnixMilli()
@@ -684,6 +709,7 @@ func (h *Handler) buildQuotaOverview(ctx context.Context, client *management.Cli
 
 		dto := QuotaItemDTO{
 			NormalizedQuota: normalized,
+			Source:          sources[authIndex],
 			Quota:           projectQuota(file.Quota),
 			ModelQuotas:     projectModelQuotas(file.ModelQuotas),
 		}
@@ -713,5 +739,5 @@ func (h *Handler) buildQuotaOverview(ctx context.Context, client *management.Cli
 		SoonestRecoveryMS: soonestRecoveryMS,
 	}
 
-	return quotaOverviewData{summary, items, len(items)}, nil
+	return quotaOverviewData{summary, items, len(items), subjects.Diagnostics}, nil
 }

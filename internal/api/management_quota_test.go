@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -488,9 +490,10 @@ func TestQuotaOverviewAdvertisesPluginRefresh(t *testing.T) {
 	}
 }
 
-func TestConfiguredNanQuotaSubjectsAreSecretFree(t *testing.T) {
+func TestConfiguredQuotaSubjectsFollowHostAndRefuseAmbiguousIndexes(t *testing.T) {
 	const secret = "sk-nan-secret-value-1234"
 	const managementKey = "management-secret"
+	var upstreamCalls atomic.Int32
 	cpaServer := newFakeCPA(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.Header.Get("Authorization") != "Bearer "+managementKey {
 			writer.WriteHeader(http.StatusUnauthorized)
@@ -499,7 +502,15 @@ func TestConfiguredNanQuotaSubjectsAreSecretFree(t *testing.T) {
 		writer.Header().Set("Content-Type", "application/json")
 		switch request.URL.Path {
 		case "/v8/management/credentials":
-			_, _ = writer.Write([]byte(`{"files":[{"name":"codex.json","auth_index":"codex-idx-1","type":"codex","provider":"codex"}]}`))
+			// shared-1 is also a configured key's index, so neither credential is a subject.
+			_, _ = writer.Write([]byte(`{"files":[
+				{"name":"codex.json","auth_index":"codex-idx-1","type":"codex","provider":"codex"},
+				{"name":"claude.json","auth_index":"shared-1","type":"claude","provider":"claude"}
+			]}`))
+		case "/v8/management/requests/api-call", "/v8/management/availability/period-exhaustion":
+			// No provider read or ledger call may happen for an ambiguous or non-NaN index.
+			upstreamCalls.Add(1)
+			writer.WriteHeader(http.StatusServiceUnavailable)
 		case "/v0/management/openai-compatibility":
 			_, _ = writer.Write([]byte(`{"openai-compatibility":[
 				{"name":"nan","base-url":"https://api.nan.builders/v1","api-key-entries":[
@@ -516,9 +527,17 @@ func TestConfiguredNanQuotaSubjectsAreSecretFree(t *testing.T) {
 				]},
 				{"name":"nan","base-url":"https://api.nan.builders/v1","api-key-entries":[
 					{"api-key":"sk-repeat-again-secret","auth-index":"nan-repeat"}
+				]},
+				{"name":"nan","base-url":"http://172.31.77.10:8090/v1","api-key-entries":[
+					{"api-key":"sk-elsewhere-secret-value","auth-index":"nan-elsewhere"}
+				]},
+				{"name":"Renamed","base-url":"https://API.nan.builders/v1","api-key-entries":[
+					{"api-key":"sk-renamed-secret-value","auth-index":"renamed-1"},
+					{"api-key":"sk-shared-secret-value","auth-index":"shared-1"}
 				]}
 			]}`))
 		default:
+			upstreamCalls.Add(1)
 			writer.WriteHeader(http.StatusNotFound)
 		}
 	}))
@@ -571,16 +590,17 @@ func TestConfiguredNanQuotaSubjectsAreSecretFree(t *testing.T) {
 		t.Fatalf("overview contains a secret: %s", body)
 	}
 	var overview struct {
-		Quotas []quota.NormalizedQuota `json:"quotas"`
+		Quotas      []QuotaItemDTO    `json:"quotas"`
+		Diagnostics []quotaDiagnostic `json:"diagnostics"`
 	}
 	if err := json.Unmarshal(body, &overview); err != nil {
 		t.Fatal(err)
 	}
-	seen := map[string]quota.NormalizedQuota{}
+	seen := map[string]QuotaItemDTO{}
 	for _, item := range overview.Quotas {
 		seen[item.AuthIndex] = item
 	}
-	for _, want := range []string{"codex-idx-1", "nan-1", "nan-2", "nan-disabled"} {
+	for _, want := range []string{"codex-idx-1", "nan-1", "nan-2", "nan-disabled", "renamed-1"} {
 		if _, ok := seen[want]; !ok {
 			t.Fatalf("missing %s in %#v", want, overview.Quotas)
 		}
@@ -594,8 +614,25 @@ func TestConfiguredNanQuotaSubjectsAreSecretFree(t *testing.T) {
 	if seen["nan-1"].Provider != "nan" || seen["nan-1"].Type != "nan" || seen["nan-1"].Name != "nan nan-1" || seen["nan-disabled"].Disabled != true {
 		t.Fatalf("configured subjects = %#v", seen)
 	}
-	if seen["codex-idx-1"].Provider != "codex" {
+	if seen["codex-idx-1"].Provider != "codex" || seen["codex-idx-1"].Source != "auth_file" {
 		t.Fatalf("oauth subject changed: %#v", seen["codex-idx-1"])
+	}
+	// The host, not the name, selects NaN: a renamed official entry keeps its subject,
+	// and an entry named nan on another host has none.
+	if seen["renamed-1"].Provider != "nan" || seen["renamed-1"].Source != "configured_key" || seen["nan-1"].Source != "configured_key" {
+		t.Fatalf("renamed subject = %#v", seen["renamed-1"])
+	}
+	for _, absent := range []string{"nan-elsewhere", "shared-1"} {
+		if _, ok := seen[absent]; ok {
+			t.Fatalf("%s was listed", absent)
+		}
+	}
+	wantDiagnostics := []quotaDiagnostic{
+		{Reason: "duplicate_auth_index", AuthIndex: "nan-repeat", Count: 2},
+		{Reason: "duplicate_auth_index", AuthIndex: "shared-1", Count: 2},
+	}
+	if !reflect.DeepEqual(overview.Diagnostics, wantDiagnostics) {
+		t.Fatalf("diagnostics = %#v", overview.Diagnostics)
 	}
 
 	detail, err := client.Get(appServer.URL + "/api/v1/management/quota/nan-2")
@@ -607,12 +644,49 @@ func TestConfiguredNanQuotaSubjectsAreSecretFree(t *testing.T) {
 		payload, _ := io.ReadAll(detail.Body)
 		t.Fatalf("detail = %d %s", detail.StatusCode, payload)
 	}
-	missing, err := client.Get(appServer.URL + "/api/v1/management/quota/nan-repeat")
+	for _, ambiguous := range []string{"nan-repeat", "shared-1"} {
+		conflict, err := client.Get(appServer.URL + "/api/v1/management/quota/" + ambiguous)
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload, _ := io.ReadAll(conflict.Body)
+		conflict.Body.Close()
+		if conflict.StatusCode != http.StatusConflict || !bytes.Contains(payload, []byte(`"code":"duplicate_auth_index"`)) {
+			t.Fatalf("%s detail = %d %s", ambiguous, conflict.StatusCode, payload)
+		}
+		refresh, err := client.Post(appServer.URL+"/api/v1/management/quota/refresh", "application/json",
+			bytes.NewBufferString(`{"auth_index":"`+ambiguous+`"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload, _ = io.ReadAll(refresh.Body)
+		refresh.Body.Close()
+		if refresh.StatusCode != http.StatusConflict || !bytes.Contains(payload, []byte(`"code":"duplicate_auth_index"`)) {
+			t.Fatalf("%s refresh = %d %s", ambiguous, refresh.StatusCode, payload)
+		}
+	}
+	// A batch skips the ambiguous index and reports it; it never fails the batch.
+	batch, err := client.Post(appServer.URL+"/api/v1/management/quota/refresh", "application/json",
+		bytes.NewBufferString(`{"auth_indexes":["shared-1","nan-elsewhere"]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer missing.Body.Close()
-	if missing.StatusCode != http.StatusNotFound {
-		t.Fatalf("duplicate detail = %d", missing.StatusCode)
+	var batchBody struct {
+		Total       int               `json:"total"`
+		Diagnostics []quotaDiagnostic `json:"diagnostics"`
+	}
+	if err := json.NewDecoder(batch.Body).Decode(&batchBody); err != nil {
+		t.Fatal(err)
+	}
+	batch.Body.Close()
+	if batch.StatusCode != http.StatusOK || batchBody.Total != 0 || !reflect.DeepEqual(batchBody.Diagnostics, wantDiagnostics[1:]) {
+		t.Fatalf("batch = %d %#v", batch.StatusCode, batchBody)
+	}
+	// The agent's quota tool refuses the same index with its existing non-retryable code.
+	if _, err := handler.operationsService().RefreshQuota(context.Background(), "shared-1"); err == nil || err.Error() != "resource_conflict" {
+		t.Fatalf("agent refresh error = %v, want resource_conflict", err)
+	}
+	if calls := upstreamCalls.Load(); calls != 0 {
+		t.Fatalf("ambiguous or non-NaN indexes made %d provider or ledger calls", calls)
 	}
 }

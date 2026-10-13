@@ -75,8 +75,8 @@ function pickRowWindows(windows: QuotaWindow[]): QuotaWindow[] {
 type QuotaCredential = Omit<ManagementAuthFile, 'success' | 'failed'>;
 
 function quotaCredentials(files: ManagementAuthFile[], quotas: QuotaItem[]): QuotaCredential[] {
-  // Configured NaN keys have quota subjects but need not appear in OAuth's auth-file list.
-  const configured = quotas.filter(item => item.provider === 'nan' && item.auth_index);
+  // Configured API keys have quota subjects but need not appear in OAuth's auth-file list.
+  const configured = quotas.filter(item => item.source === 'configured_key' && item.auth_index);
   const indexes = new Set(configured.map(item => item.auth_index));
   return [
     ...files.filter(file => !file.runtime_only || !indexes.has(file.auth_index ?? '')),
@@ -101,6 +101,8 @@ export interface CredentialQuotaRow {
   /** The account when the credential names one, otherwise its file name. */
   primary: string;
   provider: string;
+  /** A configured API key rather than a login file; its settings live on the provider page. */
+  configuredKey: boolean;
   state: CredentialQuotaState;
   /** The credential's own model family, shortest limit first; at most two. */
   windows: QuotaWindow[];
@@ -188,6 +190,7 @@ export function buildCredentialQuotaBoard(files: ManagementAuthFile[], quotas: Q
       fileName: file.name,
       primary: (file.email || file.project_id || file.name || '').trim() || '—',
       provider: (file.type || file.provider || 'unknown').trim().toLowerCase(),
+      configuredKey: item?.source === 'configured_key',
       state,
       windows,
       bindingWindow,
