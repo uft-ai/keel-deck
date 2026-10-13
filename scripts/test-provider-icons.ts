@@ -7,7 +7,8 @@ import {
   getCredentialProviderMetadata,
 } from '../web/src/components/common/providerMetadata.ts';
 import { LOBE_ICON_CATALOG, lobeIconSlug } from '../web/src/types/lobeIconCatalog.ts';
-import { providerIconId, resolveProviderIcon } from '../web/src/types/providerIconIds.ts';
+import { getProviderDefaultIcon, providerIconId, resolveProviderIcon } from '../web/src/types/providerIconIds.ts';
+import { BUNDLED_PROVIDER_MARKS, isNanBaseURL, NAN_PROVIDER } from '../web/src/types/providerKinds.ts';
 import { BUILTIN_OAUTH_PROVIDERS } from '../web/src/pages/oauthProviderLogic.ts';
 import {
   isRenderableLogoURL,
@@ -211,5 +212,21 @@ test('the named rows never point at a mark the vendored catalog does not carry',
       iconIdIsRenderable(meta.iconId),
       `${key} names ${meta.iconId}, which the vendored icon catalog does not carry`,
     );
+  }
+});
+
+test('the official NaN.Builders endpoint shows its own mark, not one found inside the host', () => {
+  // Fuzzy matching finds `pi` inside `api.nan.builders`; the endpoint decides first.
+  for (const baseURL of ['https://api.nan.builders/v1', 'https://API.NAN.BUILDERS/v1', 'api.nan.builders']) {
+    assert.equal(resolveProviderIcon('openai-compatibility', 'My inference', baseURL), NAN_PROVIDER.iconId);
+  }
+  assert.equal(getProviderDefaultIcon('openai-compatibility', 'nan', 'https://api.nan.builders/v1'), NAN_PROVIDER.iconId);
+  assert.ok(BUNDLED_PROVIDER_MARKS[NAN_PROVIDER.iconId], 'the NaN.Builders mark ships with the dashboard');
+});
+
+test('a provider named nan on another host is not given the NaN.Builders mark', () => {
+  for (const baseURL of ['https://relay.example.test/v1', 'https://api.nan.builders.example/v1', 'https://api.nan.builders@evil.test/v1']) {
+    assert.notEqual(resolveProviderIcon('openai-compatibility', 'nan', baseURL), NAN_PROVIDER.iconId);
+    assert.equal(isNanBaseURL(baseURL), false);
   }
 });

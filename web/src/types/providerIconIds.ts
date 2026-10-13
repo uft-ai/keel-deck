@@ -1,4 +1,5 @@
 import { LOBE_ICON_CATALOG } from './lobeIconCatalog';
+import { isNanBaseURL, NAN_PROVIDER } from './providerKinds';
 
 /**
  * The provider family → brand icon table.
@@ -152,6 +153,10 @@ export function resolveProviderIcon(family: string, name?: string, baseURL?: str
   const f = (family || '').toLowerCase().trim();
   const n = (name || '').toLowerCase().trim();
   const url = (baseURL || '').toLowerCase().trim();
+
+  // 0. An official endpoint names its provider before any text match: a short catalog
+  // keyword can sit inside the host (`pi` in api.nan.builders).
+  if (isNanBaseURL(url)) return NAN_PROVIDER.iconId;
 
   // 1. If name is provided and matches a known provider family directly
   if (n && KNOWN_PROVIDER_ICONS[n]) {

@@ -987,7 +987,17 @@ All page routes and the authenticated `AppLayout` are `React.lazy` import
 boundaries. `AuthGate`, `ShellLoading` and the route recovery fallback remain
 eager so sign-in and recovery do not wait for authenticated code. Brand/provider marks are copied from the pinned
 `@lobehub/icons-static-svg` package into `web/public/lobe-icons` and referenced
-as SVG URLs. The small catalog used for lookup and grouping is vendored in
+as SVG URLs. A provider the catalog does not carry can ship its own published mark
+under `web/public/provider-marks`, listed in `BUNDLED_PROVIDER_MARKS`
+(`web/src/types/providerKinds.ts`). `nan-builders.png` is an unchanged copy of
+NaN.Builders' published logo, `https://nan.builders/brand/nan-isotipo-color.png`
+(the logo in the site's organization metadata; 1024×1024 PNG, SHA-256
+`971b2a24d9230261d5ddd8f9357635fdfb2b3682e0d952506d835857e3c08b07`). The site states
+"© Helmcode 2026. All rights reserved." and publishes no licence; the mark is used
+only to identify that provider. The official API host (`api.nan.builders`), not a
+provider name, selects it, ahead of the catalog's fuzzy match, and the server
+reports the same host rule as `provider_kind: "nan"` on each provider read without
+storing it. The small catalog used for lookup and grouping is vendored in
 `web/src/generated/lobeIconCatalog.json`; the React icon package is not a
 dependency, because importing it would pull hundreds of components into the
 eager bundle; the OMC Settings page is lazy for the same reason, because the palette editor it carries

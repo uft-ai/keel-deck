@@ -11,11 +11,29 @@ type modelPullMetadata struct {
 	Basis     string `json:"basis"`
 }
 
+// nanProviderKind is the read-side identity of a compatible entry that calls NaN.Builders.
+const nanProviderKind = "nan"
+
+// isNanBaseURL reports whether an endpoint is NaN.Builders' official API host.
+// The host is the evidence: a provider named "nan" elsewhere is not NaN.
+func isNanBaseURL(baseURL string) bool {
+	parsed, err := url.Parse(baseURL)
+	return err == nil && strings.EqualFold(parsed.Hostname(), "api.nan.builders")
+}
+
+// providerKindForBaseURL derives the provider identity the console shows for a
+// compatible entry. Nothing stores it, so the endpoint stays the only source.
+func providerKindForBaseURL(baseURL string) string {
+	if isNanBaseURL(baseURL) {
+		return nanProviderKind
+	}
+	return ""
+}
+
 // NaN discovery supplies availability, while its dated OpenAPI supplies these defaults.
 // Unknown limits stay unset; the catalog never adds a model the selected key did not list.
 func nanModelDefaults(baseURL string, discovered []string) (map[string]ProviderModelDTO, *modelPullMetadata) {
-	parsed, err := url.Parse(baseURL)
-	if err != nil || !strings.EqualFold(parsed.Hostname(), "api.nan.builders") {
+	if !isNanBaseURL(baseURL) {
 		return nil, nil
 	}
 	defaults := make(map[string]ProviderModelDTO)

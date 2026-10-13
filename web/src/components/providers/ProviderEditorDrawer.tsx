@@ -21,6 +21,9 @@ import { ProviderBrandIcon, getProviderDefaultIcon } from '../LobeIcon';
 import { maskKeyText } from '../../utils/maskKey';
 import { modelOptionsFor } from '../../utils/modelOptions';
 import { PROVIDER_FAMILIES, lookupProviderFamily } from '../../types/providerFamilies';
+import { isNanBaseURL, NAN_PROVIDER } from '../../types/providerKinds';
+
+const OPENAI_COMPATIBILITY_FAMILY = 'openai-compatibility';
 import { useOverlayHistory } from '../../hooks/useOverlayHistory';
 import type { useProviderManagement } from './useProviderManagement';
 import { EditorSection } from './EditorSection';
@@ -227,10 +230,35 @@ export function ProviderEditorDrawer({
 
   // The picker's options come from the family registry, so a family the console
   // manages cannot appear in one control and not the other.
-  const familyOptions = PROVIDER_FAMILIES.map((family) => ({
-    label: `${t(family.labelKey)} (${family.id})`,
-    value: family.id,
-  }));
+  // NaN.Builders is a preset of the compatible family, not a family of its own: choosing it
+  // fills the official endpoint and saves the same compatible entry. An entry on that host
+  // reopens on the preset because the endpoint, not a stored flag, is its identity.
+  const familyOptions = [
+    { label: `${NAN_PROVIDER.label} (${t('pro.family_openai_compat')})`, value: NAN_PROVIDER.preset },
+    ...PROVIDER_FAMILIES.map((family) => ({
+      label: `${t(family.labelKey)} (${family.id})`,
+      value: family.id,
+    })),
+  ];
+  const familyValue = formFamily === OPENAI_COMPATIBILITY_FAMILY && isNanBaseURL(formBaseURL)
+    ? NAN_PROVIDER.preset
+    : formFamily;
+  const chooseFamily = (value: string) => {
+    if (value !== NAN_PROVIDER.preset) {
+      setFormFamily(value);
+      if (!iconManuallySelected) setFormIcon(getProviderDefaultIcon(value, formName, formBaseURL));
+      return;
+    }
+    setFormFamily(OPENAI_COMPATIBILITY_FAMILY);
+    setFormBaseURL(NAN_PROVIDER.baseURL);
+    modelFetchSeqRef.current += 1;
+    setEndpointModels([]);
+    setIsPullingModels(false);
+    if (!formName.trim()) setFormName(NAN_PROVIDER.label);
+    if (!formPrefix.trim()) setFormPrefix(NAN_PROVIDER.prefix);
+    if (!formWebsite.trim()) setFormWebsite(NAN_PROVIDER.website);
+    if (!iconManuallySelected) setFormIcon(NAN_PROVIDER.iconId);
+  };
   const familyMeta = lookupProviderFamily(formFamily);
   const supportsModelImage = familyMeta?.supportsModelImage ?? false;
   const modelOptionFields = familyMeta?.modelOptionFields ?? [];
@@ -312,13 +340,8 @@ export function ProviderEditorDrawer({
             <Col xs={24} sm={12}>
               <Form.Item label={t('pro.field_family')} required>
                 <Select
-                  value={formFamily}
-                  onChange={(val) => {
-                  setFormFamily(val);
-                  if (!iconManuallySelected) {
-                    setFormIcon(getProviderDefaultIcon(val, formName, formBaseURL));
-                  }
-                }}
+                  value={familyValue}
+                  onChange={chooseFamily}
                   disabled={!!editingProvider}
                   options={familyOptions}
                 />

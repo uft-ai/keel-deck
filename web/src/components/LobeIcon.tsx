@@ -5,6 +5,7 @@ import { customIconID, resolveProviderArtwork, type CustomIcon } from '../types/
 import React, { memo, useEffect, useState } from 'react';
 import { LOBE_ICON_CATALOG, lobeIconSlug } from '../types/lobeIconCatalog';
 import { isRenderableLogoURL } from '../types/pluginOAuthProviders';
+import { BUNDLED_PROVIDER_MARKS } from '../types/providerKinds';
 import { CloudServerOutlined } from './icons';
 
 export { getProviderDefaultIcon } from '../types/providerIconIds';
@@ -34,6 +35,21 @@ export const LobeIcon: React.FC<LobeIconProps> = memo(({
 }) => {
   const customID = customIconID(iconId);
   if (customID) return <CustomIconImage id={customID} size={size} className={className} style={style} loading={loading} />;
+  const bundled = iconId ? BUNDLED_PROVIDER_MARKS[iconId] : undefined;
+  if (bundled) {
+    return (
+      <img
+        src={`${import.meta.env.BASE_URL}${bundled}`}
+        width={size}
+        height={size}
+        className={className}
+        style={{ display: 'block', objectFit: 'contain', ...style }}
+        loading={loading}
+        decoding="async"
+        alt=""
+      />
+    );
+  }
   const metadata = iconId ? TOC_BY_ID.get(iconId) : undefined;
   if (!iconId || !metadata) {
     return <CloudServerOutlined style={{ fontSize: size, ...style }} className={className} />;
@@ -100,6 +116,8 @@ export function resolveMarkArtwork(
     const icon = customIcons.find((item) => item.id === customID);
     return icon ? { url: api.customIconURL(customID, icon.revision), isMono: false } : null;
   }
+  const bundled = iconId ? BUNDLED_PROVIDER_MARKS[iconId] : undefined;
+  if (bundled) return { url: `${import.meta.env.BASE_URL}${bundled}`, isMono: false };
   const metadata = iconId ? TOC_BY_ID.get(iconId) : undefined;
   if (!iconId || !metadata) return null;
   const slug = lobeIconSlug(iconId);
