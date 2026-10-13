@@ -704,13 +704,15 @@ export function useProviderManagement({
     setIsPolicyChecked(false);
 
     setFormTestModel('auto');
-    const defaultIcon = getProviderDefaultIcon(provider.family, provider.name, provider.base_url);
-    const existingIcon = resolveProviderIcon(providerIcons, provider, defaultIcon);
+    const existingIcon = resolveProviderIcon(
+      providerIcons,
+      provider,
+      getProviderDefaultIcon(provider.family, provider.name, provider.base_url),
+    );
     setFormIcon(existingIcon);
-    // A stored override equal to the derived mark was written by an older save
-    // that stored every mark; treating it as derived lets it follow the endpoint.
-    const storedIcon = providerIcons[provider.id] || providerIcons[provider.name];
-    setIconManuallySelected(Boolean(storedIcon) && storedIcon !== defaultIcon);
+    // Any stored override stays until the operator resets it: a stored value
+    // cannot show whether an operator chose it.
+    setIconManuallySelected(Boolean(providerIcons[provider.id] || providerIcons[provider.name]));
     // Populate keys (plaintext — the tool mirrors the CPA config file as-is)
     if (provider.key_entries && provider.key_entries.length > 0) {
       setFormKeys(

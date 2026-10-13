@@ -76,16 +76,17 @@ it('a chosen mark is stored and reopens as chosen', async () => {
   }
 });
 
-it('a mark an older save froze follows the endpoint and is removed on save', async () => {
-  // An older console stored the derived mark of every row, under id and name.
+it('a stored mark equal to the derived one is kept across an endpoint change until reset', async () => {
+  // Equality does not show whether an operator chose the mark.
   const derived = getProviderDefaultIcon(stored.family, stored.name, stored.base_url);
   const { result, unmount, clears, writes, client } = renderEditor({ 'openai-compat-0': derived, Relay: derived });
   try {
     act(() => result.current.handleOpenEdit(stored));
-    expect(result.current.iconManuallySelected).toBe(false);
+    expect(result.current.iconManuallySelected).toBe(true);
+    act(() => result.current.setFormBaseURL('https://api.nan.builders/v1'));
     await act(async () => result.current.handleSaveProvider());
-    await vi.waitFor(() => expect(clears).toEqual([['openai-compat-0', 'Relay']]));
-    expect(writes).toEqual([]);
+    await vi.waitFor(() => expect(writes).toEqual([['openai-compat-0', derived]]));
+    expect(clears).toEqual([]);
   } finally {
     unmount();
     client.clear();

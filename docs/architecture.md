@@ -3422,8 +3422,9 @@ belongs to the editor: an API or agent request still saves the list it sends.
 
 A save stores a provider icon override only when the operator chose the mark.
 Otherwise it removes any override under the row id and its legacy display-name
-key, so the row keeps the mark its endpoint and name derive. A stored override
-equal to that derived mark was written by an older save and is treated as derived.
+key, so the row keeps the mark its endpoint and name derive. Every existing stored
+override reopens as chosen, even one equal to the derived mark, because a stored
+value cannot show its origin. It stays until the operator resets it and saves.
 
 ### NaN availability in quota views
 
