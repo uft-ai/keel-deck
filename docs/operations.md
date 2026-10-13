@@ -435,7 +435,10 @@ older than the interval - six hours by default, adjustable from 5 minutes to 24 
 or off - including credentials nobody has read, so the first minutes after an upgrade
 read every such credential. Each automatic read is a provider request made with the credential through CPA
 (`api-call`, or the plugin's quota endpoint for a plugin credential), at most sixteen per
-minute; a failed reset-driven read is retried every ten minutes for an hour. Meta credentials are only read on a manual
+minute; a failed reset-driven read is retried every ten minutes for an hour. Configured
+NaN keys are included. When a NaN reading is saved but Relay's period ledger could not
+take its observation, the key is read and delivered again about ten minutes later
+(ADR 0095); a delivery Relay refused waits for the next normal read. Meta credentials are only read on a manual
 refresh, because that read exchanges a key upstream. Turning both off restores
 operator-only reads. A demonstration never runs it.
 

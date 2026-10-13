@@ -70,9 +70,6 @@ type Handler struct {
 	// gatewayLogWriteWait overrides the per-write deadline of a log download;
 	// zero means gatewayLogWriteWait. Only tests set it.
 	gatewayLogWriteWait time.Duration
-	// quotaRetryAfter is the next permitted scheduled refresh for one subject.
-	quotaRetryAfter map[string]time.Time
-	quotaRetryMu    sync.Mutex
 
 	configMu       sync.Mutex
 	startTime      time.Time

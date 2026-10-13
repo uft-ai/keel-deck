@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/oh-my-cpa/oh-my-cpa/internal/cpa/management"
 	"github.com/oh-my-cpa/oh-my-cpa/internal/quota"
 	"github.com/oh-my-cpa/oh-my-cpa/internal/repository"
 )
@@ -105,21 +104,32 @@ func (h *Handler) runQuotaAutoRefreshRound(ctx context.Context) (quotaAutoRefres
 	if err != nil {
 		return quotaAutoRefreshRound{}, err
 	}
+	// Configured NaN keys are credentials too; each carries the exact models its read
+	// observes. A gateway without the compatibility list simply has none.
+	configured, err := client.NanConfiguredQuotaSubjects(ctx)
+	if err != nil {
+		return quotaAutoRefreshRound{}, err
+	}
 
 	// An index two credentials claim is the workspace's ambiguity diagnostic, not a
-	// credential: reading it would store an observation that belongs to neither.
-	filesByIndex := make(map[string]management.AuthFile, len(filesResp.Files))
-	claims := make(map[string]int, len(filesResp.Files))
+	// credential: reading it would store an observation that belongs to neither. The
+	// claims are counted across auth files and configured keys together.
+	subjectsByIndex := make(map[string]quotaSubject, len(filesResp.Files)+len(configured.Subjects))
+	claims := make(map[string]int, len(filesResp.Files)+len(configured.Subjects))
 	for _, file := range filesResp.Files {
 		authIndex := strings.TrimSpace(file.AuthIndex)
 		if authIndex == "" {
 			continue
 		}
 		claims[authIndex]++
-		filesByIndex[authIndex] = file
+		subjectsByIndex[authIndex] = quotaSubject{File: file, Source: "auth_file"}
 	}
-	authIndexes := make([]string, 0, len(filesByIndex))
-	for authIndex := range filesByIndex {
+	for _, subject := range configured.Subjects {
+		claims[subject.AuthIndex]++
+		subjectsByIndex[subject.AuthIndex] = configuredQuotaSubject(subject)
+	}
+	authIndexes := make([]string, 0, len(subjectsByIndex))
+	for authIndex := range subjectsByIndex {
 		if claims[authIndex] == 1 {
 			authIndexes = append(authIndexes, authIndex)
 		}
@@ -133,7 +143,7 @@ func (h *Handler) runQuotaAutoRefreshRound(ctx context.Context) (quotaAutoRefres
 	}
 
 	type dueCredential struct {
-		file       management.AuthFile
+		subject    quotaSubject
 		prior      *quota.NormalizedQuota
 		trigger    string
 		observedMS int64
@@ -142,7 +152,8 @@ func (h *Handler) runQuotaAutoRefreshRound(ctx context.Context) (quotaAutoRefres
 	lastAttempts := h.quotaAutoRefresh.snapshotAttempts()
 	due := make([]dueCredential, 0)
 	for _, authIndex := range authIndexes {
-		file := filesByIndex[authIndex]
+		subject := subjectsByIndex[authIndex]
+		file := subject.File
 		candidate := quota.AutoRefreshCandidate{
 			Provider:        quota.DetectProvider(file.Type, file.Provider),
 			IsDisabled:      file.Disabled,
@@ -154,21 +165,20 @@ func (h *Handler) runQuotaAutoRefreshRound(ctx context.Context) (quotaAutoRefres
 			prior = normalizedQuotaFromSnapshot(authIndex, snapshot)
 			candidate.LastObservedAtMS = snapshot.ObservedAtMS
 			candidate.ResetAtMS = quota.WindowResetTimes(prior.Windows)
+			candidate.HasUnavailableDelivery = quota.HasUnavailablePeriodDelivery(prior.Windows)
 		}
 		if trigger := quota.AutoRefreshTrigger(settings, candidate, nowMS); trigger != quota.AutoRefreshTriggerNone {
-			due = append(due, dueCredential{file: file, prior: prior, trigger: trigger, observedMS: candidate.LastObservedAtMS})
+			due = append(due, dueCredential{subject: subject, prior: prior, trigger: trigger, observedMS: candidate.LastObservedAtMS})
 		}
 	}
-	// Reset-driven reads go first, because they answer whether a credential can serve
-	// again; scheduled ones follow, oldest reading first.
+	// Reset-driven reads go first, then undelivered observations, then scheduled reads;
+	// within each, the oldest reading first.
 	slices.SortFunc(due, func(a, b dueCredential) int {
-		if a.trigger != b.trigger {
-			if a.trigger == quota.AutoRefreshTriggerReset {
-				return -1
-			}
-			return 1
-		}
-		return cmp.Or(cmp.Compare(a.observedMS, b.observedMS), strings.Compare(a.file.AuthIndex, b.file.AuthIndex))
+		return cmp.Or(
+			cmp.Compare(quota.AutoRefreshTriggerRank(a.trigger), quota.AutoRefreshTriggerRank(b.trigger)),
+			cmp.Compare(a.observedMS, b.observedMS),
+			strings.Compare(a.subject.File.AuthIndex, b.subject.File.AuthIndex),
+		)
 	})
 	round := quotaAutoRefreshRound{Due: len(due)}
 	if len(due) > QUOTA_AUTO_REFRESH_ROUND_LIMIT {
@@ -180,15 +190,15 @@ func (h *Handler) runQuotaAutoRefreshRound(ctx context.Context) (quotaAutoRefres
 	var countMu sync.Mutex
 	sem := make(chan struct{}, QUOTA_AUTO_REFRESH_CONCURRENCY)
 	for _, credential := range due {
-		authIndex := strings.TrimSpace(credential.file.AuthIndex)
+		authIndex := strings.TrimSpace(credential.subject.File.AuthIndex)
 		h.quotaAutoRefresh.recordAttempt(authIndex, nowMS)
 		wg.Add(1)
-		go func(file management.AuthFile, prior *quota.NormalizedQuota, trigger string) {
+		go func(subject quotaSubject, prior *quota.NormalizedQuota, trigger string) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			refreshed, err := svc.RefreshCredentialQuota(ctx, file, prior)
+			refreshed, err := svc.RefreshCredentialQuotaModels(ctx, subject.File, prior, subject.Models)
 			// The same persistence rule as a manual refresh: a failed or stale read
 			// never replaces the last good observation.
 			isRefreshed := err == nil && refreshed != nil && refreshed.Status != "error" && refreshed.Status != "stale"
@@ -207,10 +217,10 @@ func (h *Handler) runQuotaAutoRefreshRound(ctx context.Context) (quotaAutoRefres
 			if trigger == quota.AutoRefreshTriggerReset {
 				round.ByReset++
 			}
-		}(credential.file, credential.prior, credential.trigger)
+		}(credential.subject, credential.prior, credential.trigger)
 	}
 	wg.Wait()
-	h.quotaAutoRefresh.forgetExcept(filesByIndex)
+	h.quotaAutoRefresh.forgetExcept(subjectsByIndex)
 	return round, nil
 }
 
@@ -250,7 +260,7 @@ func (s *quotaAutoRefreshState) recordAttempt(authIndex string, nowMS int64) {
 
 // forgetExcept drops attempts for credentials CPA no longer lists, so the map is bounded
 // by the fleet rather than by every index the process has ever seen.
-func (s *quotaAutoRefreshState) forgetExcept(current map[string]management.AuthFile) {
+func (s *quotaAutoRefreshState) forgetExcept(current map[string]quotaSubject) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for authIndex := range s.lastAttemptsMS {

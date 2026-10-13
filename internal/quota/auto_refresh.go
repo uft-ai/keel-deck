@@ -140,8 +140,23 @@ func ResolveAutoRefreshSettings(raw string, isStored bool) AutoRefreshSettings {
 const (
 	AutoRefreshTriggerNone     = ""
 	AutoRefreshTriggerReset    = "reset"
+	AutoRefreshTriggerDelivery = "delivery"
 	AutoRefreshTriggerInterval = "interval"
 )
+
+// AutoRefreshTriggerRank orders due credentials: a reset answers whether a credential
+// can serve again; an undelivered observation keeps a renewed key blocked in Relay; an
+// interval read only keeps a reading young.
+func AutoRefreshTriggerRank(trigger string) int {
+	switch trigger {
+	case AutoRefreshTriggerReset:
+		return 0
+	case AutoRefreshTriggerDelivery:
+		return 1
+	default:
+		return 2
+	}
+}
 
 // AutoRefreshCandidate is what the scheduler knows about one credential at a tick.
 type AutoRefreshCandidate struct {
@@ -151,6 +166,9 @@ type AutoRefreshCandidate struct {
 	LastObservedAtMS int64 // zero when the credential has never been read
 	LastAttemptAtMS  int64 // zero when this process has not tried it
 	ResetAtMS        []int64
+	// HasUnavailableDelivery is set when the latest reading could not hand its period
+	// observation to Relay's ledger. A rejected observation does not set it.
+	HasUnavailableDelivery bool
 }
 
 // IsAutoRefreshProvider reports whether the scheduler may read a provider on its own.
@@ -190,6 +208,16 @@ func AutoRefreshTrigger(settings AutoRefreshSettings, candidate AutoRefreshCandi
 			}
 		}
 	}
+	// An observation Relay's ledger could not take is read and delivered again at the
+	// reset retry backoff, counted from the start of the last read or attempt. The cadence
+	// is a target: a busy round or a ledger that keeps failing delays it.
+	// It follows the two controls: with both off, nothing is read on its own.
+	if candidate.HasUnavailableDelivery && settings.IsEnabled() {
+		lastMS := max(candidate.LastObservedAtMS, candidate.LastAttemptAtMS)
+		if nowMS-lastMS >= AUTO_REFRESH_RESET_RETRY_BACKOFF.Milliseconds() {
+			return AutoRefreshTriggerDelivery
+		}
+	}
 	if settings.IntervalMinutes > 0 {
 		lastMS := max(candidate.LastObservedAtMS, candidate.LastAttemptAtMS)
 		intervalMS := int64(settings.IntervalMinutes) * time.Minute.Milliseconds()
@@ -209,4 +237,15 @@ func WindowResetTimes(windows []QuotaWindow) []int64 {
 		}
 	}
 	return resets
+}
+
+// HasUnavailablePeriodDelivery reports whether a stored reading still owes Relay an
+// observation its ledger could not take.
+func HasUnavailablePeriodDelivery(windows []QuotaWindow) bool {
+	for _, window := range windows {
+		if window.PeriodDeliveryStatus == PeriodDeliveryUnavailable {
+			return true
+		}
+	}
+	return false
 }

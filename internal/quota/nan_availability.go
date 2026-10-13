@@ -31,14 +31,14 @@ func periodDeliveryStatus(err error) string {
 	if errors.As(err, &httpErr) {
 		switch httpErr.StatusCode {
 		case 409:
-			return "rejected"
+			return PeriodDeliveryRejected
 		case 503:
-			return "unavailable"
+			return PeriodDeliveryUnavailable
 		default:
-			return "rejected"
+			return PeriodDeliveryRejected
 		}
 	}
-	return "unavailable"
+	return PeriodDeliveryUnavailable
 }
 
 // PeriodObservationInput is the evidence one NaN model can submit.

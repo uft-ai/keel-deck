@@ -49,19 +49,23 @@ func quotaSubjects(ctx context.Context, client *management.Client) ([]quotaSubje
 			continue
 		}
 		seen[subject.AuthIndex] = struct{}{}
-		subjects = append(subjects, quotaSubject{
-			Source: "configured_key",
-			Models: append([]string(nil), subject.Models...),
-			File: management.AuthFile{
-				Name:      subject.Label,
-				AuthIndex: subject.AuthIndex,
-				Type:      "nan",
-				Provider:  subject.Provider,
-				Disabled:  subject.Disabled,
-			},
-		})
+		subjects = append(subjects, configuredQuotaSubject(subject))
 	}
 	return subjects, nil
+}
+
+func configuredQuotaSubject(subject management.ConfiguredQuotaSubject) quotaSubject {
+	return quotaSubject{
+		Source: "configured_key",
+		Models: append([]string(nil), subject.Models...),
+		File: management.AuthFile{
+			Name:      subject.Label,
+			AuthIndex: subject.AuthIndex,
+			Type:      "nan",
+			Provider:  subject.Provider,
+			Disabled:  subject.Disabled,
+		},
+	}
 }
 
 func findQuotaSubject(subjects []quotaSubject, authIndex string) (quotaSubject, bool) {

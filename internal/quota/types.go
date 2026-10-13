@@ -23,9 +23,13 @@ type QuotaWindow struct {
 	// PeriodDeliveryPending keeps a failed Relay delivery retryable after the
 	// stored reset has moved forward. An observation that was never submitted
 	// does not set it.
-	PeriodDeliveryPending     bool  `json:"period_delivery_pending,omitempty"`
-	InferenceBlocked          *bool `json:"inference_blocked,omitempty"`
-	ResetRequiresConfirmation bool  `json:"reset_requires_confirmation,omitempty"`
+	PeriodDeliveryPending bool `json:"period_delivery_pending,omitempty"`
+	// PeriodDeliveryStatus says why the delivery is pending: "unavailable" when Relay's
+	// ledger could not take it, "rejected" when Relay refused it. Only "unavailable" is
+	// retried early by the automatic refresh; a rejection waits for the next normal read.
+	PeriodDeliveryStatus      string `json:"period_delivery_status,omitempty"`
+	InferenceBlocked          *bool  `json:"inference_blocked,omitempty"`
+	ResetRequiresConfirmation bool   `json:"reset_requires_confirmation,omitempty"`
 
 	// The three fields below are joined from recorded usage when a quota is
 	// read and are never part of a stored snapshot: usage keeps arriving after
@@ -167,6 +171,12 @@ type NormalizedQuota struct {
 	// delivery never changes the quota reading into a healthy allowance.
 	PeriodDeliveries []PeriodDelivery `json:"period_deliveries,omitempty"`
 }
+
+// Period delivery outcomes that leave an observation undelivered.
+const (
+	PeriodDeliveryUnavailable = "unavailable"
+	PeriodDeliveryRejected    = "rejected"
+)
 
 // PeriodDelivery is what happened when one observation reached Relay.
 type PeriodDelivery struct {

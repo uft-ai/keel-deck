@@ -87,6 +87,10 @@ func TestAutoRefreshTrigger(t *testing.T) {
 		}
 		return candidate
 	}
+	undelivered := func(candidate AutoRefreshCandidate) AutoRefreshCandidate {
+		candidate.HasUnavailableDelivery = true
+		return candidate
+	}
 
 	cases := []struct {
 		name      string
@@ -134,6 +138,21 @@ func TestAutoRefreshTrigger(t *testing.T) {
 			c.LastAttemptAtMS = nowMS - 30*minute
 			return c
 		}(), AutoRefreshTriggerNone},
+		{"undelivered observation waits nine minutes", resetOnly, undelivered(read(9 * minute)), AutoRefreshTriggerNone},
+		{"undelivered observation is read again after ten minutes", resetOnly, undelivered(read(10 * minute)), AutoRefreshTriggerDelivery},
+		{"undelivered observation follows a recent attempt", intervalOnly, func() AutoRefreshCandidate {
+			c := undelivered(read(30 * minute))
+			c.LastAttemptAtMS = nowMS - 5*minute
+			return c
+		}(), AutoRefreshTriggerNone},
+		{"undelivered observation goes before the interval", intervalOnly, undelivered(read(31 * minute)), AutoRefreshTriggerDelivery},
+		{"reset goes before an undelivered observation", both, undelivered(read(31*minute, 2*minute)), AutoRefreshTriggerReset},
+		{"undelivered observation is not read with both controls off", AutoRefreshSettings{}, undelivered(read(30 * minute)), AutoRefreshTriggerNone},
+		{"undelivered observation of a disabled key is not read", both, func() AutoRefreshCandidate {
+			c := undelivered(read(30 * minute))
+			c.IsDisabled = true
+			return c
+		}(), AutoRefreshTriggerNone},
 		{"attempt before a later reset still allows it", resetOnly, func() AutoRefreshCandidate {
 			c := read(3*60*minute, 2*minute)
 			c.LastAttemptAtMS = nowMS - 60*minute
@@ -144,6 +163,29 @@ func TestAutoRefreshTrigger(t *testing.T) {
 		if got := AutoRefreshTrigger(tc.settings, tc.candidate, nowMS); got != tc.want {
 			t.Errorf("%s: trigger = %q, want %q", tc.name, got, tc.want)
 		}
+	}
+}
+
+func TestHasUnavailablePeriodDeliveryIgnoresRejections(t *testing.T) {
+	if HasUnavailablePeriodDelivery([]QuotaWindow{{Model: "a", PeriodDeliveryPending: true, PeriodDeliveryStatus: PeriodDeliveryRejected}}) {
+		t.Fatal("a rejected observation took the early retry")
+	}
+	if HasUnavailablePeriodDelivery([]QuotaWindow{{Model: "a", PeriodDeliveryPending: true}}) {
+		t.Fatal("a reading saved before the status existed took the early retry")
+	}
+	if !HasUnavailablePeriodDelivery([]QuotaWindow{{Model: "a"}, {Model: "b", PeriodDeliveryPending: true, PeriodDeliveryStatus: PeriodDeliveryUnavailable}}) {
+		t.Fatal("an unavailable ledger was not retried")
+	}
+}
+
+func TestAutoRefreshTriggerRankOrdersEveryTrigger(t *testing.T) {
+	ranks := []int{
+		AutoRefreshTriggerRank(AutoRefreshTriggerReset),
+		AutoRefreshTriggerRank(AutoRefreshTriggerDelivery),
+		AutoRefreshTriggerRank(AutoRefreshTriggerInterval),
+	}
+	if !(ranks[0] < ranks[1] && ranks[1] < ranks[2]) {
+		t.Fatalf("ranks = %v, want reset < delivery < interval", ranks)
 	}
 }
 

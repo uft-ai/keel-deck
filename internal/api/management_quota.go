@@ -247,6 +247,43 @@ func normalizedQuotaFromSnapshot(authIndex string, snapshot repository.QuotaSnap
 	return q
 }
 
+// markPendingPeriodDelivery records, on each stored window, that its observation still
+// has to reach Relay and why. A window with no model stands for every model, so an
+// unavailable ledger outranks a rejection there. An observation that was never
+// submitted marks nothing.
+func markPendingPeriodDelivery(reading *quota.NormalizedQuota) {
+	if reading == nil {
+		return
+	}
+	pending := map[string]string{}
+	anyStatus := ""
+	for _, delivery := range reading.PeriodDeliveries {
+		if delivery.Status != quota.PeriodDeliveryUnavailable && delivery.Status != quota.PeriodDeliveryRejected {
+			continue
+		}
+		if pending[delivery.Model] != quota.PeriodDeliveryUnavailable {
+			pending[delivery.Model] = delivery.Status
+		}
+		if anyStatus != quota.PeriodDeliveryUnavailable {
+			anyStatus = delivery.Status
+		}
+	}
+	if anyStatus == "" {
+		return
+	}
+	for index := range reading.Windows {
+		window := &reading.Windows[index]
+		status := pending[window.Model]
+		if window.Model == "" {
+			status = anyStatus
+		}
+		if status != "" {
+			window.PeriodDeliveryPending = true
+			window.PeriodDeliveryStatus = status
+		}
+	}
+}
+
 func (h *Handler) persistNormalizedQuotaSnapshot(ctx context.Context, q *quota.NormalizedQuota) error {
 	if h.repo == nil || q == nil || q.Disabled || q.Error != "" || q.Status == "stale" || q.Status == "error" {
 		return nil

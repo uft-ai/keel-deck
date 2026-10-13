@@ -435,7 +435,10 @@ and the places it deliberately differs from the hand-tuned values it replaced.
   same persistence rule - a failed read never replaces the last good one - and are not
   repeated every minute when they fail: a failed reset-driven read is retried every ten
   minutes during the hour after the reset, and a failed scheduled read waits a whole
-  interval. Disabled credentials, providers with no probe,
+  interval. Configured NaN keys are read like auth files, with their configured models;
+  a NaN reading whose delivery to Relay's ledger was unavailable is read again ten
+  minutes later (ADR 0095), while a delivery Relay rejected waits for the next normal
+  read. Disabled credentials, providers with no probe,
   an `auth_index` two credentials claim, and Meta credentials (whose read exchanges a
   key upstream and is an audited operator action) are never read automatically.
 - **Estimated Window Capacity**: What a whole Quota Window is worth: usage this

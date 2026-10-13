@@ -350,27 +350,6 @@ func buildUsagePipeline(cfg config.Config, repo *repository.Repository, handler 
 	return pipeline, nil
 }
 
-func (a *App) runQuotaResets(ctx context.Context) {
-	// One immediate scan, then a fixed minute. A subject that is still due but
-	// waiting out its own backoff must not make this loop read the repository
-	// again immediately.
-	if err := a.handler.RefreshDueQuota(ctx); err != nil && a.logger != nil {
-		a.logger.Warn("scheduled quota refresh failed", "error", err)
-	}
-	ticker := time.NewTicker(time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if err := a.handler.RefreshDueQuota(ctx); err != nil && a.logger != nil {
-				a.logger.Warn("scheduled quota refresh failed", "error", err)
-			}
-		}
-	}
-}
-
 func (a *App) Handler() http.Handler {
 	return a.handler.Router()
 }
@@ -413,7 +392,6 @@ func (a *App) Run(ctx context.Context) error {
 	// prices are part of the fixture, and syncing them would make the process
 	// reach openrouter.ai, which a public demonstration must not do.
 	if !a.cfg.IsDemoMode {
-		go a.runQuotaResets(runCtx)
 		go func() {
 			if err := a.pricing.Run(runCtx); err != nil {
 				a.logger.Warn("pricing sync loop stopped", "error", err)

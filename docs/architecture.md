@@ -2065,14 +2065,13 @@ submits one observation with `PUT` on that route. The GET's `observed_at`
 becomes `not_before`, and its version becomes `based_on_version`. CPA's
 `api-call` body is unwrapped when it is a JSON string. Delivery failure is
 stored beside the reading; it is not a successful allowance.
-`persistNormalizedQuotaSnapshot` sets `period_delivery_pending` on a window
-whose Relay delivery is `unavailable` or `rejected`, so a manual refresh uses
-the same marker as the scan. The scan retries that window one minute after its
-last attempt even when the reported reset is already in the future. An
-observation that was never submitted, including an absent model, does not set
-the marker. The non-demo scan in `App.runQuotaResets` runs once at startup and
-then on a fixed one-minute ticker. A disabled decision uses the current
-configured subject, not the stored snapshot status.
+`persistNormalizedQuotaSnapshot` sets `period_delivery_pending` and
+`period_delivery_status` (`unavailable` or `rejected`) on a window whose Relay
+delivery failed, for manual and automatic refreshes alike. Only `unavailable`
+makes the background loop read the key again ten minutes later (ADR 0095); a
+rejection waits for the next normal read. An observation that was never
+submitted, including an absent model, does not set the marker. A disabled
+decision uses the current configured subject, not the stored snapshot status.
 
 Streaming redaction retains only an unresolved credential boundary. A URL
 longer than 8 KiB is omitted with an explicit length-limit marker; it is not
@@ -2195,18 +2194,20 @@ range therefore revise both current estimates and historical references on the n
 read. Reset detection is limited to observed/retained evidence, not a complete upstream
 lifecycle. There are no new tables, migrations or routing inputs (ADR 0058 and ADR 0059).
 
-Readings are also refreshed in the background (ADR 0094). `Handler.RunQuotaAutoRefresh`
+Readings are also refreshed in the background (ADR 0094, ADR 0095). `Handler.RunQuotaAutoRefresh`
 in `internal/api/quota_auto_refresh.go` wakes every minute, reads the
-`omc_quota_auto_refresh` preference, lists the credentials and their latest snapshots,
-and asks `quota.AutoRefreshTrigger` (`internal/quota/auto_refresh.go`) which are due: a
+`omc_quota_auto_refresh` preference, lists the auth files and configured NaN keys and
+their latest snapshots, and asks `quota.AutoRefreshTrigger`
+(`internal/quota/auto_refresh.go`) which are due: a
 reset-driven read once a stored window's `reset_at_ms` plus a one-minute grace has
 passed the observation (a failed one is retried every ten minutes during the following
-hour), and a scheduled read once the newer of the observation and the process's last
+hour), a delivery read ten minutes after a reading whose Relay ledger delivery was
+`unavailable`, and a scheduled read once the newer of the observation and the process's last
 attempt is `interval_minutes` old, less a thirty-second slack for the observation being
-stamped after its tick. Due credentials - reset-driven first,
-then oldest reading first, at most sixteen per round and four at a time - go through
-`RefreshCredentialQuota` and `persistNormalizedQuotaSnapshot`, exactly as a manual
-refresh does. Attempts are remembered in process memory because a failed read is not
+stamped after its tick. Due credentials - reset, then delivery, then scheduled, each
+oldest reading first, at most sixteen per round and four at a time - go through
+`RefreshCredentialQuotaModels` with a NaN key's configured models and
+`persistNormalizedQuotaSnapshot`, exactly as a manual refresh does. Attempts are remembered in process memory because a failed read is not
 persisted, and a round failure is logged when it starts or changes rather than every
 minute. `app.Run` joins the loop before returning, as it does the pipeline. Disabled credentials, providers without a probe, duplicated `auth_index`
 claims and Meta (whose observation is an audited key exchange) are skipped. The
@@ -2293,7 +2294,7 @@ fix a defect with a new migration, never by editing `schema_migrations`
 | Usage pipeline | `app.Run` → `ingest.Pipeline` | Fatal; a stopped collector must not serve silently stale numbers. `Run` returns only after every stage has stopped, and `app.Run` waits for it before the database closes, whichever loop ended first |
 | Pricing sync | `app.Run` → `pricing.Service` | Best effort; prices go stale, capture continues |
 | Release sweep | `app.Run` → `release.Service` | Best effort; the stored index and its timestamps go stale, and the page says so. Every six hours, first run delayed by one interval so a restart loop cannot become a request loop |
-| Quota auto refresh | `app.Run` → `api.Handler.RunQuotaAutoRefresh` | Best effort; a round that cannot reach CPA leaves the stored readings as they were and the next minute tries again. Reads only what the `omc_quota_auto_refresh` policy makes due (§8, ADR 0094) |
+| Quota auto refresh | `app.Run` → `api.Handler.RunQuotaAutoRefresh` | Best effort; a round that cannot reach CPA leaves the stored readings as they were and the next minute tries again. Reads only what the `omc_quota_auto_refresh` policy makes due (§8, ADR 0094, ADR 0095) |
 | Usage-fact fold + data lifecycle | `ingest.Maintenance` inside the pipeline | Retried on its own interval; errors surface in ingest status |
 | Database maintenance | `repository.MaintenanceService`, started by an operator request | Never started automatically; a job's outcome is retained in process memory and recorded on the audit trail. The retained record is served by both reads, and the console shows only a job it observed rather than that record — see §11 |
 

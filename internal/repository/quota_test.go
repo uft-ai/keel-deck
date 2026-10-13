@@ -87,6 +87,29 @@ func TestRepositoryQuotaSnapshots(t *testing.T) {
 	}
 }
 
+// A read that started earlier but finished later is saved after a newer one. Its older
+// observation time must not make it the latest reading.
+func TestQuotaSnapshotSavedLateWithAnOlderObservationIsNotLatest(t *testing.T) {
+	ctx := context.Background()
+	repo, _ := testRepository(t)
+	observedAt := time.Now().UnixMilli()
+	for _, record := range []QuotaSnapshotRecord{
+		{AuthIndex: "auth-late", Provider: "nan", Status: "manual", WindowsJSON: "[]", ObservedAtMS: observedAt},
+		{AuthIndex: "auth-late", Provider: "nan", Status: "scheduled", WindowsJSON: "[]", ObservedAtMS: observedAt - 1000},
+	} {
+		if err := repo.SaveQuotaSnapshot(ctx, record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	latest, err := repo.GetLatestQuotaSnapshots(ctx, []string{"auth-late"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest["auth-late"].Status != "manual" {
+		t.Fatalf("latest = %q, want the newer observation", latest["auth-late"].Status)
+	}
+}
+
 func TestQuotaSnapshotsUseInsertionOrderForTimestampTies(t *testing.T) {
 	ctx := context.Background()
 	repo, _ := testRepository(t)
