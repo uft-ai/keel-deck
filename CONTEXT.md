@@ -314,6 +314,8 @@ behind a translation of it and would have no way back.
 The two additional catalogs are separate chunks, fetched when the language is
 selected, so the stored preference is a **choice** rather than a guarantee: a tab
 older than the deployment serving it asks for a chunk name that no longer exists.
+The default language is English: a first visit, an unknown stored id and blocked
+storage all read in English, and a stored choice is kept.
 A catalog that cannot be fetched leaves the console reading in its default language
 while `omc-lang` keeps the operator's choice, and a switch that cannot fetch one
 leaves the reading where it was — never a blank page, and never a leaked rejection.

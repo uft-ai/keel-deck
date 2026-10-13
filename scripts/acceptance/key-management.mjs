@@ -222,7 +222,7 @@ export async function runKeyManagementAcceptance({
     // Adding a key is a draft operation: the modal must generate a valid value,
     // expose the value it will submit, and leave the saved configuration untouched
     // when cancelled. It must not require another silent reveal of an existing key.
-    const addKeyButton = page.locator('.keys-page button').filter({ hasText: /Add key|添加|新增/i }).first();
+    const addKeyButton = page.locator('.keys-page button').filter({ hasText: /Add (API )?key|添加|新增/i }).first();
     await addKeyButton.click();
     const keyModal = page.locator('.ant-modal:visible');
     await keyModal.waitFor({ state: 'visible', timeout: 5000 });

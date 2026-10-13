@@ -3548,16 +3548,16 @@ const LANG_KEY = 'omc-lang';
  * It is the same language `readInitialLang` picks for an unrecognized stored id, so a console that
  * cannot read its stored preference still lands somewhere deliberate instead of nowhere.
  */
-const FALLBACK_LANG: Lang = 'zh';
+const FALLBACK_LANG: Lang = 'en';
 function readInitialLang(): Lang {
-  if (typeof window === 'undefined') return 'zh';
+  if (typeof window === 'undefined') return FALLBACK_LANG;
   try {
     const stored = window.localStorage.getItem(LANG_KEY);
-    return LANGUAGES.some((language) => language.id === stored) ? (stored as Lang) : 'zh';
+    return LANGUAGES.some((language) => language.id === stored) ? (stored as Lang) : FALLBACK_LANG;
   } catch {
     // Storage can be blocked by the browser or a sandboxed frame. The console
     // still has to render its default reading language.
-    return 'zh';
+    return FALLBACK_LANG;
   }
 }
 
@@ -3568,9 +3568,9 @@ interface I18nContextValue {
 }
 
 const I18nContext = React.createContext<I18nContextValue>({
-  lang: 'zh',
+  lang: FALLBACK_LANG,
   setLang: () => undefined,
-  t: makeT('zh'),
+  t: makeT(FALLBACK_LANG),
 });
 
 export const I18nProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {

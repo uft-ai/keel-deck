@@ -311,7 +311,7 @@ export async function runAuthFilesAcceptance({
     await kimiSwitch.click();
     await checkEventually(
       'auth-files single toggle disables card',
-      () => kimiCard.getByText(/DISABLED|已禁用/).first().isVisible(),
+      () => kimiCard.getByText(/DISABLED|Disabled|已禁用/).first().isVisible(),
     );
     await kimiSwitch.click();
     await checkEventually(

@@ -949,15 +949,15 @@ export async function omcSettings({ base, page, check, context, expectProblem })
   pageErrors.length = 0;
   await page.goto(`${base}/omc-settings`, { waitUntil: 'domcontentloaded' });
   // Waited for by the copy that proves the page rendered *in the fallback language*: an empty document
-  // and a document whose attributes say `zh-CN` while React has painted nothing both satisfy a weaker
+  // and a document whose attributes say `en` while React has painted nothing both satisfy a weaker
   // reading, and "the console is still usable" is the claim.
   const fellBack = await until(async () => {
     const state = await languageState();
-    return /OMC 设置/.test(state.title) ? state : false;
+    return /OMC Settings/.test(state.title) ? state : false;
   }, { label: 'the console to render in its default language while the stored catalog is unreachable' }).catch(() => null);
   check(
     'a stored catalog that cannot be fetched renders the console in its default language',
-    fellBack !== null && fellBack.lang === 'zh-CN' && fellBack.stored === 'ms',
+    fellBack !== null && fellBack.lang === 'en' && fellBack.stored === 'ms',
     `state=${JSON.stringify(fellBack ?? await languageState())}`,
   );
   check(

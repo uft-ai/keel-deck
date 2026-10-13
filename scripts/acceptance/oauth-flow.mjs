@@ -73,7 +73,7 @@ export async function runOAuthFlowAcceptance({
   await callbackInput.waitFor({ state: 'visible', timeout: 15000 });
   await callbackInput.fill('http://127.0.0.1:8317/codex/callback?code=e2e-replayed&state=already-done');
   await codexPanel.locator('[data-oauth-callback-submit]').click();
-  const successBadge = codexPanel.getByText(/授权成功|认证成功|success/i).first();
+  const successBadge = codexPanel.getByText(/授权成功|认证成功|succeeded|success/i).first();
   await successBadge.waitFor({ state: 'visible', timeout: 20000 });
   const replayErrors = await codexPanel.getByText(/提交失败|Callback submission failed|授权失败|Authorization failed/i).count();
   check(
@@ -99,7 +99,7 @@ export async function runOAuthFlowAcceptance({
   await selectProvider(page, 'codex', 'Codex OAuth');
   check(
     'minimizing and reopening preserves the confirmed authorization result',
-    await page.locator('[data-oauth-card="codex"]').getByText(/授权成功|认证成功|success/i).first().isVisible(),
+    await page.locator('[data-oauth-card="codex"]').getByText(/授权成功|认证成功|succeeded|success/i).first().isVisible(),
   );
   check(
     'the confirmed provider offers an explicit new-account action instead of auto-restarting',
@@ -149,7 +149,7 @@ export async function runOAuthFlowAcceptance({
   await devinPanel.locator('[data-oauth-callback-submit]').click();
   const devinMismatch = page.getByText(/不属于本次|does not belong/i).first();
   await devinMismatch.waitFor({ state: 'visible', timeout: 10000 });
-  check('devin refuses a callback from another attempt', !/授权成功|认证成功|success/i.test(await devinPanel.innerText()));
+  check('devin refuses a callback from another attempt', !/授权成功|认证成功|succeeded|success/i.test(await devinPanel.innerText()));
   await devinCallbackInput.fill('http://127.0.0.1:8317/devin/callback?code=e2e&state=e2e-state');
   await devinPanel.locator('[data-oauth-callback-submit]').click();
   await devinPanel.getByText(/回调已提交|Callback submitted/i).first().waitFor({ state: 'visible', timeout: 15000 });
