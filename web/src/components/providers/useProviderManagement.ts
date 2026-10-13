@@ -36,6 +36,8 @@ import {
   modelOptionsProblem,
   readModelOptionsDraft,
 } from './modelOptions';
+import { isNanBaseURL } from '../../types/providerKinds';
+import { agreeOnCatalog, refreshModelRows, servingKeys, type KeyCatalog } from './modelDiscovery';
 import {
   modelPullPayload,
   type FormKeyItem,
@@ -181,6 +183,95 @@ export function useProviderManagement({
         setIsPullingModels(false);
       }
     }
+  };
+
+  // What a discovery was read through. A save compares it with the form, so a
+  // changed endpoint, key or header needs a new discovery.
+  const connectionSignature = () => JSON.stringify([
+    formBaseURL.trim(),
+    servingKeys(formKeys).map((key) => [(key.apiKey || '').trim(), key.authIndex || '', (key.proxyUrl || '').trim()]),
+    headersPayload(),
+  ]);
+  const [discoveredSignature, setDiscoveredSignature] = useState('');
+  const [isDiscovering, setIsDiscovering] = useState(false);
+  // A read finishes after later renders. These hold what the form says now, so a
+  // result read for an older endpoint, key list or draft changes nothing.
+  // Both are refreshed at the end of the hook, once every helper exists.
+  const currentSignatureRef = useRef('');
+  const currentModelsRef = useRef<FormModelItem[]>(formModels);
+  const latestDiscoveryRef = useRef(0);
+
+  /**
+   * Reads the account's model list through every key and adds an enabled row for
+   * each model no row uses yet. Nothing is written: the operator saves the form.
+   * Any failure leaves the form unchanged and returns null.
+   */
+  const discoverAllModels = async (): Promise<FormModelItem[] | null> => {
+    const rawUrl = formBaseURL.trim();
+    if (!rawUrl) {
+      toast.warning(t('pro.pull_requires_base_url'));
+      return null;
+    }
+    const keys = servingKeys(formKeys);
+    if (keys.length === 0) {
+      toast.warning(t('pro.discover_requires_key'));
+      return null;
+    }
+    const signature = connectionSignature();
+    const headers = headersPayload();
+    const seq = ++modelFetchSeqRef.current;
+    latestDiscoveryRef.current = seq;
+    setIsDiscovering(true);
+    try {
+      const answers = await Promise.allSettled(keys.map((key) => api.pullProviderModels(modelPullPayload({
+        providerId: editingProvider?.id,
+        family: formFamily,
+        baseURL: rawUrl,
+        storedBaseURL: editingProvider?.base_url,
+        apiKey: key.apiKey || '',
+        storedAPIKey: key.storedAPIKey,
+        proxyURL: key.proxyUrl || '',
+        storedProxyURL: key.storedProxyURL,
+        authIndex: key.authIndex,
+        headers,
+        storedHeaders: editingProvider?.headers,
+      }))));
+      // The drawer was reopened, another read started, or the connection changed.
+      if (seq !== modelFetchSeqRef.current || currentSignatureRef.current !== signature) return null;
+      const catalogs: KeyCatalog[] = answers.map((answer, index) => ({
+        position: formKeys.indexOf(keys[index]) + 1,
+        models: answer.status === 'fulfilled' ? (answer.value.models || []).filter((name): name is string => typeof name === 'string') : undefined,
+      }));
+      const agreement = agreeOnCatalog(catalogs);
+      if (!agreement.ok) {
+        const positions = agreement.positions.join(', ');
+        if (agreement.reason === 'mismatch') {
+          toast.error(t('pro.discover_mismatch', { keys: positions, models: agreement.differing.slice(0, 10).join(', ') }));
+        } else {
+          toast.error(t(agreement.reason === 'failed' ? 'pro.discover_failed' : 'pro.discover_empty', { keys: positions }));
+        }
+        return null;
+      }
+      const first = answers.find((answer) => answer.status === 'fulfilled');
+      const defaults = first?.status === 'fulfilled' ? first.value.model_defaults || {} : {};
+      const refreshed = refreshModelRows(currentModelsRef.current, agreement.models, defaults, Date.now());
+      setFormModels(refreshed.rows);
+      setEndpointModels(agreement.models);
+      setEndpointDefaults(defaults);
+      setDiscoveredSignature(signature);
+      toast.success(t('pro.discover_added', { added: refreshed.added.length, omitted: refreshed.omitted.length }));
+      return refreshed.rows;
+    } finally {
+      if (seq === latestDiscoveryRef.current) setIsDiscovering(false);
+    }
+  };
+
+  const handleDiscoverAllModels = async () => {
+    await discoverAllModels();
+  };
+
+  const updateModelDisabled = (id: string, disabled: boolean) => {
+    setFormModels((prev) => prev.map((item) => (item.id === id ? { ...item, disabled } : item)));
   };
 
   const toggleModelExpanded = (id: string) => {
@@ -567,6 +658,8 @@ export function useProviderManagement({
     setExpandedKeyIds(new Set([initKeyId]));
     setFormHeaders([]);
     modelFetchSeqRef.current++;
+    setDiscoveredSignature('');
+    setIsDiscovering(false);
     setFormModels([]);
     setEndpointModels([]);
     setEndpointDefaults({});
@@ -660,6 +753,7 @@ export function useProviderManagement({
           image: m.image || false,
           thinking: m.thinking ? { levels: m.thinking.levels || [] } : { levels: [] },
           options: readModelOptionsDraft(m.options),
+          disabled: m.disabled || false,
         }))
       );
     } else if (provider.models && provider.models.length > 0) {
@@ -677,6 +771,8 @@ export function useProviderManagement({
       setFormModels([]);
     }
     modelFetchSeqRef.current++;
+    setDiscoveredSignature('');
+    setIsDiscovering(false);
     setEndpointModels([]);
     setEndpointDefaults({});
     setIsPullingModels(false);
@@ -685,7 +781,16 @@ export function useProviderManagement({
     setProviderDrawerOpen(true);
   };
 
-  const handleSaveProvider = () => {
+  const handleSaveProvider = async () => {
+    let rows = formModels;
+    // A new NaN.Builders entry starts from the account's own list: the save reads
+    // it through every key unless the current connection was already read.
+    if (!editingProvider && formFamily === 'openai-compatibility' && isNanBaseURL(formBaseURL)
+      && discoveredSignature !== connectionSignature()) {
+      const discovered = await discoverAllModels();
+      if (!discovered) return;
+      rows = discovered;
+    }
     if (lookupProviderFamily(formFamily)?.requiresBaseURL && !formBaseURL.trim()) {
       toast.warning(t('pro.base_url_required'));
       return;
@@ -707,7 +812,7 @@ export function useProviderManagement({
     }
 
     const modelOptionFields = family?.modelOptionFields ?? [];
-    const invalidModel = formModels.find(
+    const invalidModel = rows.find(
       (model) => model.name.trim() !== '' && modelOptionsProblem(model.options, modelOptionFields) !== null,
     );
     if (invalidModel) {
@@ -724,7 +829,8 @@ export function useProviderManagement({
     }));
 
     const supportsModelImage = lookupProviderFamily(formFamily)?.supportsModelImage ?? false;
-    const modelsPayload: SaveProviderModelItem[] = formModels
+    const supportsModelDisable = formFamily === 'openai-compatibility';
+    const modelsPayload: SaveProviderModelItem[] = rows
       .filter((m) => m.name.trim() !== '')
       .map((m) => ({
         name: m.name.trim(),
@@ -737,6 +843,7 @@ export function useProviderManagement({
             ? { levels: m.thinking.levels }
             : undefined,
         options: buildModelOptions(m.options, modelOptionFields),
+        ...(supportsModelDisable && m.disabled !== undefined ? { disabled: m.disabled } : {}),
       }));
 
     const headersPayload: Record<string, string> = {};
@@ -770,6 +877,9 @@ export function useProviderManagement({
       createProviderMutation.mutate({ payload, icon: formIcon });
     }
   };
+
+  currentSignatureRef.current = connectionSignature();
+  currentModelsRef.current = formModels;
 
   return {
     createProviderMutation,
@@ -837,6 +947,9 @@ export function useProviderManagement({
     modelFetchSeqRef,
     websiteInputState,
     handlePullModels,
+    handleDiscoverAllModels,
+    isDiscovering,
+    updateModelDisabled,
     toggleModelExpanded,
     handleAddModel,
     updateModelImage,

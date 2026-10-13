@@ -276,8 +276,10 @@ func compactThinking(thinking management.ThinkingSupport) *management.ThinkingSu
 // editedProviderModel is one model row of a save: the model as the form states
 // it, and whether the form stated its options too.
 type editedProviderModel struct {
-	model         management.ModelAlias
-	hasOptions    bool
+	model      management.ModelAlias
+	hasOptions bool
+	// disabled is nil when the row does not state the switch.
+	disabled      *bool
 	originalName  string
 	originalAlias string
 }
@@ -314,8 +316,11 @@ func editedProviderModels(family string, req SaveProviderRequest) ([]editedProvi
 			}
 			options.applyTo(&model)
 		}
+		if entry.Disabled != nil && *entry.Disabled && family != openAICompatibilityFamily {
+			return nil, newProviderWriteError(http.StatusBadRequest, fmt.Sprintf("model %q: only OpenAI-compatible models can be disabled", name))
+		}
 		edited = append(edited, editedProviderModel{
-			model: model, hasOptions: entry.Options != nil,
+			model: model, hasOptions: entry.Options != nil, disabled: entry.Disabled,
 			originalName: strings.TrimSpace(entry.OriginalName), originalAlias: strings.TrimSpace(entry.OriginalAlias),
 		})
 	}
@@ -325,6 +330,7 @@ func editedProviderModels(family string, req SaveProviderRequest) ([]editedProvi
 func newProviderModels(edited []editedProviderModel) []management.ModelAlias {
 	models := make([]management.ModelAlias, 0, len(edited))
 	for _, row := range edited {
+		row.model.Disabled = row.disabled != nil && *row.disabled
 		models = append(models, row.model)
 	}
 	return models
@@ -370,13 +376,23 @@ func mergeModelEdits(stored []management.ModelAlias, edited []editedProviderMode
 			if row.originalName != "" {
 				return nil, newProviderWriteError(http.StatusBadRequest, fmt.Sprintf("model %q is not a stored route of this provider", row.originalName))
 			}
+			row.model.Disabled = row.disabled != nil && *row.disabled
 			merged = append(merged, row.model)
 			continue
 		}
+		// A row that does not state the switch keeps the stored choice, so an
+		// older client's edit cannot turn a disabled model back on.
+		disabled := old.Disabled
+		if row.disabled != nil {
+			disabled = *row.disabled
+		}
 		if row.hasOptions {
-			merged = append(merged, row.model.WithUnmodelledFieldsOf(old))
+			model := row.model.WithUnmodelledFieldsOf(old)
+			model.Disabled = disabled
+			merged = append(merged, model)
 			continue
 		}
+		old.Disabled = disabled
 		old.Name = row.model.Name
 		old.Alias = row.model.Alias
 		old.Image = row.model.Image

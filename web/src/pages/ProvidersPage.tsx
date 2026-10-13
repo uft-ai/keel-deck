@@ -131,6 +131,9 @@ export const ProvidersPage: React.FC = () => {
     modelFetchSeqRef,
     websiteInputState,
     handlePullModels,
+    handleDiscoverAllModels,
+    isDiscovering,
+    updateModelDisabled,
     isModelPickerOpen,
     setIsModelPickerOpen,
     handleAddPickedModels,
@@ -417,6 +420,9 @@ export const ProvidersPage: React.FC = () => {
         modelFetchSeqRef={modelFetchSeqRef}
         websiteInputState={websiteInputState}
         handlePullModels={handlePullModels}
+        handleDiscoverAllModels={handleDiscoverAllModels}
+        isDiscovering={isDiscovering}
+        updateModelDisabled={updateModelDisabled}
         isModelPickerOpen={isModelPickerOpen}
         setIsModelPickerOpen={setIsModelPickerOpen}
         handleAddPickedModels={handleAddPickedModels}

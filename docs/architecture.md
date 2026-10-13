@@ -3397,6 +3397,25 @@ model-pull response. They neither create availability nor persist a second catal
 The backend metadata test and rendered provider-hook test cover unknown models,
 missing limits, image route separation and preservation of a native alias.
 
+### Account discovery and disabled model rows
+
+An OpenAI-compatible model row carries CPA's `disabled` flag: the row and its
+settings stay stored while CPA stops serving it. The list response reports it
+per row. A save row's `disabled` is optional; when absent, `mergeModelEdits`
+keeps the stored choice, so an older client or an agent operation cannot turn a
+disabled row back on. A new row without it is enabled. Other families refuse it.
+
+**Read all account models** (`modelDiscovery.ts`) reads the model list through
+every key that can serve, through the same audited pull route as the
+selected-key picker. The keys must return the same nonempty list. A failed,
+empty or different answer changes nothing and names only key positions and the
+differing model names. A successful read appends one enabled row for each name
+no row uses, keeps every existing row (omitted and disabled ones included) and
+reports how many were added and omitted. It is a form change; routing changes
+only when the operator saves. A new NaN.Builders entry cannot be saved until a
+read for the current endpoint, keys and headers succeeds; the save performs that
+read when needed. The selected-key picker stays read-only.
+
 ### NaN availability in quota views
 
 The quota service projects versioned Relay block observations onto the matching

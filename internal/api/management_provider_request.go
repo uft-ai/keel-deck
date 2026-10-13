@@ -25,6 +25,9 @@ type SaveProviderModelEntry struct {
 	// Options is nil when the client does not edit the advanced settings, which
 	// then stay as stored.
 	Options *ProviderModelOptionsDTO `json:"options,omitempty"`
+	// Disabled is nil when the client does not carry the switch: a stored row
+	// keeps its choice and a new row is enabled.
+	Disabled *bool `json:"disabled,omitempty"`
 }
 
 type SaveProviderRequest struct {

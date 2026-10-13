@@ -28,6 +28,8 @@ type ProviderModelDTO struct {
 	Thinking *ThinkingDTO `json:"thinking,omitempty"`
 	// Options is absent for a model with none of the advanced settings.
 	Options *ProviderModelOptionsDTO `json:"options,omitempty"`
+	// Disabled is a kept row that CPA does not serve.
+	Disabled bool `json:"disabled,omitempty"`
 }
 
 type ProviderItemDTO struct {
@@ -308,6 +310,7 @@ func (h *Handler) readProviderItems(ctx context.Context, client *management.Clie
 					Image:    m.Image,
 					Thinking: thinking,
 					Options:  providerModelOptionsDTO(m),
+					Disabled: m.Disabled,
 				})
 			}
 

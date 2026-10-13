@@ -81,6 +81,8 @@ export interface ProviderModelItem {
   image?: boolean;
   thinking?: ThinkingSupportConfig;
   options?: ProviderModelOptions;
+  /** A kept OpenAI-compatible row the gateway does not serve. */
+  disabled?: boolean;
 }
 
 export interface ProviderModelPull {
@@ -177,6 +179,8 @@ export interface SaveProviderModelItem {
   image?: boolean;
   thinking?: ThinkingSupportConfig;
   options?: ProviderModelOptions;
+  /** Absent keeps a stored row's choice; a new row without it is enabled. */
+  disabled?: boolean;
 }
 
 export interface SaveProviderPayload {

@@ -10,6 +10,7 @@ import {
   Select,
 } from 'antd';
 import { CheckSquareOutlined, CloseOutlined, DownOutlined, PlusOutlined, SyncOutlined, UpOutlined } from '../icons';
+import { Switch } from '../common/Switch';
 
 import { useT } from '../../i18n';
 import { useCustomIcons } from '../../hooks/useCustomIcons';
@@ -99,6 +100,9 @@ interface ProviderEditorDrawerProps extends Pick<
   | 'modelFetchSeqRef'
   | 'websiteInputState'
   | 'handlePullModels'
+  | 'handleDiscoverAllModels'
+  | 'isDiscovering'
+  | 'updateModelDisabled'
   | 'isModelPickerOpen'
   | 'setIsModelPickerOpen'
   | 'handleAddPickedModels'
@@ -201,6 +205,9 @@ export function ProviderEditorDrawer({
     modelFetchSeqRef,
     websiteInputState,
     handlePullModels,
+    handleDiscoverAllModels,
+    isDiscovering,
+    updateModelDisabled,
     isModelPickerOpen,
     setIsModelPickerOpen,
     handleAddPickedModels,
@@ -729,6 +736,17 @@ export function ProviderEditorDrawer({
                     )}
                   </div>
                   <div className={styles['section-buttons']}>
+                    {formFamily === 'openai-compatibility' && (
+                      <Button
+                        icon={<SyncOutlined spin={isDiscovering} />}
+                        loading={isDiscovering}
+                        disabled={isDemo}
+                        title={isDemo ? t('demo.blocked') : t('pro.discover_all_desc')}
+                        onClick={handleDiscoverAllModels}
+                      >
+                        {t('pro.discover_all')}
+                      </Button>
+                    )}
                     {endpointModels.length > 0 && (
                       <Button icon={<CheckSquareOutlined />} onClick={() => setIsModelPickerOpen(true)}>
                         {t('pro.pick_models')}
@@ -747,6 +765,10 @@ export function ProviderEditorDrawer({
                     </Button>
                   </div>
                 </div>
+
+                {formFamily === 'openai-compatibility' && (
+                  <div className={styles['section-note']}>{t('pro.model_disable_note')}</div>
+                )}
 
                 {/* Column Titles */}
                 {formModels.length > 0 && (
@@ -836,6 +858,15 @@ export function ProviderEditorDrawer({
                               placeholder={t('pro.alias_optional')}
                               className={styles['model-input']}
                             />
+                            {formFamily === 'openai-compatibility' && (
+                              <Switch
+                                size="small"
+                                checked={!m.disabled}
+                                aria-label={`${t('pro.model_enabled')}: ${m.name || t('pro.actual_request_model')}`}
+                                title={t('pro.model_enabled')}
+                                onChange={(checked) => updateModelDisabled(m.id, !checked)}
+                              />
+                            )}
                             <Button
                               type="text"
                               size="small"

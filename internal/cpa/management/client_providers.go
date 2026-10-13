@@ -200,6 +200,8 @@ type ModelAlias struct {
 	Operations      []string `json:"operations,omitempty"`
 	Native          []string `json:"native,omitempty"`
 	MaxOutputTokens int      `json:"max-output-tokens,omitempty"`
+	// Disabled keeps an OpenAI-compatible row and its settings while CPA stops serving it.
+	Disabled bool `json:"disabled,omitempty"`
 
 	// extra keeps the settings of a model this struct does not declare, which
 	// every provider write sends back for every model of the family.

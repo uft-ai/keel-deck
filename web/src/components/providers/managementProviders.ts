@@ -110,4 +110,7 @@ export interface FormModelItem {
     levels?: string[];
   };
   options: ModelOptionsDraft;
+  /** A kept row the gateway does not serve. Undefined when the list never said,
+   *  which a save sends as "keep the stored choice". */
+  disabled?: boolean;
 }
