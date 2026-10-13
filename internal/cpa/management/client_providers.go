@@ -240,11 +240,13 @@ type ConfiguredModelRoute struct {
 	CallPoint     string
 }
 
+// A disabled row is not served, so it has no route. Its names stay in the
+// pricing identities, which keeps the rates of a row that is enabled again.
 func configuredModelRoutes(models []ModelAlias, prefix string) []ConfiguredModelRoute {
 	routes := make([]ConfiguredModelRoute, 0, len(models))
 	for _, model := range models {
 		name := strings.TrimSpace(model.Name)
-		if name == "" {
+		if name == "" || model.Disabled {
 			continue
 		}
 		callPoint := strings.TrimSpace(model.Alias)

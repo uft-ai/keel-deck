@@ -448,3 +448,13 @@ func TestConfiguredModelRoutesRetainPrefixesAndAliases(t *testing.T) {
 		t.Fatalf("routes = %#v", routes)
 	}
 }
+
+func TestConfiguredModelRoutesLeaveOutDisabledRows(t *testing.T) {
+	routes := configuredModelRoutes([]ModelAlias{
+		{Name: "qwen3.6", Alias: "qwen3.6", Disabled: true},
+		{Name: "qwen3.6", Alias: "qwen3.6-native"},
+	}, "nan")
+	if len(routes) != 1 || routes[0].CallPoint != "nan/qwen3.6-native" || routes[0].UpstreamModel != "qwen3.6" {
+		t.Fatalf("routes = %#v", routes)
+	}
+}

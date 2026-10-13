@@ -260,3 +260,41 @@ func TestModelSquareMissingKeyErrorSurvivesWrapping(t *testing.T) {
 		t.Fatalf("wrapped key error: %d %s", writer.Code, writer.Body.String())
 	}
 }
+
+func TestModelSquareAllDisabledProviderIsNotPartial(t *testing.T) {
+	fixture := newProviderTestFixture(t)
+	upstream := newFakeCPA(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v8/management/config":
+			json.NewEncoder(writer).Encode(map[string]any{"access": map[string]any{"api-keys": []string{"directory-fixture-key"}}})
+		case "/v1/models":
+			io.WriteString(writer, `{"data":[]}`)
+		case "/v8/management/config/oauth/model-alias":
+			io.WriteString(writer, `{}`)
+		case "/v8/management/credentials":
+			io.WriteString(writer, `{"files":[]}`)
+		case "/v0/management/openai-compatibility":
+			io.WriteString(writer, `{"openai-compatibility":[{"name":"relay","base-url":"https://relay.example.test/v1","prefix":"team","models":[{"name":"gpt-5","alias":"fast","disabled":true}]}]}`)
+		default:
+			if strings.HasPrefix(request.URL.Path, "/v0/management/") && strings.HasSuffix(request.URL.Path, "-api-key") {
+				io.WriteString(writer, `{}`)
+			} else {
+				writer.WriteHeader(404)
+			}
+		}
+	}))
+	defer upstream.Close()
+	pointPlaygroundAt(t, fixture.handler, upstream.URL)
+	response, body := getJSON(t, fixture.client, fixture.baseURL+"/omc/api/v1/management/model-square")
+	if response.StatusCode != 200 {
+		t.Fatalf("directory: %d %s", response.StatusCode, body)
+	}
+	var directory operations.ModelSquareDirectory
+	if err := json.Unmarshal(body, &directory); err != nil {
+		t.Fatal(err)
+	}
+	// Every row is disabled: the list is known and serves nothing.
+	if len(directory.Routes) != 0 || len(directory.Partial) != 0 {
+		t.Fatalf("directory = %#v", directory)
+	}
+}

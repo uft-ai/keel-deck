@@ -142,7 +142,11 @@ func (s *Service) ListModelSquare(ctx context.Context, input ModelSquareQuery) (
 			continue
 		}
 		if provider.Family == "openai-compatibility" {
-			hasMissingModels = true
+			// Configured names without routes mean every row is disabled: the
+			// list is known, it only serves nothing.
+			if len(provider.Models) == 0 {
+				hasMissingModels = true
+			}
 			continue
 		}
 		models, hasDefinitions := definitions[provider.Family]

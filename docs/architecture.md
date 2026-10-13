@@ -3409,7 +3409,13 @@ disabled row back on. A new row without it is enabled. Other families refuse it.
 every key that can serve, through the same audited pull route as the
 selected-key picker. The keys must return the same nonempty list. A failed,
 empty or different answer changes nothing and names only key positions and the
-differing model names. A successful read appends one enabled row for each name
+differing model names. A disabled row has no route in the configured-model
+snapshot, so Model Square never shows it as served. Its names stay in the pricing
+identities, so stored rates survive until the row is enabled again. A provider
+whose rows are all disabled has a known, empty route list; Model Square does not
+mark that as missing provider models.
+
+A successful read appends one enabled row for each name
 no row uses, keeps every existing row (omitted and disabled ones included) and
 reports how many were added and omitted. It is a form change; routing changes
 only when the operator saves. A new NaN.Builders entry cannot be saved until a
