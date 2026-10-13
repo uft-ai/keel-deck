@@ -25,7 +25,7 @@ import { useLogTail } from '../../hooks/useLogTail';
 import { usePreference } from '../../hooks/usePreference';
 import { RefreshButton } from '../common/RefreshButton';
 import { ResponsiveList } from '../common/ResponsiveList';
-import { saveBlob } from '../../utils/download';
+import { getAppConfig } from '../../types/config';
 import { formatBytes } from '../../utils/format';
 import {
   countLogFacets,
@@ -41,6 +41,7 @@ import {
   parseLogLine,
   statusTone,
   LOG_FILTERS_PREFERENCE,
+  logViewerUrl,
   type ErrorLogFile,
   type LogFilters,
   type LogLineParts,
@@ -129,7 +130,6 @@ const ErrorLogFiles: React.FC<{ onView: (file: ErrorLogFile) => void }> = ({ onV
   useTimeZone();
   const t = useT();
   const isDemo = isDemoMode();
-  const toast = useToast();
   const query = useQuery({
     queryKey: ['request-error-logs'],
     queryFn: api.getRequestErrorLogs,
@@ -190,13 +190,9 @@ const ErrorLogFiles: React.FC<{ onView: (file: ErrorLogFile) => void }> = ({ onV
             // one back at all; the server refuses the download too.
             disabled={isDemo}
             title={isDemo ? t('demo.blocked') : undefined}
-            onClick={async () => {
-              try {
-                saveBlob(await api.downloadRequestErrorLog(file.name), file.name);
-              } catch (err: unknown) {
-                toast.error(describeError(err));
-              }
-            }}
+            // The browser saves the redacted file itself, so a large log is never held in memory.
+            href={isDemo ? undefined : logViewerUrl(getAppConfig().apiBaseUrl, { kind: 'file', file })}
+            download={file.name}
           />
         </span>
       ),

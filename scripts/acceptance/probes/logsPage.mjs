@@ -165,7 +165,7 @@ export async function logsSources({ base, page, check }) {
   check('the log file opens above the fullscreen viewer', logTextPlace.isOnTop && logTextPlace.isInView);
   check('a long request body wraps inside the panel', logTextPlace.isWrapped);
   check('the loaded file can be copied and saved', await logDrawer.getByRole('button', { name: 'Copy', exact: true }).isEnabled()
-    && await logDrawer.getByRole('button', { name: /Download/ }).isEnabled());
+    && await logDrawer.getByRole('link', { name: /Download/ }).getAttribute('download') === 'request-abc12345.log');
   await page.keyboard.press('Escape');
   await logDrawer.waitFor({ state: 'hidden' });
   check('Escape closes the log file before fullscreen', await page.getByRole('button', { name: 'Exit fullscreen (Esc)', exact: true }).isVisible());
@@ -181,7 +181,13 @@ export async function logsSources({ base, page, check }) {
   await logDrawer.waitFor({ state: 'hidden' });
 
   await page.getByRole('tab', { name: 'Error log files' }).click();
-  await page.getByRole('button', { name: 'View error-v1-messages-2026-09-28T100000-abc12345.log', exact: true }).click();
+  const errorFileName = 'error-v1-messages-2026-09-28T100000-abc12345.log';
+  const errorFileDownload = page.getByRole('link', { name: `Download ${errorFileName}`, exact: true });
+  await errorFileDownload.waitFor();
+  check('an error log file is saved by the browser from its redacted route',
+    await errorFileDownload.getAttribute('href') === `/omc/api/v1/management/request-error-logs/${encodeURIComponent(errorFileName)}`
+    && await errorFileDownload.getAttribute('download') === errorFileName);
+  await page.getByRole('button', { name: `View ${errorFileName}`, exact: true }).click();
   await logText.waitFor();
   check('an error log file is read in place under its own name',
     (await logDrawer.innerText()).includes('error-v1-messages-2026-09-28T100000-abc12345.log') && (await logText.innerText()).includes('Status: 503'));

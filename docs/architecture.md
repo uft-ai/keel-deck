@@ -852,10 +852,15 @@ than by following a tail. An older `/logs?source=audit` link redirects there.
   `/management/request-error-logs`, `/management/request-logs/{id}`). The console tails
   it; it owns none of it. Each tail line passes `security.RedactText` before it is
   returned, because a line can quote a request URL or an upstream error. A line's request id opens that request's log file in a side
-  panel (`components/logs/LogFileViewer.tsx`), as does an error log file: the file is
-  fetched once per opening, drawn up to `MAX_LOG_PREVIEW_BYTES`, saved from the same
-  copy, and dropped from the query cache when the panel closes because it quotes
-  request content. Both file routes stream through `serveRedactedGatewayLog`
+  panel (`components/logs/LogFileViewer.tsx`), as does an error log file and a usage
+  record's **View request log** action after its confirmation. The panel reads the
+  route with `?preview`, which stops one byte past `MAX_LOG_PREVIEW_BYTES` of redacted
+  text, draws that start, says when more remains, and copies only the preview. Download
+  is a plain browser download of the same route without `?preview`, so the whole file
+  streams to disk and never into the tab. The preview and the download are two
+  audited reads; a preview's audit records whether the whole file was read. The text
+  is dropped from the query cache when the panel closes because it quotes request
+  content. Every file route streams through `serveRedactedGatewayLog`
   (`internal/api/request_log_stream.go`), so the panel only ever receives redacted
   text. `downloadRequestLogByID` accepts only a plain-token id, refuses a file whose
   `Request ID:` line names another request, audits the read as `request_log.download`
@@ -2075,8 +2080,7 @@ silently truncated. Ordinary conversation and tool text remains.
 
 Request inspection is session-only and no-store. Every route that returns
 gateway log text to the browser (`/usage/events/{id}/request-log`,
-`/usage/events/{id}/inspector`, `/usage/events/{id}/inspector/export`,
-`/management/request-logs/{id}` and `/management/request-error-logs/{name}`)
+`/usage/events/{id}/inspector`, `/management/request-logs/{id}` and `/management/request-error-logs/{name}`)
 redacts through one streaming redactor before browser bytes are written. Every
 read writes an audited attempt first and fails closed without it, then records
 `success` or `failure`. The file routes share `serveRedactedGatewayLog`: the

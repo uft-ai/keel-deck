@@ -551,7 +551,7 @@ func TestUsageEventInspectorRedactsSplitSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := page.Items[0].ID
-	for _, path := range []string{"request-log", "inspector", "inspector/export"} {
+	for _, path := range []string{"request-log", "inspector"} {
 		response, payload := getJSON(t, client, fmt.Sprintf("%s/omc/api/v1/usage/events/%d/%s", baseURL, id, path))
 		if response.StatusCode != http.StatusOK || bytes.Contains(payload, []byte(secret)) {
 			t.Fatalf("%s = %d %s", path, response.StatusCode, payload)
@@ -592,7 +592,7 @@ func TestUsageEventExportStreamsALogLargerThanTheLegacyCap(t *testing.T) {
 	if err != nil || len(page.Items) != 1 {
 		t.Fatal(err)
 	}
-	for _, path := range []string{"request-log", "inspector/export"} {
+	for _, path := range []string{"request-log"} {
 		response, payload := getJSON(t, client, fmt.Sprintf("%s/omc/api/v1/usage/events/%d/%s", baseURL, page.Items[0].ID, path))
 		if response.StatusCode != http.StatusOK || bytes.Contains(payload, []byte(secret)) || !bytes.Contains(payload, []byte("conversation")) {
 			t.Fatalf("%s = %d leaked or dropped text", path, response.StatusCode)

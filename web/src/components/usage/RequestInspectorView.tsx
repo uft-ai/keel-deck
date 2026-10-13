@@ -1,13 +1,10 @@
 import React from 'react';
-import { Button } from 'antd';
 import { useQuery } from '@tanstack/react-query';
-import { api, ApiError } from '../../api/client';
+import { api } from '../../api/client';
 import { useT } from '../../i18n';
-import { isDemoMode } from '../../types/demoMode';
 import type { RequestInspector, RequestInspectorSection } from '../../types/usageEvents';
 import { formatBytes } from '../../utils/format';
-import { DownloadOutlined } from '../icons';
-import { LoadFailure, Notice, useToast } from '../feedback';
+import { LoadFailure, Notice } from '../feedback';
 
 type Translate = ReturnType<typeof useT>;
 
@@ -66,8 +63,6 @@ function isRequestInspector(value: unknown): value is RequestInspector {
 /** RequestInspectorView shows the retained log sections without storing them. */
 export function RequestInspectorView({ eventId }: { eventId: number }) {
   const t = useT();
-  const toast = useToast();
-  const [exporting, setExporting] = React.useState(false);
   const result = useQuery({
     queryKey: ['usage-event-inspector', eventId],
     queryFn: () => api.getUsageEventInspector(eventId),
@@ -84,29 +79,6 @@ export function RequestInspectorView({ eventId }: { eventId: number }) {
     );
   }
   const inspector = result.data;
-  const exportLog = async () => {
-    setExporting(true);
-    try {
-      const blob = await api.exportUsageEventInspector(eventId);
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = `${inspector.identity.request_id.replace(/[^a-zA-Z0-9._-]/g, '_')}.log`;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch (error) {
-      const code = error instanceof ApiError ? (error.data as { code?: string } | null)?.code : undefined;
-      toast.error(t(
-        code === 'request_log_not_found' ? 'events.inspector_expired'
-          : code === 'capture_pending' ? 'events.inspector_pending'
-            : 'events.inspector_export_failed',
-      ));
-    } finally {
-      setExporting(false);
-    }
-  };
   const retained = inspector.capture_state === 'retained';
   return (
     <div className="request-inspector">
@@ -127,16 +99,6 @@ export function RequestInspectorView({ eventId }: { eventId: number }) {
       {inspector.sections.map((section, index) => (
         <InspectorSection key={`${section.kind}-${section.attempt ?? 0}-${index}`} section={section} limits={inspector.limits} />
       ))}
-      {retained && (
-        <Button
-          icon={<DownloadOutlined />}
-          loading={exporting}
-          disabled={isDemoMode()}
-          onClick={() => void exportLog()}
-        >
-          {t('events.inspector_export')}
-        </Button>
-      )}
     </div>
   );
 }

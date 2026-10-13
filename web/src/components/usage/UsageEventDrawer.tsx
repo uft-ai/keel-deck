@@ -6,8 +6,8 @@ import { ParagraphPlaceholder } from '../common/ContentPlaceholder';
 import {
   ArrowRightOutlined,
   NonStreamOutlined,
-  DownloadOutlined,
   DownOutlined,
+  EyeOutlined,
   SwapOutlined,
   ThunderboltFilled,
   UpOutlined,
@@ -15,7 +15,7 @@ import {
 import { useQuery } from '@tanstack/react-query';
 import { groupResponseHeaders, responseHeadersText } from '../../types/responseHeaderGroups';
 import dayjs from '../../utils/time';
-import { api, ApiError } from '../../api/client';
+import { api } from '../../api/client';
 import { displayEffortName } from '../../theme/effortScale';
 import { useT } from '../../i18n';
 import { isDemoMode } from '../../types/demoMode';
@@ -38,8 +38,9 @@ import { requestGroupName } from '../../types/usageEventLabels';
 import { RequestInspectorView } from './RequestInspectorView';
 import { useOverlayHistory } from '../../hooks/useOverlayHistory';
 import { CostBreakdownView } from '../pricing/CostBreakdownView';
-import { useToast } from '../feedback';
 import { LoadFailure, Notice } from '../feedback';
+import { LogFileViewer } from '../logs/LogFileViewer';
+import type { LogViewerTarget } from '../../types/logs';
 import { EmptyState } from '../common/EmptyState';
 import { AppDrawer } from '../common/AppDrawer';
 import { CopyButton } from '../common/CopyButton';
@@ -68,21 +69,22 @@ export const UsageEventDrawer: React.FC<UsageEventDrawerProps> = ({
   // exact counts, so the full form is what this surface prints.
   const { style: tokenStyle, modelView } = useTokenDisplayStyle();
   const isCallView = modelView === 'call';
-  const toast = useToast();
-  const [downloadModalOpen, setDownloadModalOpen] = React.useState(false);
+  const [logModalOpen, setLogModalOpen] = React.useState(false);
+  const [viewerTarget, setViewerTarget] = React.useState<LogViewerTarget | null>(null);
 
-  // The drawer and the download confirmation over it are two overlays on one stack, so Back
+  // The drawer and the log confirmation over it are two overlays on one stack, so Back
   // closes the confirmation first and the record second - the order the reader sees them in.
+  // The log viewer registers its own entry.
   useOverlayHistory({ isOpen: eventId != null, onClose });
   useOverlayHistory({
-    isOpen: downloadModalOpen && eventId != null,
-    onClose: () => setDownloadModalOpen(false),
+    isOpen: logModalOpen && eventId != null,
+    onClose: () => setLogModalOpen(false),
   });
-  const [downloading, setDownloading] = React.useState(false);
   const [tab, setTab] = React.useState('overview');
   React.useEffect(() => {
     setTab('overview');
-    setDownloadModalOpen(false);
+    setLogModalOpen(false);
+    setViewerTarget(null);
   }, [eventId]);
   const result = useQuery({
     queryKey: ['usage-event', eventId],
@@ -118,36 +120,11 @@ export const UsageEventDrawer: React.FC<UsageEventDrawerProps> = ({
       {content}
     </section>
   );
-  const download = async () => {
+  // Confirming opens the shared log viewer on this record's file; the viewer reads it.
+  const viewLog = () => {
     if (eventId == null || !event?.request_id) return;
-    setDownloading(true);
-    try {
-      const blob = await api.downloadUsageEventRequestLog(eventId);
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = `${event.request_id.replace(/[^a-zA-Z0-9._-]/g, '_')}.log`;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-      setDownloadModalOpen(false);
-      toast.success(t('events.download_success'));
-    } catch (error) {
-      // CPA keeps a per-request file only while request logging is on; its absence
-      // is an answer about retention, not an outage to retry.
-      const code = error instanceof ApiError ? (error.data as { code?: string } | null)?.code : undefined;
-      const isMissing = code === 'request_log_not_found';
-      // Confirming again cannot produce a file CPA does not hold.
-      if (isMissing) setDownloadModalOpen(false);
-      toast.error(t(
-        isMissing ? 'events.download_missing'
-          : code === 'capture_pending' ? 'events.inspector_pending'
-            : 'events.download_failed',
-      ));
-    } finally {
-      setDownloading(false);
-    }
+    setLogModalOpen(false);
+    setViewerTarget({ kind: 'event', eventId, requestId: event.request_id });
   };
 
   const currentIndex = events && eventId != null ? events.findIndex((e) => e.id === eventId) : -1;
@@ -638,15 +615,15 @@ export const UsageEventDrawer: React.FC<UsageEventDrawerProps> = ({
                       <>
                         <p className="request-detail-note">{t('events.raw_log_note')}</p>
                         <Button
-                          aria-label={t('events.download_log')}
-                          icon={<DownloadOutlined />}
+                          aria-label={t('events.view_log')}
+                          icon={<EyeOutlined />}
                           // A request log quotes the request itself, so the demonstration
-                          // keeps it out of reach; the server refuses the download as well.
+                          // keeps it out of reach; the server refuses the read as well.
                           disabled={!event.has_request_log || !event.request_id || isDemo}
                           title={isDemo ? t('demo.blocked') : undefined}
-                          onClick={() => setDownloadModalOpen(true)}
+                          onClick={() => setLogModalOpen(true)}
                         >
-                          {t('events.download_log')}
+                          {t('events.view_log')}
                         </Button>
                         {(!event.has_request_log || !event.request_id) && (
                           <p className="request-detail-note">{t('events.log_unavailable')}</p>
@@ -661,17 +638,17 @@ export const UsageEventDrawer: React.FC<UsageEventDrawerProps> = ({
         </>
       ) : null}
       <Modal
-        open={downloadModalOpen && eventId != null}
-        title={t('events.download_log_confirm')}
-        onOk={() => void download()}
-        onCancel={() => setDownloadModalOpen(false)}
-        confirmLoading={downloading}
+        open={logModalOpen && eventId != null}
+        title={t('events.view_log_confirm')}
+        onOk={viewLog}
+        onCancel={() => setLogModalOpen(false)}
         okText={t('common.confirm')}
         cancelText={t('common.cancel')}
       >
-        <Notice tone="warning" description={t('events.download_log_desc')} />
+        <Notice tone="warning" description={t('events.view_log_desc')} />
         <p className="request-detail-id">Request ID: {event?.request_id}</p>
       </Modal>
+      <LogFileViewer target={viewerTarget} onClose={() => setViewerTarget(null)} />
     </AppDrawer>
   );
 };

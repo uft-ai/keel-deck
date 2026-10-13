@@ -783,17 +783,6 @@ export const api = {
     return { files: data.files ?? [] };
   },
 
-  async downloadRequestErrorLog(name: string): Promise<Blob> {
-    const { apiBaseUrl } = getAppConfig();
-    return downloadBlob(`${apiBaseUrl}/management/request-error-logs/${encodeURIComponent(name)}`);
-  },
-
-  /** The log file CPA holds for one request id, as printed on a gateway log line. */
-  async downloadRequestLogById(requestId: string): Promise<Blob> {
-    const { apiBaseUrl } = getAppConfig();
-    return downloadBlob(`${apiBaseUrl}/management/request-logs/${encodeURIComponent(requestId)}`);
-  },
-
   async getUsageEvents(query: string): Promise<UsageEventPage> {
     return request<UsageEventPage>(`/usage/events${query ? `?${query}` : ''}`, { method: 'GET' });
   },
@@ -806,15 +795,7 @@ export const api = {
     return request(`/usage/events/${id}/inspector`, { method: 'GET' });
   },
 
-  async exportUsageEventInspector(id: number): Promise<Blob> {
-    const { apiBaseUrl } = getAppConfig();
-    return downloadBlob(`${apiBaseUrl}/usage/events/${id}/inspector/export`);
-  },
 
-  async downloadUsageEventRequestLog(id: number): Promise<Blob> {
-    const { apiBaseUrl } = getAppConfig();
-    return downloadBlob(`${apiBaseUrl}/usage/events/${id}/request-log`);
-  },
 
   async getUsageFacets(query: string): Promise<UsageFacetsResponse> {
     return request<UsageFacetsResponse>(`/usage/facets${query ? `?${query}` : ''}`, { method: 'GET' });
@@ -839,6 +820,51 @@ export const api = {
   /** requestLogFileUrl points at the server-side CPA request-log proxy. */
   requestLogFileUrl(id: number): string {
     return `${getAppConfig().apiBaseUrl}/usage/events/${id}/request-log`;
+  },
+
+  /**
+   * readLogPreview reads at most `limit` bytes of a redacted log route and then cancels the
+   * rest; the server stops one byte past its own limit, so a longer answer means more remains.
+   */
+  async readLogPreview(url: string, limit: number): Promise<{ text: string; complete: boolean }> {
+    const separator = url.includes('?') ? '&' : '?';
+    let response: Response;
+    try {
+      response = await fetch(`${url}${separator}preview`, { method: 'GET', credentials: 'same-origin', headers: { Accept: 'text/plain, application/json' } });
+    } catch (err: unknown) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      throw new ApiError(`Network request failed (${errorMsg}); check that the backend is running`, 0);
+    }
+    if (!response.ok) {
+      const error = await readError(response);
+      if (response.status === 401) unauthorizedHandler?.();
+      throw new ApiError(error.message, response.status, error.data, error.demoBlocked);
+    }
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    if (response.body) {
+      const reader = response.body.getReader();
+      while (size <= limit) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        size += value.byteLength;
+      }
+      await reader.cancel().catch(() => {});
+    } else {
+      const whole = new Uint8Array(await response.arrayBuffer());
+      chunks.push(whole);
+      size = whole.byteLength;
+    }
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    // A preview cut inside a multi-byte character drops that character rather than garbling it.
+    const text = new TextDecoder().decode(bytes.subarray(0, Math.min(size, limit)), { stream: true });
+    return { text, complete: size <= limit };
   },
 
   async getManagementAuthFiles(params?: { name?: string; auth_index?: string }): Promise<ManagementAuthFilesResponse> {

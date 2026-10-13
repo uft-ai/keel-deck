@@ -76,7 +76,6 @@ const REFUSED = [
   { method: 'GET', path: '/api/v1/management/request-error-logs/request-error-2026-01-01T00-00-00Z.log' },
   { method: 'GET', path: '/api/v1/usage/events/1/request-log' },
   { method: 'GET', path: '/api/v1/usage/events/1/inspector' },
-  { method: 'GET', path: '/api/v1/usage/events/1/inspector/export' },
   { method: 'GET', path: '/api/v1/management/request-logs/41dbb9ee' },
   { method: 'POST', path: '/api/v1/management/plugin-store/otel-bridge/install', body: {} },
   { method: 'PATCH', path: '/api/v1/management/plugins/usage-exporter/enabled', body: { enabled: false } },

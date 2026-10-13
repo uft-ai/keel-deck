@@ -3,11 +3,11 @@ import test from 'node:test';
 
 import {
   countLogFacets,
-  canPreviewLog,
   DEFAULT_LOG_FILTERS,
   isManagementLine,
   isViewableRequestId,
   logViewerFileName,
+  logViewerUrl,
   matchesLogFilters,
   MAX_LOG_PATH_FILTERS,
   MAX_LOG_PREVIEW_BYTES,
@@ -108,8 +108,18 @@ test('the id on a gateway line names the request log it opens', () => {
   assert.equal(isViewableRequestId('01a129f7-2024-7074-8b8c-1ceb0ec5e76b'), true);
 });
 
-test('a log is drawn in the page up to the preview limit and offered as a download past it', () => {
-  assert.equal(canPreviewLog(0), true);
-  assert.equal(canPreviewLog(MAX_LOG_PREVIEW_BYTES), true);
-  assert.equal(canPreviewLog(MAX_LOG_PREVIEW_BYTES + 1), false);
+test('every viewer target reads one redacted route, and the preview limit is 2 MiB', () => {
+  assert.equal(MAX_LOG_PREVIEW_BYTES, 2 * 1024 * 1024);
+  assert.equal(
+    logViewerUrl('/omc/api/v1', { kind: 'file', file: { name: 'error a.log', size: 1, modified: 0 } }),
+    '/omc/api/v1/management/request-error-logs/error%20a.log',
+  );
+  assert.equal(
+    logViewerUrl('/omc/api/v1', { kind: 'request', requestId: '41dbb9ee' }),
+    '/omc/api/v1/management/request-logs/41dbb9ee',
+  );
+  assert.equal(
+    logViewerUrl('/omc/api/v1', { kind: 'event', eventId: 7, requestId: '41dbb9ee' }),
+    '/omc/api/v1/usage/events/7/request-log',
+  );
 });

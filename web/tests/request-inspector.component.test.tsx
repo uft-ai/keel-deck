@@ -56,18 +56,15 @@ it('renders every upstream attempt with status, headers, markers and omitted bin
   expect(screen.getByText('Binary content omitted')).toBeTruthy();
   expect(screen.getByText('[API REQUEST BODY TRUNCATED: captured first 6 bytes]')).toBeTruthy();
   expect(screen.getByText(/Only the first 64(\.0)? KB of this section is shown/)).toBeTruthy();
-  expect(screen.getByRole('button', { name: /Export full log/ })).toBeTruthy();
 });
 
 it('explains missing logs, hidden mismatches and bounded reads instead of showing text', async () => {
   const { unmount } = renderInspector(inspector({ capture_state: 'expired_unknown', capture_reason: 'request_log_not_found', identity: { request_id: 'gone', match: 'unknown' } }));
   expect(await screen.findByText(/Relay holds no log for this request/)).toBeTruthy();
-  expect(screen.queryByRole('button', { name: /Export full log/ })).toBeNull();
   unmount();
 
   const pending = renderInspector(inspector({ capture_state: 'pending', capture_reason: 'capture_pending', identity: { request_id: 'busy', match: 'unknown' } }));
   expect(await screen.findByText(/Relay is still writing this request's log/)).toBeTruthy();
-  expect(screen.queryByRole('button', { name: /Export full log/ })).toBeNull();
   pending.unmount();
 
   renderInspector(inspector({

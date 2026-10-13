@@ -112,7 +112,7 @@ func TestUsageEventInspectorHidesAnotherRequestsLog(t *testing.T) {
 	if inspector.Identity.Match != "mismatch" || inspector.Identity.LoggedRequestID != "01a12e30-d92f-7d85-b6a0-d6e8093d62ba" || len(inspector.Sections) != 0 {
 		t.Fatalf("mismatched log was shown: %+v", inspector)
 	}
-	for _, path := range []string{"request-log", "inspector/export"} {
+	for _, path := range []string{"request-log"} {
 		response, payload := getJSON(t, client, fmt.Sprintf("%s/omc/api/v1/usage/events/%d/%s", baseURL, id, path))
 		if response.StatusCode != http.StatusNotFound || !strings.Contains(string(payload), `"code":"request_log_not_found"`) || response.Header.Get("Content-Disposition") != "" {
 			t.Fatalf("%s served another request's log: %d %s", path, response.StatusCode, payload)
@@ -203,7 +203,7 @@ func TestUsageEventExportIsAnAttachmentAndMarksStreamFailure(t *testing.T) {
 		writer.Header().Set("Content-Length", "100000")
 		_, _ = writer.Write([]byte("=== REQUEST INFO ===\nRequest ID: cut\n"))
 	})
-	response, payload := getJSON(t, client, fmt.Sprintf("%s/omc/api/v1/usage/events/%d/inspector/export", baseURL, seedInspectorEvent(t, repo, "cut")))
+	response, payload := getJSON(t, client, fmt.Sprintf("%s/omc/api/v1/usage/events/%d/request-log", baseURL, seedInspectorEvent(t, repo, "cut")))
 	if response.StatusCode != http.StatusOK || !strings.HasPrefix(response.Header.Get("Content-Disposition"), "attachment;") || response.Header.Get("X-Content-Type-Options") != "nosniff" {
 		t.Fatalf("export headers = %d %v", response.StatusCode, response.Header)
 	}
@@ -216,7 +216,7 @@ func TestUsageEventExportMapsMissingLog(t *testing.T) {
 	client, baseURL, repo := startDashboardTestServer(t, func(writer http.ResponseWriter, request *http.Request) {
 		writer.WriteHeader(http.StatusNotFound)
 	})
-	response, payload := getJSON(t, client, fmt.Sprintf("%s/omc/api/v1/usage/events/%d/inspector/export", baseURL, seedInspectorEvent(t, repo, "absent")))
+	response, payload := getJSON(t, client, fmt.Sprintf("%s/omc/api/v1/usage/events/%d/request-log", baseURL, seedInspectorEvent(t, repo, "absent")))
 	if response.StatusCode != http.StatusNotFound || !strings.Contains(string(payload), `"code":"request_log_not_found"`) {
 		t.Fatalf("export = %d %s", response.StatusCode, payload)
 	}
@@ -233,7 +233,7 @@ func TestUsageEventInspectorReportsCapturePending(t *testing.T) {
 	if inspector.CaptureState != "pending" || inspector.CaptureReason != "capture_pending" || len(inspector.Sections) != 0 || inspector.Preview.BytesRead != 0 {
 		t.Fatalf("pending capture = %+v", inspector)
 	}
-	for _, path := range []string{"inspector/export", "request-log"} {
+	for _, path := range []string{"request-log"} {
 		response, payload := getJSON(t, client, fmt.Sprintf("%s/omc/api/v1/usage/events/%d/%s", baseURL, id, path))
 		if response.StatusCode != http.StatusConflict || !strings.Contains(string(payload), `"code":"capture_pending"`) || response.Header.Get("Content-Disposition") != "" {
 			t.Fatalf("%s = %d %v %s", path, response.StatusCode, response.Header, payload)

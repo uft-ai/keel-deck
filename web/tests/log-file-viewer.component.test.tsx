@@ -29,7 +29,9 @@ function stubLogRead(respond: () => Response): string[] {
   return paths;
 }
 
-const downloadButton = () => screen.getByRole('button', { name: /Download/ }) as HTMLButtonElement;
+// Download is a link to the whole file once loaded, and a disabled button before.
+const downloadControl = () => (screen.queryByRole('link', { name: /Download/ }) ?? screen.getByRole('button', { name: /Download/ })) as HTMLElement;
+const downloadEnabled = () => downloadControl().tagName === 'A' && downloadControl().getAttribute('aria-disabled') !== 'true';
 const copyButton = () => screen.getByRole('button', { name: /Copy/ }) as HTMLButtonElement;
 
 describe('LogFileViewer', () => {
@@ -45,8 +47,31 @@ describe('LogFileViewer', () => {
     expect((await screen.findByText(/auth_unavailable: no auth available/)).tagName).toBe('PRE');
     expect(screen.getByText('request-41dbb9ee.log')).toBeTruthy();
     expect(new Set(paths)).toEqual(new Set(['/omc/api/v1/management/request-logs/41dbb9ee']));
-    expect(downloadButton().disabled).toBe(false);
+    expect(downloadEnabled()).toBe(true);
+    expect(downloadControl().getAttribute('href')).toBe('/omc/api/v1/management/request-logs/41dbb9ee');
     expect(copyButton().disabled).toBe(false);
+  });
+
+  it('reads a usage record through its own route, which checks the request id', async () => {
+    const paths = stubLogRead(() => new Response(REFUSED_LOG, { status: 200 }));
+    render(<Surface target={{ kind: 'event', eventId: 7, requestId: '41dbb9ee' }} />);
+
+    await screen.findByText(/auth_unavailable/);
+    expect(new Set(paths)).toEqual(new Set(['/omc/api/v1/usage/events/7/request-log']));
+    expect(screen.getByText('request-41dbb9ee.log')).toBeTruthy();
+    expect(downloadControl().getAttribute('href')).toBe('/omc/api/v1/usage/events/7/request-log');
+  });
+
+  it('asks again later while Relay is still writing the log', async () => {
+    stubLogRead(() => new Response(
+      JSON.stringify({ error: 'Relay is still writing', code: 'capture_pending' }),
+      { status: 409, headers: { 'Content-Type': 'application/json' } },
+    ));
+    render(<Surface target={{ kind: 'event', eventId: 7, requestId: 'busy0001' }} />);
+
+    expect((await screen.findByRole('alert')).textContent).toContain('still writing');
+    expect(screen.getByRole('button', { name: /Retry/ })).toBeTruthy();
+    expect(downloadEnabled()).toBe(false);
   });
 
   it('reads a named error log from the error-log route', async () => {
@@ -68,7 +93,7 @@ describe('LogFileViewer', () => {
     expect(notice.classList.contains('is-warning')).toBe(true);
     expect(notice.textContent).toContain('CPA holds no log file for this request');
     expect(screen.queryByRole('button', { name: /Retry/ })).toBeNull();
-    expect(downloadButton().disabled).toBe(true);
+    expect(downloadEnabled()).toBe(false);
     expect(copyButton().disabled).toBe(true);
   });
 
@@ -81,14 +106,15 @@ describe('LogFileViewer', () => {
     expect(screen.getByRole('button', { name: /Retry/ })).toBeTruthy();
   });
 
-  it('offers a file past the preview limit as a download instead of drawing it', async () => {
-    stubLogRead(() => new Response('x'.repeat(MAX_LOG_PREVIEW_BYTES + 1), { status: 200 }));
+  it('draws only the preview of a longer file, says so, and copies only the preview', async () => {
+    const paths = stubLogRead(() => new Response('x'.repeat(MAX_LOG_PREVIEW_BYTES + 1), { status: 200 }));
     render(<Surface target={{ kind: 'request', requestId: '41dbb9ee' }} />);
 
-    expect((await screen.findByRole('alert')).textContent).toContain('larger than');
-    expect(document.querySelector('pre')).toBeNull();
-    expect(downloadButton().disabled).toBe(false);
-    expect(copyButton().disabled).toBe(true);
+    expect((await screen.findByRole('alert')).textContent).toContain('Only the first');
+    expect(document.querySelector('pre')?.textContent?.length).toBe(MAX_LOG_PREVIEW_BYTES);
+    expect(paths).toEqual(['/omc/api/v1/management/request-logs/41dbb9ee']);
+    expect(screen.getByRole('button', { name: /Copy preview/ })).toBeTruthy();
+    expect(downloadEnabled()).toBe(true);
   });
 
   it('asks for nothing while closed and dismisses through its close control', async () => {

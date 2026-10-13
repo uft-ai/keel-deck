@@ -3,6 +3,7 @@ package api
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -32,7 +33,9 @@ type gatewayLogRead struct {
 // browser. The read is audited before the gateway is asked, fails closed when
 // that audit cannot be written, and streams the whole file through the
 // redactor with no size cap. A source failure after bytes were sent ends with
-// exportIncompleteMarker and an audited failure.
+// exportIncompleteMarker and an audited failure. A read with ?preview stops
+// after gatewayLogPreviewBytes+1 redacted bytes and records whether the file
+// was complete.
 func (h *Handler) serveRedactedGatewayLog(writer http.ResponseWriter, request *http.Request, read gatewayLogRead) {
 	writer.Header().Set("Cache-Control", "no-store")
 	if auditErr := h.recordAudit(request, read.action, read.targetType, read.targetID, "attempt", nil); auditErr != nil {
@@ -70,11 +73,53 @@ func (h *Handler) serveRedactedGatewayLog(writer http.ResponseWriter, request *h
 		return
 	}
 	counted := &countedReader{reader: source}
-	if streamErr := streamRedactedRequestLog(output, counted); streamErr != nil {
-		_ = h.recordAudit(request, read.action, read.targetType, read.targetID, "failure", map[string]any{"error": streamErr.Error(), "size_bytes": counted.read})
-		return
+	var sink io.Writer = output
+	details := map[string]any{}
+	if request.URL.Query().Has("preview") {
+		// One byte past the limit tells the viewer the preview is not the whole file.
+		sink = &previewWriter{writer: output, left: gatewayLogPreviewBytes + 1}
+		details["preview"] = true
 	}
-	_ = h.recordAudit(request, read.action, read.targetType, read.targetID, "success", map[string]any{"size_bytes": counted.read})
+	streamErr := streamRedactedRequestLog(sink, counted)
+	details["size_bytes"] = counted.read
+	switch {
+	case errors.Is(streamErr, errPreviewFull):
+		details["complete"] = false
+	case streamErr != nil:
+		details["error"] = streamErr.Error()
+		_ = h.recordAudit(request, read.action, read.targetType, read.targetID, "failure", details)
+		return
+	case details["preview"] == true:
+		details["complete"] = true
+	}
+	_ = h.recordAudit(request, read.action, read.targetType, read.targetID, "success", details)
+}
+
+// gatewayLogPreviewBytes is the most redacted text a preview read returns before
+// its extra byte; the viewer shows the same amount.
+const gatewayLogPreviewBytes = 2 * 1024 * 1024
+
+var errPreviewFull = errors.New("the preview limit was reached")
+
+// previewWriter passes on at most left bytes, then ends the stream with
+// errPreviewFull so the rest of the file is not read.
+type previewWriter struct {
+	writer io.Writer
+	left   int
+}
+
+func (w *previewWriter) Write(data []byte) (int, error) {
+	if len(data) <= w.left {
+		written, err := w.writer.Write(data)
+		w.left -= written
+		return written, err
+	}
+	written, err := w.writer.Write(data[:w.left])
+	w.left -= written
+	if err != nil {
+		return written, err
+	}
+	return written, errPreviewFull
 }
 
 // gatewayLogWriteWait bounds one write of a log stream to the browser. The

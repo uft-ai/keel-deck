@@ -257,7 +257,6 @@ var demoPolicy = []demoPolicyRule{
 	{http.MethodGet, "/api/v1/management/request-logs/{id}", demoRefuse, "downloading a request log is disabled: it quotes request content"},
 	{http.MethodGet, "/api/v1/usage/events/{id}/request-log", demoRefuse, "downloading a request log is disabled: it quotes request content"},
 	{http.MethodGet, "/api/v1/usage/events/{id}/inspector", demoRefuse, "inspecting a request log is disabled: it quotes request content"},
-	{http.MethodGet, "/api/v1/usage/events/{id}/inspector/export", demoRefuse, "exporting a request log is disabled: it quotes request content"},
 	{http.MethodDelete, "/api/v1/management/logs", demoRefuse, "clearing the gateway log is disabled"},
 
 	// Anything that would reach outside this process.

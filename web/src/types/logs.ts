@@ -182,20 +182,35 @@ export interface ErrorLogFile {
 }
 
 /**
- * What the log viewer shows: the file CPA holds for one request id, or one named error log.
+ * What the log viewer shows: the file CPA holds for one request id, one named error log, or
+ * the file of one usage record (checked against that record's request id).
  *
  * A request refused before a credential was chosen publishes no usage record, so the id on
  * its gateway log line is the only handle the console has on it.
  */
 export type LogViewerTarget =
   | { kind: 'request'; requestId: string }
-  | { kind: 'file'; file: ErrorLogFile };
+  | { kind: 'file'; file: ErrorLogFile }
+  | { kind: 'event'; eventId: number; requestId: string };
 
 /**
- * The largest file drawn in the page. A request log carries the whole request body, so one can
- * run to megabytes; past this it is offered as a download instead of stalling the tab.
+ * The most redacted text the viewer reads and draws. A request log carries the whole request
+ * body, so one can run to megabytes; past this the viewer shows the start, says so, and the
+ * download reads the whole file.
  */
 export const MAX_LOG_PREVIEW_BYTES = 2 * 1024 * 1024;
+
+/** The redacted route that serves a viewer target, for the preview and the full download. */
+export function logViewerUrl(apiBaseUrl: string, target: LogViewerTarget): string {
+  switch (target.kind) {
+    case 'file':
+      return `${apiBaseUrl}/management/request-error-logs/${encodeURIComponent(target.file.name)}`;
+    case 'request':
+      return `${apiBaseUrl}/management/request-logs/${encodeURIComponent(target.requestId)}`;
+    case 'event':
+      return `${apiBaseUrl}/usage/events/${target.eventId}/request-log`;
+  }
+}
 
 /** The ids the server's request-log route accepts; anything else is not offered as a link. */
 const REQUEST_LOG_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
@@ -207,10 +222,6 @@ export function isViewableRequestId(requestId: string | undefined): requestId is
 /** The name the viewer is titled with and a download is saved under. */
 export function logViewerFileName(target: LogViewerTarget): string {
   return target.kind === 'file' ? target.file.name : `request-${target.requestId}.log`;
-}
-
-export function canPreviewLog(sizeBytes: number): boolean {
-  return sizeBytes <= MAX_LOG_PREVIEW_BYTES;
 }
 
 /**

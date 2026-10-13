@@ -264,37 +264,6 @@ func (r *redactingReader) Read(out []byte) (int, error) {
 	return n, nil
 }
 
-func (h *Handler) exportUsageEventRequestLog(writer http.ResponseWriter, request *http.Request) {
-	writer.Header().Set("Cache-Control", "no-store")
-	row, ok := h.usageEventForRequestLog(writer, request)
-	if !ok {
-		return
-	}
-	if strings.TrimSpace(row.RequestID) == "" {
-		writeJSON(writer, http.StatusNotFound, map[string]string{
-			"error": "this record has no request id to look up",
-			"code":  requestLogNotFoundCode,
-		})
-		return
-	}
-	client, ok := h.managementClientOrError(writer, request)
-	if !ok {
-		return
-	}
-	h.serveRedactedGatewayLog(writer, request, gatewayLogRead{
-		action:            "request_log.export",
-		targetType:        "request_log",
-		targetID:          row.RequestID,
-		fileName:          sanitizeLogName(row.RequestID),
-		abortMessage:      "audit log failure; request export aborted",
-		expectedRequestID: row.RequestID,
-		open: func(ctx context.Context) (io.ReadCloser, error) {
-			return client.OpenRequestLog(ctx, row.RequestID)
-		},
-		fetchError: writeRequestLogFetchError,
-	})
-}
-
 func (h *Handler) usageEventForRequestLog(writer http.ResponseWriter, request *http.Request) (repository.UsageEventRow, bool) {
 	id, err := parseEventID(request)
 	if err != nil {

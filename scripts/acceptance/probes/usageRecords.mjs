@@ -404,7 +404,7 @@ export function interactionRecordDetail(id) {
 /**
  * The request list's reader interactions: virtualization bounds, the column
  * resizer and its persistence, the collapse gesture, keyboard access to the detail
- * drawer, and the gated request-log download.
+ * drawer, and the gated request-log viewer.
  *
  * These came from `scripts/browser-usage-events.mjs`, which was deleted when the
  * probe files were combined. They are restored here rather than dropped: every one
@@ -793,7 +793,7 @@ export async function requestListInteractions({ base, page, check }) {
     .catch(() => {});
   check('Escape closes the request detail', !(await page.locator('.request-detail').isVisible().catch(() => false)));
 
-  // The log download is a high-intent action: it must not happen on page load, and
+  // Reading the log is a high-intent action: it must not happen on page load, and
   // it must not happen on the first click either - the confirmation is what makes it
   // deliberate.
   await rows.first().click();
@@ -830,7 +830,7 @@ export async function requestListInteractions({ base, page, check }) {
     JSON.stringify(diagnostics.groups));
   await page.screenshot({ path: 'tmp/request-diagnostics.png' });
   const downloadsBefore = downloads.length;
-  const downloadButton = page.getByRole('button', { name: /下载请求日志|Download request log/ }).first();
+  const downloadButton = page.getByRole('button', { name: /查看请求日志|View request log/i }).first();
   if ((await downloadButton.count()) > 0) {
     await downloadButton.click();
     await page
@@ -839,7 +839,7 @@ export async function requestListInteractions({ base, page, check }) {
       .waitFor({ state: 'visible', timeout: 5000 })
       .catch(() => {});
     check(
-      'a request-log download requires explicit confirmation',
+      'reading a request log requires explicit confirmation',
       downloads.length === downloadsBefore,
       `downloads=${downloads.length - downloadsBefore}`,
     );

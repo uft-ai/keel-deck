@@ -145,7 +145,7 @@ func TestGatewayLogIdentityIsOneRuleForEveryRoute(t *testing.T) {
 		if strings.Contains(fmt.Sprint(inspector.Sections), gatewayLogSecret) {
 			t.Errorf("%s inspector leaked the credential", testCase.requestID)
 		}
-		for _, path := range []string{"request-log", "inspector/export"} {
+		for _, path := range []string{"request-log"} {
 			response, payload := getJSON(t, client, fmt.Sprintf("%s/omc/api/v1/usage/events/%d/%s", baseURL, ids[testCase.requestID], path))
 			if strings.Contains(string(payload), gatewayLogSecret) {
 				t.Errorf("%s %s leaked the credential", testCase.requestID, path)
@@ -321,7 +321,6 @@ func TestGatewayLogRoutesFailClosedWithoutAnAudit(t *testing.T) {
 		"/omc/api/v1/management/request-error-logs/error-1.log",
 		"/omc/api/v1/management/request-logs/aaaa1111",
 		fmt.Sprintf("/omc/api/v1/usage/events/%d/request-log", ids["aaaa1111"]),
-		fmt.Sprintf("/omc/api/v1/usage/events/%d/inspector/export", ids["aaaa1111"]),
 		fmt.Sprintf("/omc/api/v1/usage/events/%d/inspector", ids["aaaa1111"]),
 	} {
 		response, payload := getJSON(t, client, baseURL+path)
@@ -332,5 +331,51 @@ func TestGatewayLogRoutesFailClosedWithoutAnAudit(t *testing.T) {
 	}
 	if seen := fixture.seen(); len(seen) != 0 {
 		t.Fatalf("the gateway was asked for logs it could not audit: %v", seen)
+	}
+}
+
+// A preview read answers at most one byte past the preview limit, redacted, and
+// its audit says whether the whole file was read.
+func TestGatewayLogPreviewStopsPastItsLimit(t *testing.T) {
+	long := "=== REQUEST INFO ===\nRequest ID: long0001\nAuthorization: Bearer " + gatewayLogSecret + "\n" +
+		strings.Repeat("conversation ", 3*1024*1024/13)
+	client, baseURL, repo := startDashboardTestServer(t, func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v8/management/observability/logs/requests/long0001":
+			_, _ = writer.Write([]byte(long))
+		case "/v8/management/observability/logs/requests/short001":
+			_, _ = writer.Write([]byte("=== REQUEST INFO ===\nRequest ID: short001\n\nhello\n"))
+		default:
+			writer.WriteHeader(http.StatusNotFound)
+		}
+	})
+	response, payload := getJSON(t, client, baseURL+"/omc/api/v1/management/request-logs/long0001?preview")
+	text := string(payload)
+	if response.StatusCode != http.StatusOK || len(payload) != gatewayLogPreviewBytes+1 {
+		t.Fatalf("long preview = %d, %d bytes, want %d", response.StatusCode, len(payload), gatewayLogPreviewBytes+1)
+	}
+	if strings.Contains(text, gatewayLogSecret) || strings.Contains(text, exportIncompleteMarker) {
+		t.Fatalf("long preview leaked the credential or claimed a failed read")
+	}
+	response, payload = getJSON(t, client, baseURL+"/omc/api/v1/management/request-logs/short001?preview")
+	if response.StatusCode != http.StatusOK || !strings.HasSuffix(string(payload), "hello\n") {
+		t.Fatalf("short preview = %d %q", response.StatusCode, payload)
+	}
+
+	events, err := repo.ListAuditEvents(context.Background(), 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	complete := map[string]any{}
+	for _, event := range events {
+		if event.Action == "request_log.download" && event.Result == "success" {
+			if event.Details["preview"] != true {
+				t.Errorf("%s audit = %v, want a preview read", event.TargetID, event.Details)
+			}
+			complete[event.TargetID] = event.Details["complete"]
+		}
+	}
+	if complete["long0001"] != false || complete["short001"] != true {
+		t.Fatalf("preview audits = %v, want long0001 incomplete and short001 complete", complete)
 	}
 }
