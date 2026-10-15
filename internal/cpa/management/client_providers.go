@@ -29,6 +29,11 @@ func (c *Client) ClientAPIKeys(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	return ClientAPIKeysIn(view), nil
+}
+
+// ClientAPIKeysIn extracts the client keys from an already read v8 view.
+func ClientAPIKeysIn(view map[string]any) []string {
 	value, _ := ValueAt(view, CLIENT_KEYS_PATH)
 	items, _ := value.([]any)
 	keys := make([]string, 0, len(items))
@@ -37,7 +42,48 @@ func (c *Client) ClientAPIKeys(ctx context.Context) ([]string, error) {
 			keys = append(keys, key)
 		}
 	}
-	return keys, nil
+	return keys
+}
+
+// ForceModelPrefixIn reads routing.force-model-prefix from a v8 view. An omitted
+// setting is CPA's default, false; a value or parent of the wrong type is unknown
+// rather than false, because guessing would publish routes the gateway may refuse.
+func ForceModelPrefixIn(view map[string]any) (isForced bool, isKnown bool) {
+	routing, exists := view["routing"]
+	if !exists || routing == nil {
+		return false, true
+	}
+	object, ok := routing.(map[string]any)
+	if !ok {
+		return false, false
+	}
+	switch value := object["force-model-prefix"].(type) {
+	case nil:
+		return false, true
+	case bool:
+		return value, true
+	default:
+		return false, false
+	}
+}
+
+// PrefixModelID builds a client model ID the way CPA does: its configuration
+// normalization trims spaces and slashes and drops a prefix that still holds a
+// slash, then the registry publishes prefix + "/" + base.
+func PrefixModelID(prefix, base string) string {
+	if prefix = NormalizeModelPrefix(prefix); prefix == "" {
+		return base
+	}
+	return prefix + "/" + base
+}
+
+// NormalizeModelPrefix is the prefix CPA actually applies, "" when it applies none.
+func NormalizeModelPrefix(prefix string) string {
+	prefix = strings.Trim(strings.TrimSpace(prefix), "/")
+	if strings.Contains(prefix, "/") {
+		return ""
+	}
+	return prefix
 }
 
 // UpdateClientAPIKeys replaces the client authentication keys.
@@ -238,6 +284,76 @@ func (m ModelAlias) WithUnmodelledFieldsOf(stored ModelAlias) ModelAlias {
 type ConfiguredModelRoute struct {
 	UpstreamModel string
 	CallPoint     string
+	// BaseCallPoint is the configured name before any prefix. It is kept rather than
+	// recovered from CallPoint, because a model alias can itself contain slashes.
+	BaseCallPoint string
+	// Configuration is nil when no valid model row describes the route.
+	Configuration          *ModelRouteConfiguration
+	IsConfigurationInvalid bool
+}
+
+// ModelRouteConfiguration is the handwritten safe subset of a configured model row.
+// Nil lists were absent from configuration; empty lists were stated as empty.
+type ModelRouteConfiguration struct {
+	Operations       []string `json:"operations"`
+	Native           []string `json:"native"`
+	InputModalities  []string `json:"input_modalities"`
+	OutputModalities []string `json:"output_modalities"`
+	MaxContextLength *int     `json:"max_context_length"`
+	MaxOutputTokens  *int     `json:"max_output_tokens"`
+}
+
+// OpenAICompatOperationNames are the operations CPA accepts for a model row.
+var OpenAICompatOperationNames = []string{
+	"chat", "completions", "responses", "embeddings", "rerank",
+	"speech", "transcription", "image-generation", "image-edit",
+}
+
+const maxModelModalities, maxModelModalityBytes = 16, 64
+
+// projectModelRouteConfiguration refuses the whole projection when a value is
+// outside what Deck itself accepts: a malformed row must not read as a capability.
+func projectModelRouteConfiguration(model ModelAlias) (*ModelRouteConfiguration, bool) {
+	list := func(values []string, isAllowed func(string) bool) ([]string, bool) {
+		if values == nil {
+			return nil, true
+		}
+		result := make([]string, 0, len(values))
+		for _, value := range values {
+			value = strings.ToLower(strings.TrimSpace(value))
+			if !isAllowed(value) {
+				return nil, false
+			}
+			result = append(result, value)
+		}
+		return result, true
+	}
+	isOperation := func(value string) bool { return slices.Contains(OpenAICompatOperationNames, value) }
+	isNative := func(value string) bool { return value == "responses" || value == "completions" }
+	isModality := func(value string) bool {
+		return value != "" && len(value) <= maxModelModalityBytes && !strings.ContainsAny(value, ", \t\r\n")
+	}
+	limit := func(value int) (*int, bool) {
+		if value < 0 {
+			return nil, false
+		}
+		if value == 0 {
+			return nil, true
+		}
+		return &value, true
+	}
+	var configuration ModelRouteConfiguration
+	var isValid [6]bool
+	configuration.Operations, isValid[0] = list(model.Operations, isOperation)
+	configuration.Native, isValid[1] = list(model.Native, isNative)
+	configuration.InputModalities, isValid[2] = list(model.InputModalities, isModality)
+	configuration.OutputModalities, isValid[3] = list(model.OutputModalities, isModality)
+	configuration.MaxContextLength, isValid[4] = limit(model.MaxContextLength)
+	configuration.MaxOutputTokens, isValid[5] = limit(model.MaxOutputTokens)
+	if slices.Contains(isValid[:], false) || len(model.InputModalities) > maxModelModalities || len(model.OutputModalities) > maxModelModalities {
+		return nil, false
+	}
+	return &configuration, true
 }
 
 // A disabled row is not served, so it has no route. Its names stay in the
@@ -249,14 +365,12 @@ func configuredModelRoutes(models []ModelAlias, prefix string) []ConfiguredModel
 		if name == "" || model.Disabled {
 			continue
 		}
-		callPoint := strings.TrimSpace(model.Alias)
-		if callPoint == "" {
-			callPoint = name
+		base := strings.TrimSpace(model.Alias)
+		if base == "" {
+			base = name
 		}
-		if prefix != "" {
-			callPoint = strings.TrimSuffix(prefix, "/") + "/" + callPoint
-		}
-		routes = append(routes, ConfiguredModelRoute{UpstreamModel: name, CallPoint: callPoint})
+		configuration, isValid := projectModelRouteConfiguration(model)
+		routes = append(routes, ConfiguredModelRoute{UpstreamModel: name, CallPoint: PrefixModelID(prefix, base), BaseCallPoint: base, Configuration: configuration, IsConfigurationInvalid: !isValid})
 	}
 	return routes
 }
@@ -274,6 +388,48 @@ type ConfiguredModelProvider struct {
 	Models         []string
 	Routes         []ConfiguredModelRoute
 	ExcludedModels []string
+	// CatalogProvider is reference-lookup context from a verified official host
+	// ("nan" only, today). It is never derived from a name or prefix.
+	CatalogProvider string
+}
+
+// catalogProviderOf names the models.dev provider whose qualified aliases apply.
+func catalogProviderOf(baseURL string) string {
+	if IsNanBaseURL(baseURL) {
+		return "nan"
+	}
+	return ""
+}
+
+// configuredModelIdentities lists every pricing identity of an API-key entry's rows,
+// disabled ones included so their rates survive re-enabling. The prefixed client
+// name is the one requests are recorded under, so it must be priceable too.
+func configuredModelIdentities(models []ModelAlias, prefix string, add func(id, target string)) []string {
+	identities := make([]string, 0, len(models)*3)
+	for _, model := range models {
+		name := strings.TrimSpace(model.Name)
+		alias := strings.TrimSpace(model.Alias)
+		identities = append(identities, name, alias)
+		if name != "" {
+			add(name, name)
+		}
+		if alias != "" {
+			add(alias, name)
+		}
+		base := alias
+		if base == "" {
+			base = name
+		}
+		// A row without an upstream name is not served, so it has no client name.
+		if name == "" {
+			continue
+		}
+		if prefixed := PrefixModelID(prefix, base); prefixed != base {
+			add(prefixed, name)
+			identities = append(identities, prefixed)
+		}
+	}
+	return identities
 }
 
 // ListPricingModelIDs includes the upstreams OAuth usage records are billed under,
@@ -467,21 +623,8 @@ func (c *Client) ListConfiguredModelSnapshot(ctx context.Context) (ConfiguredMod
 			if IsExcludedAll(entry.ExcludedModels) {
 				continue
 			}
-			identities := make([]string, 0, len(entry.Models)*2)
-			for _, model := range entry.Models {
-				identities = append(identities, model.Name, model.Alias)
-			}
-			addProvider(ConfiguredModelProvider{ID: fmt.Sprintf("%s-%d", family, entryIndex), Family: string(family), Prefix: entry.Prefix, EndpointHost: pricingEndpointHost(entry.BaseURL), Channel: string(family), Priority: priorityOf(entry.Priority), Routes: configuredModelRoutes(entry.Models, entry.Prefix), ExcludedModels: entry.ExcludedModels}, identities)
-			for _, m := range entry.Models {
-				name := strings.TrimSpace(m.Name)
-				if name != "" {
-					add(name, name)
-				}
-				alias := strings.TrimSpace(m.Alias)
-				if alias != "" {
-					add(alias, name)
-				}
-			}
+			identities := configuredModelIdentities(entry.Models, entry.Prefix, add)
+			addProvider(ConfiguredModelProvider{ID: fmt.Sprintf("%s-%d", family, entryIndex), Family: string(family), Prefix: entry.Prefix, EndpointHost: pricingEndpointHost(entry.BaseURL), CatalogProvider: catalogProviderOf(entry.BaseURL), Channel: string(family), Priority: priorityOf(entry.Priority), Routes: configuredModelRoutes(entry.Models, entry.Prefix), ExcludedModels: entry.ExcludedModels}, identities)
 		}
 	}
 
@@ -492,21 +635,8 @@ func (c *Client) ListConfiguredModelSnapshot(ctx context.Context) (ConfiguredMod
 			if entry.Disabled {
 				continue
 			}
-			identities := make([]string, 0, len(entry.Models)*2)
-			for _, model := range entry.Models {
-				identities = append(identities, model.Name, model.Alias)
-			}
-			addProvider(ConfiguredModelProvider{ID: fmt.Sprintf("openai-compat-%d", entryIndex), Family: "openai-compatibility", Name: entry.Name, Prefix: entry.Prefix, EndpointHost: pricingEndpointHost(entry.BaseURL), Channel: OpenAICompatibilityLabelPrefix + strings.ToLower(entry.Name), Priority: priorityOf(entry.Priority), Routes: configuredModelRoutes(entry.Models, entry.Prefix)}, identities)
-			for _, m := range entry.Models {
-				name := strings.TrimSpace(m.Name)
-				if name != "" {
-					add(name, name)
-				}
-				alias := strings.TrimSpace(m.Alias)
-				if alias != "" {
-					add(alias, name)
-				}
-			}
+			identities := configuredModelIdentities(entry.Models, entry.Prefix, add)
+			addProvider(ConfiguredModelProvider{ID: fmt.Sprintf("openai-compat-%d", entryIndex), Family: "openai-compatibility", Name: entry.Name, Prefix: entry.Prefix, EndpointHost: pricingEndpointHost(entry.BaseURL), CatalogProvider: catalogProviderOf(entry.BaseURL), Channel: OpenAICompatibilityLabelPrefix + strings.ToLower(entry.Name), Priority: priorityOf(entry.Priority), Routes: configuredModelRoutes(entry.Models, entry.Prefix)}, identities)
 		}
 	}
 

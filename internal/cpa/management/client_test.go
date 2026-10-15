@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -446,6 +448,94 @@ func TestConfiguredModelRoutesRetainPrefixesAndAliases(t *testing.T) {
 	routes := configuredModelRoutes([]ModelAlias{{Name: " gpt-5 ", Alias: " fast "}, {Name: "claude-sonnet"}, {Alias: "invalid"}}, "team")
 	if len(routes) != 2 || routes[0].UpstreamModel != "gpt-5" || routes[0].CallPoint != "team/fast" || routes[1].CallPoint != "team/claude-sonnet" {
 		t.Fatalf("routes = %#v", routes)
+	}
+	if routes[0].BaseCallPoint != "fast" || routes[1].BaseCallPoint != "claude-sonnet" {
+		t.Fatalf("base names were not retained: %#v", routes)
+	}
+}
+
+func TestConfiguredModelRouteConfigurationIsSafeAndExact(t *testing.T) {
+	routes := configuredModelRoutes([]ModelAlias{
+		{Name: "a", Operations: []string{" Chat "}, Native: []string{}, InputModalities: []string{"text"}, MaxContextLength: 8192, Thinking: &ThinkingSupport{}, Image: true},
+		{Name: "b"},
+		{Name: "c", Operations: []string{"teleport"}},
+		{Name: "d", MaxOutputTokens: -1},
+		{Name: "e", InputModalities: []string{"text, image"}},
+	}, "")
+	five := func(value int) *int { return &value }
+	want := []*ModelRouteConfiguration{
+		{Operations: []string{"chat"}, Native: []string{}, InputModalities: []string{"text"}, MaxContextLength: five(8192)},
+		{},
+		nil, nil, nil,
+	}
+	for index, route := range routes {
+		if !reflect.DeepEqual(route.Configuration, want[index]) || route.IsConfigurationInvalid != (want[index] == nil) {
+			t.Fatalf("%s: %#v invalid=%t", route.UpstreamModel, route.Configuration, route.IsConfigurationInvalid)
+		}
+	}
+	// Absent lists stay null and an explicit empty list stays empty on the wire.
+	data, err := json.Marshal(routes[0].Configuration)
+	if err != nil || string(data) != `{"operations":["chat"],"native":[],"input_modalities":["text"],"output_modalities":null,"max_context_length":8192,"max_output_tokens":null}` {
+		t.Fatalf("configuration JSON = %s %v", data, err)
+	}
+}
+
+func TestModelPrefixPolicyAndConstruction(t *testing.T) {
+	for _, input := range []struct {
+		view              map[string]any
+		isForced, isKnown bool
+	}{
+		{map[string]any{}, false, true},
+		{map[string]any{"routing": map[string]any{}}, false, true},
+		{map[string]any{"routing": map[string]any{"force-model-prefix": true}}, true, true},
+		{map[string]any{"routing": map[string]any{"force-model-prefix": false}}, false, true},
+		{map[string]any{"routing": map[string]any{"force-model-prefix": "yes"}}, false, false},
+		{map[string]any{"routing": "broken"}, false, false},
+	} {
+		if isForced, isKnown := ForceModelPrefixIn(input.view); isForced != input.isForced || isKnown != input.isKnown {
+			t.Fatalf("%v: %t %t", input.view, isForced, isKnown)
+		}
+	}
+	for _, input := range [][3]string{{"team", "fast", "team/fast"}, {" /team/ ", "fast", "team/fast"}, {"", "fast", "fast"}, {"a/b", "fast", "fast"}} {
+		if got := PrefixModelID(input[0], input[1]); got != input[2] {
+			t.Fatalf("PrefixModelID(%q, %q) = %q", input[0], input[1], got)
+		}
+	}
+}
+
+func TestConfiguredSnapshotPricesPrefixedNames(t *testing.T) {
+	server := newV8Server(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v8/management/credentials":
+			_, _ = writer.Write([]byte(`{"files":[]}`))
+		case "/v8/management/config/oauth/model-alias":
+			_, _ = writer.Write([]byte(`{}`))
+		case "/v0/management/openai-compatibility":
+			_, _ = writer.Write([]byte(`{"openai-compatibility":[
+				{"name":"Work","base-url":"https://api.nan.builders/v1","prefix":"team","models":[{"name":"gpt-5","alias":"fast"},{"name":"old","disabled":true},{"name":"shared"}]},
+				{"name":"nan","base-url":"https://generic.example.test/v1","models":[{"name":"other","alias":"team/shared"}]}]}`))
+		default:
+			writer.WriteHeader(http.StatusNotFound)
+			_, _ = writer.Write([]byte(`{"error":"not_found"}`))
+		}
+	}))
+	defer server.Close()
+	client, err := NewClient(server.URL, "key", time.Second, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := client.ListConfiguredModelSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for model, target := range map[string]string{"gpt-5": "gpt-5", "fast": "gpt-5", "team/fast": "gpt-5", "old": "old", "team/old": "old", "shared": "shared", "team/shared": "", "other": "other"} {
+		if actual, exists := snapshot.Models[model]; !exists || actual != target {
+			t.Fatalf("Models[%q] = %q (%t), want %q: %v", model, actual, exists, target, snapshot.Models)
+		}
+	}
+	work, generic := snapshot.Providers[0], snapshot.Providers[1]
+	if !slices.Contains(work.ListPricingModelIDs(), "team/fast") || !slices.Contains(work.ListPricingModelIDs(), "team/old") || work.CatalogProvider != "nan" || generic.CatalogProvider != "" {
+		t.Fatalf("providers = %#v / %#v", work, generic)
 	}
 }
 
