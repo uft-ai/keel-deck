@@ -461,12 +461,17 @@ func TestConfiguredModelRouteConfigurationIsSafeAndExact(t *testing.T) {
 		{Name: "c", Operations: []string{"teleport"}},
 		{Name: "d", MaxOutputTokens: -1},
 		{Name: "e", InputModalities: []string{"text, image"}},
+		{Name: "f", Operations: []string{"chat"}, Native: []string{"responses"}},
+		{Name: "g", Native: []string{"responses"}},
 	}, "")
 	five := func(value int) *int { return &value }
 	want := []*ModelRouteConfiguration{
 		{Operations: []string{"chat"}, Native: []string{}, InputModalities: []string{"text"}, MaxContextLength: five(8192)},
 		{},
 		nil, nil, nil,
+		// Native outside its declared operations is refused on write; inherited operations allow it.
+		nil,
+		{Native: []string{"responses"}},
 	}
 	for index, route := range routes {
 		if !reflect.DeepEqual(route.Configuration, want[index]) || route.IsConfigurationInvalid != (want[index] == nil) {
@@ -491,6 +496,8 @@ func TestModelPrefixPolicyAndConstruction(t *testing.T) {
 		{map[string]any{"routing": map[string]any{"force-model-prefix": false}}, false, true},
 		{map[string]any{"routing": map[string]any{"force-model-prefix": "yes"}}, false, false},
 		{map[string]any{"routing": "broken"}, false, false},
+		{map[string]any{"routing": nil}, false, false},
+		{map[string]any{"routing": map[string]any{"force-model-prefix": nil}}, false, false},
 	} {
 		if isForced, isKnown := ForceModelPrefixIn(input.view); isForced != input.isForced || isKnown != input.isKnown {
 			t.Fatalf("%v: %t %t", input.view, isForced, isKnown)

@@ -49,17 +49,21 @@ func ClientAPIKeysIn(view map[string]any) []string {
 // setting is CPA's default, false; a value or parent of the wrong type is unknown
 // rather than false, because guessing would publish routes the gateway may refuse.
 func ForceModelPrefixIn(view map[string]any) (isForced bool, isKnown bool) {
+	// Only an omitted setting has CPA's default; a present null or other value is
+	// not evidence of either policy.
 	routing, exists := view["routing"]
-	if !exists || routing == nil {
+	if !exists {
 		return false, true
 	}
 	object, ok := routing.(map[string]any)
 	if !ok {
 		return false, false
 	}
-	switch value := object["force-model-prefix"].(type) {
-	case nil:
+	value, exists := object["force-model-prefix"]
+	if !exists {
 		return false, true
+	}
+	switch value := value.(type) {
 	case bool:
 		return value, true
 	default:
@@ -352,6 +356,13 @@ func projectModelRouteConfiguration(model ModelAlias) (*ModelRouteConfiguration,
 	configuration.MaxOutputTokens, isValid[5] = limit(model.MaxOutputTokens)
 	if slices.Contains(isValid[:], false) || len(model.InputModalities) > maxModelModalities || len(model.OutputModalities) > maxModelModalities {
 		return nil, false
+	}
+	// The write path refuses a native operation that a declared operations list
+	// leaves out, so such a row cannot describe one coherent setting.
+	for _, native := range configuration.Native {
+		if configuration.Operations != nil && !slices.Contains(configuration.Operations, native) {
+			return nil, false
+		}
 	}
 	return &configuration, true
 }

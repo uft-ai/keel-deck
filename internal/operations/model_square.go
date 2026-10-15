@@ -313,7 +313,13 @@ func RetainAdvertisedModels(directory ModelSquareDirectory, advertised []gateway
 	}
 	for _, model := range advertised {
 		if !represented[model.ID] {
-			filtered = append(filtered, ModelSquareRoute{CallPoint: model.ID, NameScope: NameScopeUnknown})
+			// The literal name may still match a reference; that describes the
+			// name only and gives the route no provider or scope.
+			route := ModelSquareRoute{CallPoint: model.ID, NameScope: NameScopeUnknown}
+			if reference, exists := modelcatalog.DEFAULT_CATALOG.Match(model.ID); exists {
+				route.ReferenceID = reference.ID
+			}
+			filtered = append(filtered, route)
 		}
 	}
 	directory.Routes = filtered

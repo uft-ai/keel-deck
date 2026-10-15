@@ -132,6 +132,11 @@ func TestModelSquareUsesAdvertisedModelsAsTheAuthority(t *testing.T) {
 	if projected.Routes[2].CallPoint != "runtime-only" || projected.Routes[2].ProviderID != "" || projected.Routes[2].UpstreamModel != "" {
 		t.Fatalf("invented runtime provenance = %#v", projected.Routes[2])
 	}
+	// An exact catalog ID keeps its literal reference without gaining provenance or scope.
+	literal := RetainAdvertisedModels(ModelSquareDirectory{}, []gateway.Model{{ID: "deepseek/deepseek-v4.1-flash"}})
+	if route := literal.Routes[0]; route.ReferenceID != "deepseek/deepseek-v4.1-flash" || route.ProviderID != "" || route.NameScope != NameScopeUnknown || route.Configuration != nil {
+		t.Fatalf("literal reference route = %#v", route)
+	}
 	empty := RetainAdvertisedModels(directory, []gateway.Model{})
 	if len(empty.Models) != 0 || len(empty.Routes) != 0 || len(empty.Providers) != 0 {
 		t.Fatalf("empty live directory advertised configured models: %#v", empty)
