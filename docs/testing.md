@@ -17,6 +17,16 @@ a map, not a mandate — they record which layer owns which claim today and why 
 placed there. When a better owner exists, move the claim and update the map in the same
 change; keep the claim's strength, not its address. Nothing in the map is frozen.
 
+### Secret-scan scope
+
+`pnpm verify:secrets:history` scans the complete ancestry of `HEAD`, including both
+parents of every merge. This is the product-history gate used by `verify:full`.
+`pnpm verify:secrets:all` audits all local refs, including preserved backup history
+outside the product ancestry. Both commands use the same pinned Gitleaks version,
+configuration and redaction, and return a nonzero status for findings or scanner
+failure. Keep backup refs and review any audit findings; they are not suppressed by
+the product-history scope. Worktree and staged scans keep their existing scope.
+
 ## 1. Where a new test belongs
 
 Put each claim in the **lowest layer that can make it fail for the reason its name

@@ -74,6 +74,7 @@
     "verify:probes": "node scripts/browser-probes.mjs",
     "verify:secrets": "pnpm verify:secrets:worktree",
     "verify:secrets:history": "node scripts/secret-scan.mjs --history",
+    "verify:secrets:all": "node scripts/secret-scan.mjs --all",
     "verify:secrets:staged": "node scripts/secret-scan.mjs --staged",
     "verify:secrets:worktree": "node scripts/secret-scan.mjs --worktree",
     "verify:static": "node scripts/verify-static.mjs",
