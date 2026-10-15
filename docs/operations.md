@@ -424,7 +424,11 @@ The authenticated `/model-square` route reads `GET /api/v1/management/model-squa
 (relative to the deployment base path). The server uses the first nonempty configured
 client key to read CPA's live `/v1/models`; no key returns `client_key_required` (409).
 No client or upstream secret is returned. Configuration enriches only advertised IDs,
-with partial conditions for unavailable model definitions or mappings. Refresh rereads
+with partial conditions for unavailable model definitions or mappings. One card
+describes one resolved model; its connection rows, global names and provider-scoped
+names open the matching drawer panel. Configured values shown for a connection
+describe its configuration, not verified provider support. Prefixed client names
+from configured API-key rows can be priced by their exact name. Refresh rereads
 CPA; it does not make a paid model request.
 
 Model specifications come from the bundled models.dev snapshot in

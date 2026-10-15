@@ -935,9 +935,14 @@ depend on asynchronous preference hydration or the console's default page size.
 
 ### Model Square
 
-`scripts/test-model-square.ts` owns advertised-identity grouping, maker ordering, shared-name
-fanout, search, the maker filter, the row's reference caption, openness classification,
+`scripts/test-model-square.ts` owns card grouping (canonical reference, unresolved exact
+connection, shared, partial and unknown aliases), alias scope, connection rows and their
+order, search, maker and connection filters, summary counts, openness classification,
 manufacturer artwork, unknown profiles and encoded external reference links.
+`scripts/test-agent-workspace.ts` owns the conservative reference context estimate.
+`web/tests/model-square.component.test.tsx` owns per-alias configuration variants and the
+copy lifecycle: checkmark only after success, reset on re-entry, failure without success
+and a stale copy dropped when its name changes.
 `scripts/test-model-square-ledger.ts` owns the join with the price book and the request
 records: the call-name key, unlisted-means-unpriced, unknown versus zero when a neighbour is
 unread or its facet list is full, and a request link the request list's own reader accepts.
@@ -945,18 +950,25 @@ Go tests beside `internal/operations/model_square.go`, `internal/api/model_squar
 `internal/cpa/management/client_model_definitions.go` and `internal/modelcatalog/catalog.go`
 own route projection, server-side client-key authentication, secret-safe responses,
 live authority through failed enrichment, native defaults/exclusions, fixed-channel
-reads, API-owned response field allowlists, metadata matching (exact evidence, the enumerated
-request-variant forms and their negative cases) and safe
-weight/resource links. The snapshot generator's self-test checks that ambiguous source aliases and reseller costs are not retained.
+reads, prefix-enforcement policy and bare-route provenance, name scope, the safe
+configuration projection (null versus empty, invalid rows), per-route references with
+verified-source qualified aliases, API-owned response field allowlists, metadata matching
+(exact evidence, the enumerated request-variant forms and their negative cases) and safe
+weight/resource links. `internal/cpa/management/client_test.go` owns prefixed pricing
+membership; `internal/api/model_square_pricing_test.go` saves and reloads exact prefixed
+and disabled names through the price API, keeps a colliding name ambiguous and keeps the
+catalog and historical costs through a failed refresh. The snapshot generator's self-test checks that ambiguous source aliases and reseller costs are not retained.
 
-The `model-square` probe owns vertically stacked manufacturer sections and their order, the
-card's price and connection with no usage figure in the list, the mark-and-count form of
-a model served by several connections, the several-column card
-grid on a wide page and its single column on phones, click-to-copy of the call name without opening the details, the absence of a page-level
-price-book banner, the "Set price" hand-off to the shared editor, the maker filter with its count and URL state,
-the details' price and 24-hour figures and request-list link, wrapping names, model profile wiring,
-stepping to the next model inside the Drawer, responsive detail geometry, reachable touch
-targets and native Back dismissal. Its price book and request counts come from
+The `model-square` probe owns vertically stacked manufacturer sections and their order,
+equal card heights with aligned connection headers and slots, plain exact-precision prices,
+reference badges, alphabetical previews, the eight-connection header and its full list,
+namesake disambiguation, per-name and missing-scope states, shared and unresolved cards,
+hover copy with its checkmark and re-entry reset, the "Set price" hand-off to the shared
+editor, the connection and maker filters with counts and URL state, unknown-scope names,
+request-list links with encoded exact names, provider panels with configuration, in-drawer
+Back, stepping to the next card, refresh removing the open card, model profile wiring, the
+several-column grid and its single column on phones, reachable touch targets and native
+Back dismissal. Its price book and request counts come from
 `modelSquareLedgerFixtures`, kept apart from the directory fixture so `mobile-console` can
 pair the directory with its own pricing and facet routes. `mobile-console` includes the populated directory fixture. Planner tests select
 both for directory-source changes and retain the detail scenario for shared overlay
