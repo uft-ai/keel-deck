@@ -34,6 +34,7 @@ export function useConsoleUpdate({ onFinished }: ConsoleUpdateOptions) {
   const [submittingProduct, setSubmittingProduct] = React.useState<ReleaseProduct | null>(null);
   const lastReadyRef = React.useRef<SystemUpdaterResponse>();
   const lastAnsweredAtRef = React.useRef(0);
+  const finishedJobIdRef = React.useRef<string>();
   const onFinishedRef = React.useRef(onFinished);
   onFinishedRef.current = onFinished;
 
@@ -42,12 +43,16 @@ export function useConsoleUpdate({ onFinished }: ConsoleUpdateOptions) {
     queryFn: api.getSystemUpdater,
     retry: false,
     meta: { silent: true },
-    refetchInterval: (query) => (watched || (query.state.data?.job && !query.state.data.job.finished) ? UPDATE_POLL_MS : false),
+    refetchInterval: (query) => (watched || (query.state.data?.job && !query.state.data.job.finished && query.state.data.job.id !== finishedJobIdRef.current) ? UPDATE_POLL_MS : false),
   });
   if (data?.state === 'ready') lastReadyRef.current = data;
-  const updater = watched && data?.state !== 'ready' ? lastReadyRef.current ?? data : data;
+  const current = watched && data?.state !== 'ready' ? lastReadyRef.current ?? data : data;
+  const updater = current?.job && current.job.id === finishedJobIdRef.current && !current.job.finished
+    ? { ...current, job: null } : current;
 
   React.useEffect(() => {
+    // Cache notifications can run before setWatched commits. Claim completion synchronously.
+    if (watched && watched.id === finishedJobIdRef.current) return;
     if (data?.state === 'ready') {
       // A failed read leaves the previous answer in place, so the time of the answer, not of
       // this pass, is what the limit below is measured from.
@@ -55,21 +60,24 @@ export function useConsoleUpdate({ onFinished }: ConsoleUpdateOptions) {
       const job = data.job;
       if (!watched) {
         // An update started elsewhere, or before this page was reloaded, is followed too.
-        if (job && !job.finished) setWatched({ id: job.id, product: job.product });
+        if (job && !job.finished && job.id !== finishedJobIdRef.current) setWatched({ id: job.id, product: job.product });
         return;
       }
       if (job?.id !== watched.id) {
+        finishedJobIdRef.current = watched.id;
         setWatched(null);
         onFinishedRef.current({ job: null, product: watched.product });
         return;
       }
       if (job.finished) {
+        finishedJobIdRef.current = watched.id;
         setWatched(null);
         onFinishedRef.current({ job });
         return;
       }
     }
     if (watched && Date.now() - lastAnsweredAtRef.current >= UPDATE_WATCH_LIMIT_MS) {
+      finishedJobIdRef.current = watched.id;
       setWatched(null);
       // The answer still held is the running job this gives up on; left in place it would be
       // taken for an update in progress and followed again.

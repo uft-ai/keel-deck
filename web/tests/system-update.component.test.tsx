@@ -1,6 +1,6 @@
 import React from 'react';
 import { App } from 'antd';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { defaultScheduler, notifyManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../src/i18n';
@@ -151,6 +151,50 @@ it('follows an update that was already running when the page opened', async () =
   await surface.reread();
   await waitFor(() => expect(surface.onFinished).toHaveBeenCalledTimes(1));
   surface.close();
+});
+
+it('does not follow a timed-out job again, but follows a different job', async () => {
+  const surface = mount();
+  try {
+    await startUpdate();
+    // Deliver cache changes before React commits the watch-state update.
+    notifyManager.setScheduler((callback) => callback());
+    const answeredAt = surface.client.getQueryState(UPDATER_QUERY_KEY)!.dataUpdatedAt;
+    surface.reach.isLost = true;
+    const readClock = Date.now.bind(Date);
+    vi.spyOn(Date, 'now').mockImplementation(() => readClock() + UPDATE_WATCH_LIMIT_MS);
+    await surface.reread();
+    await waitFor(() => expect(surface.onFinished).toHaveBeenCalledWith({ job: null, product: 'omc' }));
+    await waitFor(() => expect(screen.queryByTestId('sys-update-stage')).toBeNull());
+    expect(surface.onFinished).toHaveBeenCalledTimes(1);
+
+    // A cached unfinished answer must not re-arm a job whose timeout was already reported.
+    await act(async () => {
+      surface.client.setQueryData(UPDATER_QUERY_KEY, {
+        ...SYSTEM_UPDATER_CONTRACT.ready, job: SYSTEM_UPDATER_CONTRACT.accepted.job,
+      }, { updatedAt: answeredAt });
+    });
+    await surface.reread();
+    expect(surface.onFinished).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('sys-update-stage')).toBeNull();
+
+    const nextJob = { ...SYSTEM_UPDATER_CONTRACT.accepted.job, id: 'omc-2' };
+    surface.overrides.push(() => new Response(JSON.stringify({ ...SYSTEM_UPDATER_CONTRACT.ready, job: nextJob }), { status: 200 }));
+    await surface.reread();
+    await screen.findByText('Pulling the new image…');
+    expect(surface.onFinished).toHaveBeenCalledTimes(1);
+    surface.overrides.push(() => new Response(JSON.stringify({
+      ...SYSTEM_UPDATER_CONTRACT.ready, job: { ...nextJob, stage: 'done', finished: true },
+    }), { status: 200 }));
+    await surface.reread();
+    await waitFor(() => expect(surface.onFinished).toHaveBeenCalledTimes(2));
+    expect(surface.onFinished.mock.calls[1][0].job).toMatchObject({ id: 'omc-2', stage: 'done', finished: true });
+    await surface.reread();
+    expect(surface.onFinished).toHaveBeenCalledTimes(2);
+  } finally {
+    notifyManager.setScheduler(defaultScheduler);
+    surface.close();
+  }
 });
 
 it('offers the install command only to a deployment that can use it', async () => {
