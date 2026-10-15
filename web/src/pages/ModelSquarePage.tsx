@@ -112,13 +112,17 @@ export const NameGroup: React.FC<{ alias?: string; isQuick?: boolean; className?
   const toast = useToast();
   const [copied, setCopied] = React.useState<string>();
   const attempt = React.useRef(0);
+  // The selection fallback (no `navigator.clipboard`, e.g. plain HTTP) moves focus to a scratch
+  // field outside the group and back; that round trip is the copy itself, not a re-entry.
+  const isCopying = React.useRef(false);
   const reset = () => { attempt.current += 1; setCopied(undefined); };
   // A different name, or none, makes any pending copy result stale.
   React.useEffect(() => () => { attempt.current += 1; setCopied(undefined); }, [alias]);
   const copy = async () => {
     if (!alias) return;
     const current = ++attempt.current;
-    const isCopied = await copyText(alias);
+    isCopying.current = true;
+    const isCopied = await copyText(alias).finally(() => { isCopying.current = false; });
     if (current !== attempt.current) return;
     if (!isCopied) {
       toast.error(t('common.copy_failed'));
@@ -130,7 +134,7 @@ export const NameGroup: React.FC<{ alias?: string; isQuick?: boolean; className?
   return <span
     className={clsx(styles['name-group'], className)}
     onPointerEnter={reset}
-    onFocus={event => { if (!event.currentTarget.contains(event.relatedTarget)) reset(); }}
+    onFocus={event => { if (!isCopying.current && !event.currentTarget.contains(event.relatedTarget)) reset(); }}
   >
     {children}
     {alias && <button

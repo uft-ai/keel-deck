@@ -78,6 +78,24 @@ it('never shows success for a failed copy', async () => {
   }
 });
 
+it('marks a copy made through the selection fallback, whose focus round trip is not a re-entry', async () => {
+  // A plain-HTTP origin has no `navigator.clipboard`; copyText then focuses a scratch field and
+  // hands focus back to the copy button.
+  vi.stubGlobal('navigator', { ...navigator, clipboard: undefined });
+  const original = document.execCommand;
+  document.execCommand = () => true;
+  try {
+    render(wrap(<NameGroup alias="team/fast"><span>Relay</span></NameGroup>));
+    const button = screen.getByRole('button', { name: 'Copy call name team/fast' });
+    button.focus();
+    await act(async () => { fireEvent.click(button); });
+    expect(screen.getByRole('button', { name: 'Copied team/fast' })).toBeTruthy();
+  } finally {
+    document.execCommand = original;
+    vi.unstubAllGlobals();
+  }
+});
+
 it('drops a pending copy result once the group names a different alias, even if it returns', async () => {
   const pending = deferredClipboard();
   const view = render(wrap(<NameGroup alias="team/fast"><span>Relay</span></NameGroup>));
