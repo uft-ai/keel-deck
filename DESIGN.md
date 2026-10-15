@@ -231,6 +231,8 @@ saturated at the top; see `docs/design.md` §2.
 **Body Font:** "Sarasa Mono SC", "Sarasa UI SC", "Berkeley Mono", "IBM Plex Mono", ui-monospace, monospace
 **Label/Mono Font:** "Sarasa Mono SC", "Sarasa UI SC", "Berkeley Mono", "IBM Plex Mono", ui-monospace, monospace
 
+**Embedded font:** the complete Regular and Bold Sarasa Mono SC, cut into `unicode-range` woff2 shards: the core shard (ASCII, punctuation and the console's own copy) loads with the first frame, the rest only when a page draws one of their characters (ADR 0094). `pnpm subset-font` regenerates them.
+
 **Character:** Unified, technical, and precise. The monospaced character set across Chinese, English, Malay, and code symbols gives Oh My CPA the rhythm of an interactive terminal monitor while retaining high CJK legibility.
 
 ### Hierarchy
@@ -261,7 +263,7 @@ The application viewport uses a fixed shell architecture (`100dvh`, `body { over
 └──────────┴──────────────────────────────────────────┘
 ```
 
-- **Top Header**: Fixed 56px height, full-width with 1px bottom border (`#2c2c30`). Contains the navigation toggle, breadcrumb hierarchy, and five right-aligned actions: the project GitHub link, refresh, the theme mode control, the language menu, and sign out. The mode control is a **cycling button** — light → dark → follow-the-system, one icon per state (sun, moon, desktop) — because the palettes belong to the modes and are chosen on the OMC Settings page, where each candidate repaints the console as it is picked; the language stays a **menu** over `LANGUAGES`, because four languages, one of which the reader may not read, is exactly the case a list answers. The project GitHub link uses the existing local Octicons mark and opens `https://github.com/WizisCool/oh-my-cpa` in a new tab with `noopener noreferrer`; it shows no tooltip — the mark names it and the unfolding count answers the hover — while its accessible name follows the reading language, and it remains available in the demonstration. At rest the link is the mark alone; pointed at or focused, it unfolds the project's star count before the mark over `base` — a star glyph and the count, exact below a thousand and truncated thousands with two decimals above (`1.23k`) — once the server has read one, and under reduced motion it still waits for the pointer or focus but appears at once, without the transition. It is the first control of a right-aligned row and the label leads, so unfolding widens it away from the others and the mark stays under the pointer; a device with no hover shows the count throughout. A hairline separates the link from the console's own actions. All five actions are one component, `web/src/components/common/HeaderAction.tsx`: 32px high, borderless at rest, the same hover and the same label treatment for the star count and the language code. Each action keeps one width in every reading language — labels change length with the language, so sign out is an icon button named by its tooltip. On phones the action cluster keeps its full control widths with a 4px gap and 12px safe-area-aware edge padding; the navigation toggle does not shrink, and the current breadcrumb truncates with an ellipsis rather than overlapping actions. CPA connection status and version are reported on the System Information page only.
+- **Top Header**: Fixed 56px height (48px at 640px and below, `--app-header-height`), full-width with 1px bottom border (`#2c2c30`). Contains the navigation toggle, breadcrumb hierarchy, and five right-aligned actions: the project GitHub link, refresh, the theme mode control, the language menu, and sign out. The mode control is a **cycling button** — light → dark → follow-the-system, one icon per state (sun, moon, desktop) — because the palettes belong to the modes and are chosen on the OMC Settings page, where each candidate repaints the console as it is picked; the language stays a **menu** over `LANGUAGES`, because four languages, one of which the reader may not read, is exactly the case a list answers. The project GitHub link uses the existing local Octicons mark and opens `https://github.com/WizisCool/oh-my-cpa` in a new tab with `noopener noreferrer`; it shows no tooltip — the mark names it and the unfolding count answers the hover — while its accessible name follows the reading language, and it remains available in the demonstration. At rest the link is the mark alone; pointed at or focused, it unfolds the project's star count before the mark over `base` — a star glyph and the count, exact below a thousand and truncated thousands with two decimals above (`1.23k`) — once the server has read one, and under reduced motion it still waits for the pointer or focus but appears at once, without the transition. It is the first control of a right-aligned row and the label leads, so unfolding widens it away from the others and the mark stays under the pointer; a device with no hover shows the count throughout. A hairline separates the link from the console's own actions. All five actions are one component, `web/src/components/common/HeaderAction.tsx`: 32px high, borderless at rest, the same hover and the same label treatment for the star count and the language code. Each action keeps one width in every reading language — labels change length with the language, so sign out is an icon button named by its tooltip. On phones the action cluster keeps its full control widths with a 4px gap and 12px safe-area-aware edge padding; the navigation toggle does not shrink, and the current breadcrumb truncates with an ellipsis rather than overlapping actions. CPA connection status and version are reported on the System Information page only.
 - **Navigation Sidebar**: Fixed 236px width (58px collapsed), 1px right border. Houses grouped navigation categories: `Operate`, `Gateway`, `Observe`, `Control`.
 - **Navigation Sheet (phone)**: Below 900px the rail becomes a left sheet of `min(320px, 86vw)`, carrying the same two parts — brand and grouped nav. There is no bottom bar and no phone-specific menu: a phone has less room, not less to navigate, and a second navigation is a second place for the grouping to drift. The `vw` bound matters at a 320px viewport, where a fixed 320px sheet would leave no page visible behind the mask.
 - **Content Area**: Single-scroll container with responsive padding (32px desktop / 24px tablet / 16px mobile), inside a 1440px content column. The widths that follow: content column 1376px (1440 − 2×32), and a list frame 1376px (every list is its own hairline frame, or the body of a card that is). Every page measures these; a page that needs a different column states why where the rule is written (the configuration workbench's 920px reading column is the one case).
@@ -383,7 +385,7 @@ The geometric form language is compact, rectangular, and tightly controlled:
 - **Token Activity Heatmap**: The dashboard's token grid is the one sequential *quantity* encoding, so it uses a **continuous** ramp of the theme accent rather than four fixed steps or any status hue — "lots of tokens" and "credential healthy" must not be the same colour, and a stepped scale paints every day between two steps identically. Brightness is the square root of the day's volume against the window's busiest day, which keeps day-to-day differences visible across the several orders of magnitude a window spans. The shape is a contribution-graph field (one row per weekday, one column per week, a year of weeks) that shows as many of the newest weeks as fit at an 18px cell and stretches them to its panel's edge, so it never leaves a gutter; the older weeks scroll inside the panel behind a pinned weekday gutter, and a five-swatch key names the ramp's direction. The current week is a complete column: the days after today are drawn as normal unrecorded cells, because a day that has not happened is a day nothing is stored for. Every cell is interactive and lifts on hover with a compositor-only `transform` scale; clicking one opens its tooltip, so a day with nothing recorded says so rather than refusing the question. The tooltip prints the day's token volume in the console's token unit style, keeping the exact count on the value. The day's drill-down is a link inside the tooltip rather than the cell itself. The two zero states (recorded-but-empty, and nothing-stored) are solid fills ordered against the card at 1.04–1.06:1 and 1.16–1.22:1 (light to dark mode), never outlines — an outline over a year-long grid whose cells mostly predate the retention horizon renders as a wire mesh. The ramp is relative to the window rather than absolute, so the same shade means different volumes on two installs - which is why every cell carries its date and counts in text, and the shade is never the only encoding. DOM, not a chart mark.
 
 ### Shared primitives
-- **`AppDrawer`**: every side panel; widths `narrow` 420px, `medium` 600px, `wide` 760px, each capped at the viewport; named close control at the trailing end of the head; two-slot footer (`footerStart` note or reset, `footer` actions at the trailing edge) that wraps.
+- **`AppDrawer`**: every side panel; widths `narrow` 420px, `medium` 600px, `wide` 760px, each capped at the viewport; viewport dimensions land immediately while only the wrapper transform transitions, with the transition disabled under reduced motion; named close control at the trailing end of the head; two-slot footer (`footerStart` note or reset, `footer` actions at the trailing edge) that wraps.
 - **`SearchInput`**: every filter-as-you-type field; `--muted` search glyph, clear control, `label` as accessible name and default placeholder.
 - **`EmptyState`**: every empty region; a mark of three shortening 2px `--border` rules, one state line, optional second line and one action; `block` (with mark) for lists and sections, `compact` (no mark) inside panels and pickers.
 - **`SectionHeading`**: every section head at three weights - `section` (`--text-lg`/600), `group` (`--text-base`/600), `label` (`--text-xs`/600 uppercase `--muted`) - with optional count, description and trailing `extra`.
@@ -711,10 +713,21 @@ The version card retains the compact comparison and separate change-log action a
 - Phone breakpoint: 640px; navigation sheet: 900px. One-row header: navigation, ellipsised page
   name, refresh, More. Click-open theme/language/repository/sign-out tools show selected preferences,
   use 44px rows and dismiss with Back/Escape. Demo mode retains its marker and restrictions.
-- Page titles: 18px; horizontal content padding: 12px; compact gaps/padding: existing 8/12/16px
-  scale. `PageHeader.mobileActions` chooses primary phone actions explicitly. Secondary tools use
+- The top bar names the page, so the page `h1` stays in the document and is not drawn (ADR 0096);
+  a live subtitle and the actions take its row. Horizontal content padding: 12px; compact
+  gaps/padding: existing 8/12/16px scale. `PageHeader.mobileActions` chooses primary phone actions explicitly. Secondary tools use
   `ActionMenu`; additional provider/audit filters use `FilterDisclosure` with selected-state summary.
   Desktop actions, row-list rendering and request/conversation scrolling are unchanged. The phone conversation frame follows usable viewport height so input and Send stay above the keyboard.
+- Density (ADR 0096): `StatTiles` stays one strip; the dashboard grid keeps two columns; a list
+  row's controls share its headline's line when both fit; an OAuth credential is four lines. A
+  stacked request record is three lines of two facts (model+effort badge/cost in the primary
+  weight, provider/total tokens, time+verdict/latency in the quiet tone) drawn in the text
+  colours, with hue kept for the verdict's pip, a failure and the reasoning effort badge; every other measure is in the
+  detail drawer; the table above the `920px` container threshold is unchanged. The request
+  filters are two rows: search with the filter panel's trigger, then one swipeable strip of
+  single-tap choices; the list runs edge to edge.
+- A sheet slides opaque: the drawer panel's opacity is held at 1 and only the mask fades. A panel
+  on its way out keeps drawing what it held.
 - Configuration: non-sticky status/mode/tools row, search on its own row, locally scrolling categories,
   retained group headings/descriptions. Only dirty drafts show the measured-height bottom save/discard
   bar; content reserves its space. Save validation and a single confirmation remain shared.
@@ -857,3 +870,19 @@ keeps the same text, standalone reasoning, working timelines and inline generate
 in reading order. Call rows retain argument summaries, outcome and duration disclosures.
 PNG captures generated interfaces at their laid-out width, including kit charts and controls;
 unavailable figures keep a visible fallback note rather than silently disappearing.
+
+## Credential window warmup
+
+The OAuth toolbar offers a Warmup settings Drawer with Codex/Claude tabs, explicit model
+selection, reset mode and one daily time. Provider defaults are off; daily time is 06:00
+in the OMC timezone. Unsaved drafts guard close, native Back and provider switching.
+The credential Quota tab shows full-policy inheritance/override, next check, last result
+and pause reason, with an optional confirmed Warm up now action. Selected-model activation
+observations and paid-fallback evidence are always visible as two quiet facts. An absent
+activation observation is neutral history; the pause reason describes current window or billing state. Saving other credential
+fields keeps a warmup draft open. Run outcomes remain inline without a duplicate toast.
+Tiny requests consume quota;
+an approved enabled policy admits the first automatic attempt through current window and
+billing evidence. Unknown billing pauses requests; observed unsupported responses pause
+subsequent automatic requests for the same model. Reuse the existing tokens,
+responsive Drawer and semantic feedback without introducing global design tokens.
