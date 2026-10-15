@@ -101,6 +101,7 @@ const auditRequests = [];
 const pluginManagementWrites = [];
 const pricingBookWrites = [];
 const configBackupsLog = [];
+const modelSquareState = {};
 
 const routeErrorFixtures = () => [
   [(url) => url.pathname.endsWith('/dashboard'), () => chartDashboard],
@@ -870,8 +871,8 @@ export const SCENARIOS = [
   {
     id: 'model-square',
     name: 'advertised models form maker sections with copyable call names, price and request linkage, details and native Back',
-    options: { routes: [...modelSquareFixtures(), ...modelSquareLedgerFixtures()] },
-    run: modelSquare,
+    options: { routes: [...modelSquareFixtures(modelSquareState), ...modelSquareLedgerFixtures()] },
+    run: (context) => modelSquare({ ...context, state: modelSquareState }),
   },
   {
     id: 'mobile-console',

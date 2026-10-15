@@ -463,6 +463,7 @@ func TestConfiguredModelRouteConfigurationIsSafeAndExact(t *testing.T) {
 		{Name: "e", InputModalities: []string{"text, image"}},
 		{Name: "f", Operations: []string{"chat"}, Native: []string{"responses"}},
 		{Name: "g", Native: []string{"responses"}},
+		{Name: "h", Operations: []string{}, Native: []string{"responses"}},
 	}, "")
 	five := func(value int) *int { return &value }
 	want := []*ModelRouteConfiguration{
@@ -472,6 +473,7 @@ func TestConfiguredModelRouteConfigurationIsSafeAndExact(t *testing.T) {
 		// Native outside its declared operations is refused on write; inherited operations allow it.
 		nil,
 		{Native: []string{"responses"}},
+		nil,
 	}
 	for index, route := range routes {
 		if !reflect.DeepEqual(route.Configuration, want[index]) || route.IsConfigurationInvalid != (want[index] == nil) {
