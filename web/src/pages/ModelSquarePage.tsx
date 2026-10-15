@@ -112,9 +112,12 @@ export const NameGroup: React.FC<{ alias?: string; isQuick?: boolean; className?
   const toast = useToast();
   const [copied, setCopied] = React.useState<string>();
   const attempt = React.useRef(0);
-  // The selection fallback (no `navigator.clipboard`, e.g. plain HTTP) moves focus to a scratch
-  // field outside the group and back; that round trip is the copy itself, not a re-entry.
+  // The selection fallback (no or refused `navigator.clipboard`, e.g. plain HTTP) moves focus to a
+  // scratch field outside the group, removes it and focuses the button again; that round trip is
+  // the copy itself, not a re-entry. Only a return from a now-detached element during a copy is
+  // that round trip: leaving to anything still on the page is a genuine leave and resets.
   const isCopying = React.useRef(false);
+  const leftTo = React.useRef<Element | null>(null);
   const reset = () => { attempt.current += 1; setCopied(undefined); };
   // A different name, or none, makes any pending copy result stale.
   React.useEffect(() => () => { attempt.current += 1; setCopied(undefined); }, [alias]);
@@ -134,7 +137,12 @@ export const NameGroup: React.FC<{ alias?: string; isQuick?: boolean; className?
   return <span
     className={clsx(styles['name-group'], className)}
     onPointerEnter={reset}
-    onFocus={event => { if (!isCopying.current && !event.currentTarget.contains(event.relatedTarget)) reset(); }}
+    onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) leftTo.current = event.relatedTarget instanceof Element ? event.relatedTarget : null; }}
+    onFocus={event => {
+      const isFallbackReturn = isCopying.current && leftTo.current !== null && !leftTo.current.isConnected;
+      leftTo.current = null;
+      if (!isFallbackReturn && !event.currentTarget.contains(event.relatedTarget)) reset();
+    }}
   >
     {children}
     {alias && <button

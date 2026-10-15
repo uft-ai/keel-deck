@@ -96,6 +96,37 @@ it('marks a copy made through the selection fallback, whose focus round trip is 
   }
 });
 
+it('marks a fallback copy after the clipboard API refused it', async () => {
+  vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText: () => Promise.reject(new Error('denied')) } });
+  const original = document.execCommand;
+  document.execCommand = () => true;
+  try {
+    render(wrap(<NameGroup alias="team/fast"><span>Relay</span></NameGroup>));
+    const button = screen.getByRole('button', { name: 'Copy call name team/fast' });
+    button.focus();
+    await act(async () => { fireEvent.click(button); });
+    expect(screen.getByRole('button', { name: 'Copied team/fast' })).toBeTruthy();
+  } finally {
+    document.execCommand = original;
+    vi.unstubAllGlobals();
+  }
+});
+
+it('drops a pending copy result when keyboard focus leaves the group and enters it again', async () => {
+  const pending = deferredClipboard();
+  render(wrap(<><button type="button">Elsewhere</button><NameGroup alias="team/fast"><span>Relay</span></NameGroup></>));
+  const button = screen.getByRole('button', { name: 'Copy call name team/fast' });
+  const elsewhere = screen.getByRole('button', { name: 'Elsewhere' });
+  button.focus();
+  fireEvent.click(button);
+  elsewhere.focus();
+  button.focus();
+  await act(async () => pending[0].settle(true));
+  expect(screen.getByRole('button', { name: 'Copy call name team/fast' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: /^Copied/ })).toBeNull();
+  vi.unstubAllGlobals();
+});
+
 it('drops a pending copy result once the group names a different alias, even if it returns', async () => {
   const pending = deferredClipboard();
   const view = render(wrap(<NameGroup alias="team/fast"><span>Relay</span></NameGroup>));
