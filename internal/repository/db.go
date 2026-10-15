@@ -562,6 +562,8 @@ func migrationHook(version int) func(context.Context, *sql.Tx, *DB) error {
 		return addReleaseCheckTruncatedTx
 	case 41:
 		return addUsageReportingColumnsTx
+	case 42:
+		return reconcileCredentialWarmupTx
 	}
 	return nil
 }

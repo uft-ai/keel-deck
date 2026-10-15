@@ -254,3 +254,20 @@ Configuration-affecting trusted plugin-page native writes participate in the exi
 `cpa_config_backups` gate (ADR 0067). A page's explicit credential is checked against the stored key (ADR 0069) before creating a
 snapshot, and snapshot failure prevents mutation. Copies use the existing retention and
 `config_changes` reason, with deduplication; no new table or migration is introduced.
+
+### Warmup scheduling records
+
+Migration 042 adds provider/credential policies, per-credential scheduling state and
+bounded request receipts, plus `quota_snapshots.warmup_json` for billing/activation
+observations. Normal full-database backups include these tables. Keep scheduling state
+and receipts together on restore: consumed or uncertain attempts must not be made new
+by selectively deleting one table. Receipts retain the newest 100 per credential; cycle
+and daily suppression live separately in the one scheduling record per credential.
+
+Version 041 differs between upstream databases (warmup) and fork databases
+(usage reporting). Migration 042 reconciles both histories: existing warmup tables
+and JSON remain unchanged, and its hook adds only missing usage-reporting and
+warmup columns. Historical `tokens_reported` values retain their NULL/0/1 meaning.
+The normal encrypted backup runs once before pending migrations. Reopening a
+fully migrated database creates no further backup or schema change. Do not change
+version 041 or its recorded `applied_at` value to select a history.

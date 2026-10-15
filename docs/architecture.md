@@ -37,6 +37,9 @@ for the target architecture and injects `internal/config.BuildVersion` from the 
 tag. The final Alpine image runs as uid/gid `10001:10001` with `/data` as its only
 persistent writable directory. Its own `deploy/healthcheck.sh` normalizes the prefix
 through `deploy/base-path.sh`; `degraded` is process readiness, not gateway connectivity.
+The same image is the updater when its command is `updater serve` (ADR 0099): the probe
+then asks the updater instead, so that role needs no health check of its own, and both
+release Compose files declare it as a second service that alone mounts the Docker socket.
 
 Docker Hub distributes `wiziscool/oh-my-cpa` for amd64 and arm64. The full Compose
 file pulls CPA and OMC with loopback host ports; OMC-only Compose attaches to a fresh
@@ -59,6 +62,12 @@ match CPA's Darwin/Windows/Linux/FreeBSD amd64/arm64 coverage. They build the SP
 then cross-compile CGO-free Go with the same version injection and embedded IANA zone
 data. The extracted host Linux package is smoke-tested; foreign targets are build
 coverage, not claims of target-native execution. ADR 0066 records the asset contract.
+The release job also signs `release-manifest.json` (version, image repository and the
+pushed multi-platform digest) with the Ed25519 key in its `RELEASE_SIGNING_KEY` secret,
+after the native assets are verified and before anything is uploaded; the job fails when
+the key is absent or does not match `internal/updater/release_public_key.txt`, which is
+the key compiled into the binary. `scripts/release-workflow.mjs` holds that ordering and
+the secret's confinement to the release job as workflow invariants.
 `docs/releasing.md` records the maintainer workflow
 and ADR 0056 the publication ordering and immutable version identity.
 
@@ -110,6 +119,7 @@ cycle even though the `internal/usage` directory appears in both directions.
 | `internal/usage/ingest` | Collector loop, decode processor, usage-fact fold and data-lifecycle maintenance | `repository`, `management`, `security`, `usage` |
 | `internal/quota` | Per-provider quota probes and normalization | `management` |
 | `internal/release` | Published-version observation: version comparison, the release feed client, the stored index, and the project's star count for the header link | `repository` |
+| `internal/updater` | The updater role of the binary (`oh-my-cpa updater serve\|install\|healthcheck`, ADR 0099): a Docker Engine API client over the unix socket, container replacement with rollback, signed-manifest verification, the two-request control service, the one-command installer, and the client the console uses to reach it | `release` |
 | `internal/demo` | The publication fixture: an in-process CPA stand-in, the seeded history, and the capture state the console renders | `domain`, `pricing`, `quota`, `repository`, `security`, `usage`, `usage/ingest` |
 | `internal/capability` | Agent capability declarations, JSON Schema validation, permission/risk rules, pending-operation store, executor audit | `repository`, `crypto` |
 | `internal/operations` | Shared management operations (usage analysis, requests, providers, OAuth, quota, keys, config, pricing, system, model directory) used by both console handlers and capabilities | `capability`, `cpa/management`, `cpa/gateway`, `modelcatalog`, `pricing`, `quota`, `repository` |
@@ -1086,6 +1096,18 @@ number, a fractional font size, a 2–4px corner written as a number, and a
 `--text-*` or `--radius-*` reference that no stylesheet defines or that carries a
 fallback (`docs/design.md` §3 and §4).
 
+The console font ships complete (ADR 0094). `web/src/assets/fonts/sarasa/` holds Sarasa
+Mono SC cut into `unicode-range` shards by `pnpm subset-font` (`scripts/subset-font.mjs`,
+with the pure planning in `scripts/font-shards.mjs`), plus `manifest.json`, `core.css` and
+`shardUrls.ts` (one static `?url` import per shard, so built modules hold only hashed URLs).
+`index.css` imports `core.css`, which declares only shard 000 of each weight, so startup
+waits for one file per weight. At startup `main.tsx` also starts an asynchronous import of
+`web/src/theme/sarasaFont.ts`, which registers every other shard through the `FontFace`
+API; a browser fetches one only when a page draws a character it holds. Exports embed the
+shards their text draws through the same module (`shardsForText` in
+`web/src/theme/fontShards.ts`). `scripts/font-shards.test.mjs` holds the committed shards,
+manifest, core stylesheet and URL module to each other.
+
 
 ### Route error recovery
 
@@ -2028,9 +2050,9 @@ price editor in place (`web/src/components/pricing/`).
 `internal/quota` calls CPA's `/api-call` with the credential under observation to
 reach the provider's own usage endpoint. Targets are restricted to
 `AllowedURLPrefixes` — a compile-time allowlist of official HTTPS endpoints — and
-the resulting snapshot is normalized and stored in `quota_snapshots`. This is the
-only place Oh My CPA uses CPA as a request proxy, and it is server-initiated:
-there is no user-supplied URL or generic `/api-call` surface.
+the resulting snapshot is normalized and stored in `quota_snapshots`. Quota observations
+and the fixed credential warmup adapters are the only server-initiated CPA request
+proxies (ADR 0097): there is no user-supplied URL or generic `/api-call` surface.
 
 Kimi international credentials use the single allowlisted
 `https://api.kimi.ai/coding/v1/usages` endpoint rather than the domestic Kimi host.
@@ -2262,11 +2284,13 @@ once for both the gateway's version header and its credential count), the plugin
 provider counts, and the database, collector, record-count and admission reads - so the page
 waits for its slowest read rather than for the sum of them.
 
-The management system surface is seven routes: `GET /management/system` (the page),
+The management system surface is nine routes: `GET /management/system` (the page),
 `GET /management/system/releases` (one product's merged change log), `GET
 /management/system/repository` (the project's star count for the header link), `GET
 /management/system/updates` (both products' stored version answers for the shell's update
-indicator), `POST
+indicator), `GET /management/system/updater` (whether this deployment can apply updates,
+per product, and the running or last update), `POST /management/system/updater/apply`
+(start one; see [Console updates](#console-updates-adr-0099)), `POST
 /management/system/check-updates` (a check, subject to the floor), `GET
 /management/system/maintenance` (the running or last job) and `POST
 /management/system/maintenance/{checkpoint,vacuum}`. The check answers `200` with the two
@@ -2277,7 +2301,9 @@ built without the corresponding service, which is how a deployment that does not
 surface behaves. The repository and updates routes are the exception, because the shell reads
 them on every page: they always answer `200`, the first with a null `stargazers_count`
 whenever no count is known and the second with both products `indeterminate` /
-`not_checked_yet` when there is no release service.
+`not_checked_yet` when there is no release service. The updater status route is the other
+exception: it answers `200` with `state: disabled` when no updater is wired, because a
+missing updater is a state of the deployment the page explains.
 
 The updates route never reads the feed. It reports what the sweep or the page's own check
 last stored, in the same per-product shape the page uses, so the shell can ask on every page
@@ -2412,6 +2438,72 @@ last successful check time so the reader can judge its age. The routine
 "last checked" readout was deliberately dropped from the cards - it was the same
 timestamp on every one of them - so staleness is now something the page states when a
 check fails rather than a number a reader has to interpret.
+
+### Console updates (ADR 0099)
+
+Applying an update is a second process's job. The console container cannot replace
+itself and must not hold the Docker socket, so `internal/updater` runs as a sidecar from
+the same image and the console talks to it over the Docker network:
+
+```text
+System Information page
+  └─ POST /management/system/updater/apply {product}
+       ├─ updater status: ready? product available? (else 409 with the reason as `code`)
+       ├─ omc only: stored release answer says update_available
+       │            └─ internal/release downloads release-manifest.json + .sig (forwarded unread)
+       ├─ audit system.update.apply = admitted   (a failed audit write refuses the update)
+       └─ POST http://oh-my-cpa-updater:8090/v1/update   Authorization: Bearer HMAC(master key)
+            ├─ omc: verify signature, repository and non-regressing version; pull repo@digest; tag
+            ├─ cpa: pull the configured tag
+            ├─ stop old, rename it to <name>-omc-previous, create + start replacement, await healthy
+            │      └─ on failure: remove replacement, rename back, start old, re-point the tag
+            └─ omc only: replace the updater itself, handing the finished job to its successor
+```
+
+`GET /management/system/updater` reduces every way of not having an updater to a state
+the page can explain: `ready`, `not_installed` (a containerised console with no answer,
+which the install command fixes), `not_containerised` (a native install), `disabled`
+(`OMCPA_UPDATER_ENABLED=false`) and `rejected` (an updater that does not accept this
+console's token). The read is `200` in all of them. Products carry `action` and
+`reason`: `pinned`, `not_a_local_container`, `signature_unavailable`,
+`container_not_found`, `ambiguous_container`. Demo mode wires no updater: the read
+answers `disabled` and the apply route is refused by the demo policy.
+
+Three invariants hold the design together:
+
+- **The updater decides what it touches.** Its control surface takes a product name. The
+  console container, the gateway container and the image reference are resolved by the
+  updater from Docker's own state, never supplied by the caller.
+- **Verification happens where the authority is.** The console forwards the manifest and
+  signature as bytes; the updater, which holds the socket, checks them against the key
+  compiled into its own binary.
+- **The outcome is recorded by whoever is alive.** A gateway update finishes while the
+  admitting process still runs, and a goroutine writes `system.update.completed`. A
+  console update kills that process, so `Handler.RecordInterruptedUpdate` follows the
+  updater's last job from the moment the next process starts. That process starts while
+  the job is still verifying it, and the updater then replaces itself, so the follow
+  waits through unfinished stages and failed reads, for at most fifteen minutes. The
+  audit event is keyed by the job ID so the two paths cannot both record it. Shutdown
+  ends both waits before the database closes (`Handler.CloseUpdateWatchers`); an outcome
+  left unrecorded is picked up by the next process.
+
+The updater role has one loop of its own, `Service.KeepLinked`: an installed updater
+lives outside the deployment's Compose project, so it follows Docker's container-start
+events and re-attaches the console to the shared network whenever Compose recreates it.
+A Compose-declared updater shares the project network and runs no such loop.
+
+The updater keeps a job in memory only. A restart mid-replacement is finished by
+`Service.Reconcile`, which looks for a `-omc-previous` container: with a healthy
+replacement the leftover is removed, without one it is restored. A replacement whose
+health check has not yet passed counts as without one, since it was interrupted
+mid-verification. The updater's own pair is the exception: a successor running
+`Reconcile` is up, whatever its health check reports yet.
+
+On the page, `useConsoleUpdate` follows one job. While it does, a failed read or a
+`not_installed` answer is not shown, because both are what a console restart looks like
+from the browser; the last answer from a working updater stands until the job reports
+its end, the updater forgets it, or ten minutes pass without an answer. A finished
+console update reloads the page, since the scripts it holds belong to the old version.
 
 ## 11. Database maintenance and the write gate
 
@@ -2604,20 +2696,12 @@ explicit development coverage; it is not how the harness currently runs.
 
 ### 12.0.1 Three verification moments
 
-Verification is organised by *when it runs*, because what a developer pays is
-waiting, and a gate that costs minutes gets routed around:
-
-| Moment | Runs | Cost guidance |
-| --- | --- | --- |
-| Development iteration | `pnpm test:fast`, plus `pnpm check:ui` when the change touches interaction, layout or a browser lifecycle | Scope-dependent; use printed check and scenario timings |
-| Feature complete, and before declaring done or pushing | `pnpm verify` and `pnpm check:ui` | Tens of seconds of static gates plus the scenarios the change reaches |
-| Pull request | CI: static gates, full built acceptance, the full probe catalog in shards, demo | Runs beside the author; its checks gate the merge |
-
-`pnpm verify:full` runs everything CI runs, locally. It is for changes to the build,
-the embedded distribution, the browser harness or the workflow, and for reproducing a
-CI failure. ADR 0032 records why the full catalog moved from a local pre-push duty to
-a required CI check: it used to be enforced only by local discipline and by master CI
-after merge, while every developer paid for it serially before each push.
+Verification is organised by *when it runs*, because what a developer pays is waiting
+and a gate that costs minutes gets routed around. The moments table and the rules that
+keep the gates honest live in `AGENTS.md` §5; `docs/testing.md` is the working guide.
+ADR 0032 records why the full catalog moved from a local pre-push duty to a required CI
+check: it used to be enforced only by local discipline and by master CI after merge,
+while every developer paid for it serially before each push.
 
 The rule that keeps this honest is that a *narrow* plan must never be **silent**.
 `scripts/affected-checks.mjs` and `scripts/acceptance/check-ui-plan.mjs` both widen
@@ -2856,7 +2940,7 @@ Gzip estimates are not HTTP transfer measurements or execution-time guarantees.
 
 Ordinary growth is advisory. Hard anomaly ceilings allow substantial headroom:
 startup JS 3 MiB raw / 1 MiB gzip, startup CSS 256 / 96 KiB, largest JS 4 MiB raw,
-all JS 16 MiB raw, distribution 20 MiB raw and Lobe SVGs 2 MiB raw. Reports retain
+all JS 16 MiB raw, distribution 32 MiB raw (ADR 0094: the complete font) and Lobe SVGs 2 MiB raw. Reports retain
 per-file sizes, source ownership and the largest JS files for investigation.
 `scripts/bundle-baseline.mjs` compares only an exact-revision reference: an explicit
 `BUNDLE_BASELINE` file or the successful push CI artifact for `BUNDLE_BASE_SHA`.
@@ -3121,8 +3205,8 @@ with.
 (`web/src/components/workspace/useConversationExport.ts`). `conversationSnapshot.ts` projects what the
 page displays into a `ConversationSnapshot` - never the stored session - and drops execution
 identities (key fingerprints, tokens, operation and run ids) at any depth. `conversationHtml.ts` renders
-that snapshot to one HTML string: the palette's resolved tokens as custom properties, the console's
-font embedded as data, Markdown rendered without raw HTML, remote images demoted to links, a canvas as the same
+that snapshot to one HTML string: the palette's resolved tokens as custom properties, the font
+shards its text draws embedded as data, Markdown rendered without raw HTML, remote images demoted to links, a canvas as the same
 sandboxed frame, and a Content-Security-Policy that allows no network. Its only script is the fixed
 `conversationControls.ts` (search, side panel, copy, table sorting, print). The PNG is the same
 document laid out as an 840px share card in a sandboxed, script-free iframe. Generated interfaces are first drawn in separate opaque-origin, network-blocked frames using the shared `canvasCapture.ts` path, inserted as PNG data images, then the document is rasterized through an
@@ -3447,3 +3531,61 @@ subjects even when the OAuth credential list omits them, reuses the complete quo
 renderer for per-model details, and refreshes those same auth indexes. Reset
 countdown helpers preserve the requirement for verified renewal in expanded,
 compact and dashboard readings.
+
+## Credential window warmup (ADRs 0097 and 0098)
+
+`internal/warmup` owns policies, explicit billing/activation evidence, pure calendar and
+cycle decisions, and fixed tiny-request adapters. `internal/api/warmup.go` orchestrates
+credential eligibility, audit-before-send, per-credential execution exclusion, fresh
+quota reads and completion verification. Operations exposes the same implementation to
+confirmed Agent/MCP writes. CPA retains token substitution and credential-specific
+transport; neither browser nor model can supply an upstream URL or read OAuth tokens.
+
+The quota service parses `warmup_evidence` from the same successful provider usage read.
+It carries paid fallback as a three-state value rather than collapsing omitted or false
+fields. `quota_snapshots.warmup_json` preserves that evidence through scheduled refresh,
+manual refresh and reset-credit redemption. A per-reading service copy keeps evidence
+isolated when the existing batch refresh shares a service concurrently.
+
+Migration 042 adds `credential_warmup_policies` (instance/scope/identity),
+`credential_warmup_state` (one instance/credential scheduling record) and
+`credential_warmup_runs` (newest 100 receipts per instance/credential). Policies require
+confirmation and a revision; credential overrides include a keyed identity fingerprint and provider
+in their storage key. CPA's opaque account field is hashed, never persisted or returned. Identity replacement discards prior activation observations and scheduling state. The three
+secret-free tables are explicitly classified for lifecycle and read-only queries.
+
+Upstream and fork databases recorded different schemas at version 041. The fork's
+041 remains unchanged. Migration 042 creates only missing warmup tables, then its
+transactional hook reconciles usage-reporting columns and the nullable
+`quota_snapshots.warmup_json` column. Already stored rows and migration timestamps
+remain intact. Existing encrypted-backup and rollback gates cover the upgrade.
+
+The application starts and joins the minute warmup loop alongside quota auto-refresh.
+Disabled policies cause no upstream usage reads. Enabled credentials are checked in
+bounded rounds of 16 with at most four concurrent contexts, targeting fresh evidence
+every five minutes and reusing newer stored quota evidence. Every consuming attempt
+performs a fresh read first. Auto and manual requests share a credential lock and durable
+receipts. A pre-send revalidation refusal restores the prior cycle, daily task and activation
+basis because no consuming request occurred. Restart-abandoned executing receipts are
+uncertain; they are not resubmitted. A transient startup recovery error is diagnosed and
+retried on the minute ticks; consuming rounds wait for successful recovery.
+Definite rate-limit refusals use one/five/fifteen-minute backoff, with at most three
+retries; a successful response is checked immediately and at most twice more without
+resending. An approved enabled policy admits the first automatic attempt and an explicitly
+selected new model through fresh quota and billing evidence. The legacy `protocol_verified`
+and `verified_model` state fields record observed activation; they do not admit or suppress
+execution. An observed unsupported protocol response pauses automatic requests for the
+same model, while a confirmed manual action can recheck compatibility. Its optional
+`protocol_pause` model/reason is persisted independently of the latest result in the existing
+state JSON; legacy latest-result refusals are carried forward before replacement. A rate-limited
+or unresolved recheck retains the pause; observed activation for that model clears it.
+A different explicitly selected model is evaluated independently. A changed model is
+not silently substituted. Read projections preserve the current window or billing reason
+rather than replacing it with historical activation status (ADR 0098).
+
+The facade adds warmup settings, credential policy/state and manual-run routes under
+`/management/quota/warmup`. The public demo exports settings and representative
+credential state but refuses policy writes and consumption, and never starts the loop.
+
+Warmup round ordering is oldest observation first. Fleets exceeding a round's capacity
+remain queued rather than increasing concurrency or skipping protection.

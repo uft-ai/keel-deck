@@ -88,7 +88,7 @@ async function ensureGitleaks() {
   return executable;
 }
 
-function run(executable, args, options = {}) {
+export function run(executable, args, options = {}) {
   const result = spawnSync(executable, args, {
     cwd: root,
     encoding: 'utf8',
@@ -120,21 +120,28 @@ function copyTrackedWorktree() {
   return temporary;
 }
 
-const mode = process.argv[2];
-if (!['--staged', '--worktree', '--history'].includes(mode)) {
-  throw new Error('usage: node scripts/secret-scan.mjs --staged|--worktree|--history');
+export function historyArgs(mode) {
+  // Product history includes both merge parents; archival refs have a separate audit.
+  return ['git', ...commonArgs(), `--log-opts=${mode === '--all' ? '--all' : 'HEAD'}`, '.'];
 }
 
-const executable = await ensureGitleaks();
-if (mode === '--staged') {
-  run(executable, ['git', '--staged', ...commonArgs(), '.']);
-} else if (mode === '--history') {
-  run(executable, ['git', ...commonArgs(), '.']);
-} else {
-  const temporary = copyTrackedWorktree();
-  try {
-    run(executable, ['dir', ...commonArgs(), temporary]);
-  } finally {
-    fs.rmSync(temporary, { recursive: true, force: true });
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const mode = process.argv[2];
+  if (!['--staged', '--worktree', '--history', '--all'].includes(mode)) {
+    throw new Error('usage: node scripts/secret-scan.mjs --staged|--worktree|--history|--all');
+  }
+
+  const executable = await ensureGitleaks();
+  if (mode === '--staged') {
+    run(executable, ['git', '--staged', ...commonArgs(), '.']);
+  } else if (mode === '--history' || mode === '--all') {
+    run(executable, historyArgs(mode));
+  } else {
+    const temporary = copyTrackedWorktree();
+    try {
+      run(executable, ['dir', ...commonArgs(), temporary]);
+    } finally {
+      fs.rmSync(temporary, { recursive: true, force: true });
+    }
   }
 }

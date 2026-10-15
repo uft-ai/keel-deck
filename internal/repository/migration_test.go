@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	_ "embed"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,9 @@ import (
 	"github.com/oh-my-cpa/oh-my-cpa/internal/security"
 	"github.com/oh-my-cpa/oh-my-cpa/migrations"
 )
+
+//go:embed testdata/upstream_041_credential_warmup.sql
+var upstream041CredentialWarmupSQL string
 
 func TestMigration004SanitizesHistoricalData(t *testing.T) {
 	cipher, err := crypto.New("01234567890123456789012345678901")
@@ -341,9 +345,8 @@ func TestBackupRestoreSmokeAndFreeSpaceCheck(t *testing.T) {
 	}
 }
 
-// TestUsageReportingColumnsConvergeFromEveryHistory covers the three schemas an upgrade to 041 can
-// start from. A fork revision once used version 39 for `tokens_reported`, so a database from that
-// revision has recorded 39 without the current 039's `access_provider` and `is_native_key`.
+// Upstream and fork databases assigned different schemas to 039 and 041.
+// Upgrades must preserve observations while completing both sets of columns.
 func TestUsageReportingColumnsConvergeFromEveryHistory(t *testing.T) {
 	for _, testCase := range []struct {
 		name    string
@@ -362,9 +365,25 @@ func TestUsageReportingColumnsConvergeFromEveryHistory(t *testing.T) {
 			wantBackups: 0,
 		},
 		{
-			name:        "an upstream database at 040",
-			through:     40,
-			preparing:   func(t *testing.T, database *DB) {},
+			name:    "an upstream database at 040",
+			through: 40,
+			preparing: func(t *testing.T, database *DB) {
+				seedMigrationInstance(t, database)
+				if _, err := database.SQL.Exec(`INSERT INTO usage_events
+					(instance_id, event_key, api_group_key, timestamp_ms, created_at_ms, input_tokens, output_tokens, total_tokens)
+					VALUES ('default', 'upstream-040', 'group', 4000, 4000, 17, 23, 40)`); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := database.SQL.Exec(`INSERT INTO quota_snapshots
+					(id, auth_index, provider, status, windows_json, observed_at_ms, created_at_ms, reset_grants_json)
+					VALUES ('snapshot-040', 'auth-040', 'codex', 'healthy', '[]', 4000, 4000, '{"grant":"040"}')`); err != nil {
+					t.Fatal(err)
+				}
+			},
+			verifying: func(t *testing.T, database *DB) {
+				assertReportingValue(t, database.SQL, "upstream-040", false, 0, "", 0, [3]int64{17, 23, 40})
+				assertQuotaSnapshot(t, database.SQL, "auth-040", `{"grant":"040"}`, "")
+			},
 			wantBackups: 1,
 		},
 		{
@@ -377,27 +396,75 @@ func TestUsageReportingColumnsConvergeFromEveryHistory(t *testing.T) {
 				if _, err := database.SQL.Exec(`INSERT INTO schema_migrations(version, applied_at) VALUES (39, 1000)`); err != nil {
 					t.Fatalf("record the fork 039: %v", err)
 				}
-				if _, err := database.SQL.Exec(`INSERT INTO cpa_instances (id, name, base_url, usage_addr, management_key_ciphertext, management_key_nonce, created_at, updated_at)
-					VALUES ('default', 'Default', 'http://127.0.0.1:8317', '127.0.0.1:8317', x'00', x'00', 100, 100)`); err != nil {
-					t.Fatalf("record the instance that owns the fork usage event: %v", err)
+				seedMigrationInstance(t, database)
+				seedLegacyReportingRows(t, database)
+			},
+			verifying: func(t *testing.T, database *DB) {
+				assertReportingValue(t, database.SQL, "legacy-null", false, 0, "", 0, [3]int64{17, 23, 40})
+				assertReportingValue(t, database.SQL, "legacy-zero", true, 0, "", 0, [3]int64{17, 23, 40})
+				assertReportingValue(t, database.SQL, "legacy-one", true, 1, "", 0, [3]int64{17, 23, 40})
+				assertReportingValue(t, database.SQL, "legacy-measured-zero", true, 1, "", 0, [3]int64{})
+			},
+			wantBackups: 1,
+		},
+		{
+			name:    "an upstream database that already applied warmup 041",
+			through: 40,
+			preparing: func(t *testing.T, database *DB) {
+				if _, err := database.SQL.Exec(upstream041CredentialWarmupSQL); err != nil {
+					t.Fatalf("apply frozen upstream 041: %v", err)
 				}
-				if _, err := database.SQL.Exec(`INSERT INTO usage_events (instance_id, event_key, api_group_key, timestamp_ms, created_at_ms, tokens_reported)
-					VALUES ('default', 'fork-row', 'group', 1000, 1000, 1)`); err != nil {
-					t.Fatalf("record a usage event under the fork 039: %v", err)
+				if _, err := database.SQL.Exec(`INSERT INTO schema_migrations(version, applied_at) VALUES (41, 4100)`); err != nil {
+					t.Fatalf("record upstream 041: %v", err)
+				}
+				seedMigrationInstance(t, database)
+				if _, err := database.SQL.Exec(`INSERT INTO usage_events (instance_id, event_key, api_group_key, timestamp_ms, created_at_ms, input_tokens, output_tokens, total_tokens)
+					VALUES ('default', 'upstream-row', 'group', 4100, 4100, 17, 23, 40)`); err != nil {
+					t.Fatalf("record an upstream usage event: %v", err)
+				}
+				if _, err := database.SQL.Exec(`INSERT INTO quota_snapshots
+					(id, auth_index, provider, status, windows_json, observed_at_ms, created_at_ms, reset_grants_json, warmup_json)
+					VALUES ('upstream-snapshot', 'upstream-auth', 'upstream', 'healthy', '[]', 4100, 4100, '{"grant":"reset"}', '{"warmup":"kept"}')`); err != nil {
+					t.Fatalf("record an upstream quota snapshot: %v", err)
+				}
+				if _, err := database.SQL.Exec(`INSERT INTO credential_warmup_policies (instance_id, scope, target, document_json, updated_at_ms)
+					VALUES ('default', 'provider', 'upstream', '{"enabled":false}', 4100)`); err != nil {
+					t.Fatalf("record an upstream warmup policy: %v", err)
+				}
+				if _, err := database.SQL.Exec(`INSERT INTO credential_warmup_state (instance_id, auth_index, document_json, updated_at_ms)
+					VALUES ('default', 'upstream-auth', '{"status":"kept"}', 4100)`); err != nil {
+					t.Fatalf("record upstream warmup state: %v", err)
+				}
+				if _, err := database.SQL.Exec(`INSERT INTO credential_warmup_runs (instance_id, auth_index, request_id, document_json, updated_at_ms)
+					VALUES ('default', 'upstream-auth', 'request-1', '{"result":"kept"}', 4100)`); err != nil {
+					t.Fatalf("record an upstream warmup run: %v", err)
 				}
 			},
 			verifying: func(t *testing.T, database *DB) {
-				var tokensReported sql.NullInt64
-				var accessProvider string
-				var isNativeKey int
-				if err := database.SQL.QueryRow(`SELECT tokens_reported, access_provider, is_native_key FROM usage_events WHERE event_key = 'fork-row'`).
-					Scan(&tokensReported, &accessProvider, &isNativeKey); err != nil {
-					t.Fatalf("read the usage event recorded before the upgrade: %v", err)
-				}
-				if !tokensReported.Valid || tokensReported.Int64 != 1 || accessProvider != "" || isNativeKey != 0 {
-					t.Fatalf("usage event after the upgrade = tokens_reported %v, access_provider %q, is_native_key %d; want 1, \"\", 0",
-						tokensReported, accessProvider, isNativeKey)
-				}
+				assertReportingValue(t, database.SQL, "upstream-row", false, 0, "", 0, [3]int64{17, 23, 40})
+				assertQuotaSnapshot(t, database.SQL, "upstream-auth", `{"grant":"reset"}`, `{"warmup":"kept"}`)
+				assertWarmupRows(t, database.SQL, "provider", "upstream", "upstream-auth", "request-1")
+				assertRecordedVersion(t, database.SQL, 41, 4100)
+			},
+			wantBackups: 1,
+		},
+		{
+			name:    "a fork database that already applied reporting 041",
+			through: 41,
+			preparing: func(t *testing.T, database *DB) {
+				seedMigrationInstance(t, database)
+				seedReportingRows(t, database, map[string]*int64{
+					"fork-null": nil,
+					"fork-zero": int64Pointer(0),
+					"fork-one":  int64Pointer(1),
+				})
+			},
+			verifying: func(t *testing.T, database *DB) {
+				assertReportingValue(t, database.SQL, "fork-null", false, 0, "native", 1, [3]int64{17, 23, 40})
+				assertReportingValue(t, database.SQL, "fork-zero", true, 0, "native", 1, [3]int64{17, 23, 40})
+				assertReportingValue(t, database.SQL, "fork-one", true, 1, "native", 1, [3]int64{17, 23, 40})
+				assertReportingValue(t, database.SQL, "fork-measured-zero", true, 1, "native", 1, [3]int64{})
+				assertQuotaSnapshot(t, database.SQL, "fork-auth", `{"grant":"fork"}`, "")
 			},
 			wantBackups: 1,
 		},
@@ -443,6 +510,7 @@ func TestUsageReportingColumnsConvergeFromEveryHistory(t *testing.T) {
 			}
 			assertUsageReportingColumns(t, database.SQL)
 			assertQuotaResetGrantsColumn(t, database.SQL)
+			assertWarmupSchema(t, database.SQL)
 			if testCase.verifying != nil {
 				testCase.verifying(t, database)
 			}
@@ -453,13 +521,29 @@ func TestUsageReportingColumnsConvergeFromEveryHistory(t *testing.T) {
 			if got := countMigrationBackups(t, backupDir); got != testCase.wantBackups {
 				t.Fatalf("pre-migration backups = %d, want %d", got, testCase.wantBackups)
 			}
+			for _, backup := range migrationBackupPaths(t, backupDir) {
+				if err := RestoreBackupSmoke(ctx, backup, cipher); err != nil {
+					t.Fatalf("restore backup %s: %v", backup, err)
+				}
+			}
 
 			// A second start finds nothing pending: no backup, no change to the ledger.
 			if err := database.Migrate(ctx); err != nil {
 				t.Fatalf("second start failed: %v", err)
 			}
-			if got := countAppliedMigrations(t, database.SQL); got != applied {
-				t.Fatalf("applied migrations after a second start = %d, want %d", got, applied)
+			if err := database.Close(); err != nil {
+				t.Fatalf("close upgraded database: %v", err)
+			}
+			reopened, err := Open(ctx, path, WithMigrationBackup(cipher, backupDir, 3))
+			if err != nil {
+				t.Fatalf("reopen upgraded database: %v", err)
+			}
+			t.Cleanup(func() { _ = reopened.Close() })
+			if got := countAppliedMigrations(t, reopened.SQL); got != applied {
+				t.Fatalf("applied migrations after reopen = %d, want %d", got, applied)
+			}
+			if testCase.verifying != nil {
+				testCase.verifying(t, reopened)
 			}
 			if got := countMigrationBackups(t, backupDir); got != testCase.wantBackups {
 				t.Fatalf("pre-migration backups after a second start = %d, want %d", got, testCase.wantBackups)
@@ -489,6 +573,75 @@ func TestUsageReportingMigrationAddsColumnsOnlyThroughItsHook(t *testing.T) {
 		if strings.Contains(strings.ToUpper(statement), "ADD COLUMN") {
 			t.Fatalf("migration 041 adds a column in SQL (%q): an unconditional ADD COLUMN fails on one of the histories", statement)
 		}
+	}
+}
+
+func TestCredentialWarmupMigrationRollsBackWhenVersionRecordingFails(t *testing.T) {
+	ctx := context.Background()
+	database := openDatabaseAtMigration(t, 41)
+	if _, err := database.SQL.Exec(`CREATE TRIGGER refuse_042 BEFORE INSERT ON schema_migrations
+		WHEN NEW.version = 42 BEGIN SELECT RAISE(ABORT, 'fixture refuses version 42'); END`); err != nil {
+		t.Fatal(err)
+	}
+	database.migrateUntil = 0
+	if err := database.Migrate(ctx); err == nil || !strings.Contains(err.Error(), "fixture refuses version 42") {
+		t.Fatalf("migration error = %v, want version recording failure", err)
+	}
+	var tables, columns, recorded int
+	if err := database.SQL.QueryRow(`SELECT
+		(SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name LIKE 'credential_warmup_%'),
+		(SELECT COUNT(*) FROM pragma_table_info('quota_snapshots') WHERE name = 'warmup_json'),
+		(SELECT COUNT(*) FROM schema_migrations WHERE version = 42)`).Scan(&tables, &columns, &recorded); err != nil {
+		t.Fatal(err)
+	}
+	if tables != 0 || columns != 0 || recorded != 0 {
+		t.Fatalf("failed migration left tables=%d columns=%d versions=%d", tables, columns, recorded)
+	}
+	assertUsageReportingColumns(t, database.SQL)
+}
+
+func assertWarmupSchema(t *testing.T, database *sql.DB) {
+	t.Helper()
+	var columnType string
+	var notNull int
+	var defaultValue sql.NullString
+	if err := database.QueryRow(`SELECT type, "notnull", dflt_value
+		FROM pragma_table_info('quota_snapshots') WHERE name = 'warmup_json'`).Scan(&columnType, &notNull, &defaultValue); err != nil {
+		t.Fatal(err)
+	}
+	if columnType != "TEXT" || notNull != 0 || defaultValue.Valid {
+		t.Fatalf("warmup_json = %s notnull=%d default=%v, want nullable TEXT", columnType, notNull, defaultValue)
+	}
+	tx, err := database.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`INSERT INTO cpa_instances
+		(id, name, base_url, usage_addr, management_key_ciphertext, management_key_nonce, created_at, updated_at)
+		VALUES ('schema-probe', 'Probe', 'http://localhost', 'localhost', x'00', x'00', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`INSERT INTO credential_warmup_policies VALUES (?, 'provider', 'probe', ?, 1)`,
+		`INSERT INTO credential_warmup_state VALUES (?, 'probe', ?, 1)`,
+		`INSERT INTO credential_warmup_runs VALUES (?, 'probe', 'request-probe', ?, 1)`,
+	} {
+		if _, err := tx.Exec(statement, "schema-probe", "not-json"); err == nil {
+			t.Fatalf("invalid JSON accepted: %s", statement)
+		}
+		if _, err := tx.Exec(statement, "missing-instance", "{}"); err == nil {
+			t.Fatalf("missing parent accepted: %s", statement)
+		}
+		if _, err := tx.Exec(statement, "schema-probe", "{}"); err != nil {
+			t.Fatalf("valid warmup row refused: %v", err)
+		}
+		if _, err := tx.Exec(statement, "schema-probe", "{}"); err == nil {
+			t.Fatalf("duplicate identity accepted: %s", statement)
+		}
+	}
+	if _, err := tx.Exec(`INSERT INTO credential_warmup_policies VALUES ('schema-probe', 'invalid', 'probe', '{}', 1)`); err == nil {
+		t.Fatal("invalid warmup policy scope accepted")
 	}
 }
 
@@ -536,6 +689,114 @@ func assertUsageReportingColumns(t *testing.T, database *sql.DB) {
 	}
 }
 
+func seedMigrationInstance(t *testing.T, database *DB) {
+	t.Helper()
+	if _, err := database.SQL.Exec(`INSERT INTO cpa_instances (id, name, base_url, usage_addr, management_key_ciphertext, management_key_nonce, created_at, updated_at)
+		VALUES ('default', 'Default', 'http://127.0.0.1:8317', '127.0.0.1:8317', x'00', x'00', 100, 100)`); err != nil {
+		t.Fatalf("record migration test instance: %v", err)
+	}
+}
+
+func seedLegacyReportingRows(t *testing.T, database *DB) {
+	t.Helper()
+	for _, row := range []struct {
+		key   string
+		value *int64
+	}{
+		{key: "legacy-null"},
+		{key: "legacy-zero", value: int64Pointer(0)},
+		{key: "legacy-one", value: int64Pointer(1)},
+	} {
+		if _, err := database.SQL.Exec(`INSERT INTO usage_events (instance_id, event_key, api_group_key, timestamp_ms, created_at_ms, tokens_reported, input_tokens, output_tokens, total_tokens)
+			VALUES ('default', ?, 'group', 1000, 1000, ?, 17, 23, 40)`, row.key, row.value); err != nil {
+			t.Fatalf("record legacy usage event %s: %v", row.key, err)
+		}
+	}
+	if _, err := database.SQL.Exec(`INSERT INTO usage_events (instance_id, event_key, api_group_key, timestamp_ms, created_at_ms, tokens_reported, input_tokens, output_tokens, total_tokens)
+		VALUES ('default', 'legacy-measured-zero', 'group', 1000, 1000, 1, 0, 0, 0)`); err != nil {
+		t.Fatalf("record legacy measured zero: %v", err)
+	}
+}
+
+func seedReportingRows(t *testing.T, database *DB, rows map[string]*int64) {
+	t.Helper()
+	if _, err := database.SQL.Exec(`INSERT INTO quota_snapshots
+		(id, auth_index, provider, status, windows_json, observed_at_ms, created_at_ms, reset_grants_json)
+		VALUES ('fork-snapshot', 'fork-auth', 'fork', 'healthy', '[]', 4200, 4200, '{"grant":"fork"}')`); err != nil {
+		t.Fatalf("record fork quota snapshot: %v", err)
+	}
+	for key, value := range rows {
+		if _, err := database.SQL.Exec(`INSERT INTO usage_events
+			(instance_id, event_key, api_group_key, timestamp_ms, created_at_ms, access_provider, is_native_key, tokens_reported, input_tokens, output_tokens, total_tokens)
+			VALUES ('default', ?, 'group', 4200, 4200, 'native', 1, ?, 17, 23, 40)`, key, value); err != nil {
+			t.Fatalf("record fork usage event %s: %v", key, err)
+		}
+	}
+	if _, err := database.SQL.Exec(`INSERT INTO usage_events
+		(instance_id, event_key, api_group_key, timestamp_ms, created_at_ms, access_provider, is_native_key, tokens_reported, input_tokens, output_tokens, total_tokens)
+		VALUES ('default', 'fork-measured-zero', 'group', 4200, 4200, 'native', 1, 1, 0, 0, 0)`); err != nil {
+		t.Fatalf("record fork measured zero: %v", err)
+	}
+}
+
+func assertReportingValue(t *testing.T, database *sql.DB, key string, wantValid bool, wantValue int64, wantProvider string, wantNative int, wantCounters [3]int64) {
+	t.Helper()
+	var tokens sql.NullInt64
+	var provider string
+	var native int
+	var inputTokens, outputTokens, totalTokens int64
+	if err := database.QueryRow(`SELECT tokens_reported, access_provider, is_native_key, input_tokens, output_tokens, total_tokens
+		FROM usage_events WHERE event_key = ?`, key).Scan(&tokens, &provider, &native, &inputTokens, &outputTokens, &totalTokens); err != nil {
+		t.Fatalf("read usage event %s: %v", key, err)
+	}
+	if tokens.Valid != wantValid || (wantValid && tokens.Int64 != wantValue) || provider != wantProvider || native != wantNative || [3]int64{inputTokens, outputTokens, totalTokens} != wantCounters {
+		t.Fatalf("usage event %s = valid:%t value:%d provider:%q native:%d counters:%d/%d/%d",
+			key, tokens.Valid, tokens.Int64, provider, native, inputTokens, outputTokens, totalTokens)
+	}
+}
+
+func assertQuotaSnapshot(t *testing.T, database *sql.DB, authIndex, wantReset, wantWarmup string) {
+	t.Helper()
+	var reset, warmup sql.NullString
+	if err := database.QueryRow(`SELECT reset_grants_json, warmup_json FROM quota_snapshots WHERE auth_index = ?`, authIndex).
+		Scan(&reset, &warmup); err != nil {
+		t.Fatalf("read quota snapshot %s: %v", authIndex, err)
+	}
+	if !reset.Valid || reset.String != wantReset || warmup.Valid != (wantWarmup != "") || warmup.String != wantWarmup {
+		t.Fatalf("quota snapshot %s = reset %q warmup %q", authIndex, reset.String, warmup.String)
+	}
+}
+
+func assertWarmupRows(t *testing.T, database *sql.DB, scope, target, authIndex, requestID string) {
+	t.Helper()
+	var policies, states, runs int
+	if err := database.QueryRow(`SELECT
+		(SELECT COUNT(1) FROM credential_warmup_policies WHERE scope = ? AND target = ? AND document_json = '{"enabled":false}' AND updated_at_ms = 4100),
+		(SELECT COUNT(1) FROM credential_warmup_state WHERE auth_index = ? AND document_json = '{"status":"kept"}' AND updated_at_ms = 4100),
+		(SELECT COUNT(1) FROM credential_warmup_runs WHERE auth_index = ? AND request_id = ? AND document_json = '{"result":"kept"}' AND updated_at_ms = 4100)`,
+		scope, target, authIndex, authIndex, requestID).Scan(&policies, &states, &runs); err != nil {
+		t.Fatal(err)
+	}
+	if policies != 1 || states != 1 || runs != 1 {
+		t.Fatalf("warmup rows = policy %d state %d run %d", policies, states, runs)
+	}
+}
+
+func assertRecordedVersion(t *testing.T, database *sql.DB, version int, appliedAt int64) {
+	t.Helper()
+	var got int64
+	if err := database.QueryRow(`SELECT applied_at FROM schema_migrations WHERE version = ?`, version).Scan(&got); err != nil {
+		t.Fatalf("read migration %d: %v", version, err)
+	}
+	if got != appliedAt {
+		t.Fatalf("migration %d applied_at = %d, want %d", version, got, appliedAt)
+	}
+}
+
+func int64Pointer(value int64) *int64 {
+	return &value
+}
+
 func assertQuotaResetGrantsColumn(t *testing.T, database *sql.DB) {
 	t.Helper()
 	var count int
@@ -569,6 +830,24 @@ func countMigrationFiles(t *testing.T) int {
 		}
 	}
 	return count
+}
+
+func migrationBackupPaths(t *testing.T, directory string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(directory)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		t.Fatalf("read backup directory: %v", err)
+	}
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".db.enc") {
+			paths = append(paths, filepath.Join(directory, entry.Name()))
+		}
+	}
+	return paths
 }
 
 func countMigrationBackups(t *testing.T, directory string) int {

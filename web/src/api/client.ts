@@ -1,3 +1,4 @@
+import type { WarmupCredential, WarmupPolicy, WarmupResult, WarmupSettings } from '../types/warmup';
 import type { ModelSquareDirectory } from '../types/modelSquare';
 import type { CustomIcon } from '../types/customIcons';
 import { getAppConfig } from '../types/config';
@@ -50,6 +51,8 @@ import {
   SystemUpdatesResponse,
   SystemProductVersion,
   SystemMaintenanceResponse,
+  SystemUpdaterResponse,
+  ReleaseProduct,
 } from '../types/system';
 import type {
   PluginConfigResponse,
@@ -336,6 +339,22 @@ export interface AuthSession {
 }
 
 export const api = {
+  getWarmupSettings(): Promise<WarmupSettings> {
+    return request('/management/quota/warmup/settings', { method: 'GET' });
+  },
+  saveWarmupSettings(provider: 'codex' | 'claude', policy: WarmupPolicy, revision: string): Promise<WarmupSettings> {
+    return request('/management/quota/warmup/settings', { method: 'PUT', body: JSON.stringify({ provider, policy, revision, confirmed: true }) });
+  },
+  getWarmupCredential(authIndex: string): Promise<WarmupCredential> {
+    return request(`/management/quota/warmup/credentials/${encodeURIComponent(authIndex)}`, { method: 'GET' });
+  },
+  saveWarmupCredential(authIndex: string, inherit: boolean, policy: WarmupPolicy, revision: string): Promise<WarmupCredential> {
+    return request(`/management/quota/warmup/credentials/${encodeURIComponent(authIndex)}`, { method: 'PUT', body: JSON.stringify({ inherit, policy, revision, confirmed: true }) });
+  },
+  runWarmup(authIndex: string, requestId: string, revision: string): Promise<WarmupResult> {
+    return request(`/management/quota/warmup/credentials/${encodeURIComponent(authIndex)}/run`, { method: 'POST', body: JSON.stringify({ request_id: requestId, revision, confirmed: true }) });
+  },
+
   async getCustomIcons(): Promise<CustomIcon[]> {
     const response = await request<{ icons: CustomIcon[] }>('/custom-icons');
     return response.icons;
@@ -1107,6 +1126,18 @@ export const api = {
 
   async getSystemUpdates(): Promise<SystemUpdatesResponse> {
     return request<SystemUpdatesResponse>('/management/system/updates', { method: 'GET' });
+  },
+
+  async getSystemUpdater(): Promise<SystemUpdaterResponse> {
+    return request<SystemUpdaterResponse>('/management/system/updater', { method: 'GET' });
+  },
+
+  /** Asks the updater to replace one product; 202 means admitted, not finished. */
+  async applySystemUpdate(product: ReleaseProduct): Promise<SystemUpdaterResponse> {
+    return request<SystemUpdaterResponse>('/management/system/updater/apply', {
+      method: 'POST',
+      body: JSON.stringify({ product }),
+    });
   },
 
   async checkUpdates(): Promise<{

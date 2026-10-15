@@ -8,8 +8,24 @@ behind the verification moments.
 
 The goal is short feedback with the same or stronger failure detection. A new test that
 is slow, sleeps, or duplicates a claim another layer already makes is a cost every later
-change pays. Keep to the rules below instead of inventing a new runner, a new gate or a
-new registration list.
+change pays. Prefer the existing layers and runners; adding a new one is a deliberate
+decision with a reason, not a default.
+
+**How to use this document.** Sections 1–4 are the rules: where a test belongs, how it
+is registered, what to run when, and what to do when CI fails. The sections after §4 are
+a map, not a mandate — they record which layer owns which claim today and why it was
+placed there. When a better owner exists, move the claim and update the map in the same
+change; keep the claim's strength, not its address. Nothing in the map is frozen.
+
+### Secret-scan scope
+
+`pnpm verify:secrets:history` scans the complete ancestry of `HEAD`, including both
+parents of every merge. This is the product-history gate used by `verify:full`.
+`pnpm verify:secrets:all` audits all local refs, including preserved backup history
+outside the product ancestry. Both commands use the same pinned Gitleaks version,
+configuration and redaction, and return a nonzero status for findings or scanner
+failure. Keep backup refs and review any audit findings; they are not suppressed by
+the product-history scope. Worktree and staged scans keep their existing scope.
 
 ## 1. Where a new test belongs
 
@@ -55,8 +71,8 @@ Rules that keep the suite fast and honest:
   Composer model-popup wheel checks wait for search focus from the completed-open
   callback, then require the list centre to win hit-testing before sending input.
   An option count and two animation frames alone do not establish popup alignment,
-  especially when a destroyed popup is reopened. Keep the exact wheel-distance
-  assertions after that readiness boundary.
+  especially when a destroyed popup is reopened. Wheel-distance assertions belong
+  after that readiness boundary, not before it.
 - **Make time injectable in Go.** A duration a test has to wait out belongs in the
   component's config with a production default, as `ingest.Config.ReadinessGrace` is,
   so the test can set it to milliseconds.
@@ -186,7 +202,12 @@ replace those tests.
 `.github/workflows/release.yml`. It needs Docker and a built native image, creates only
 isolated containers/volumes, waits on health-status events, and tests the actual image's
 non-root/read-only runtime, SQLite writes, normalized base paths, sign-in, embedded SPA
-and running-version endpoints. It is not part of `test:fast` or ordinary static gates.
+and running-version endpoints. It also runs the image as the updater: the image's own
+health probe must report that role healthy, and `updater install` must create a hardened
+updater beside a running console, leave the console in place, and let the console read
+the updater's status with no setting on either side. That check replaces a container
+named `oh-my-cpa-updater`, so it refuses to start on a host that already has one. It is
+not part of `test:fast` or ordinary static gates.
 Release identity is resolved first, then static, full built-browser/demo and three probe shards run on the exact revision in parallel. The `verify` aggregate requires every result to succeed before native packaging or container publication. The browser lanes provision and launch-probe Chromium with
 `scripts/install-chromium.mjs`; local parity is `pnpm verify:full`. Dependency installation alone does not install the browser binary.
 
@@ -194,8 +215,9 @@ Native release planning, archive payloads, manifest integrity and workflow order
 are repository self-tests in `scripts/native-release.test.mjs` and
 `scripts/release-plan.test.mjs`, discovered automatically. They do not build Go or
 launch browsers. Archive payload self-tests use GNU tar, zip and unzip, matching
-the Linux packaging runner. The builder and archive payload self-tests force local
-GNU tar paths, so a Windows drive-letter colon never requests a remote shell;
+the Linux packaging runner, and fail by name when a required tool is absent. The
+builder and archive payload self-tests force local GNU tar paths, so a Windows
+drive-letter colon never requests a remote shell;
 injected-command regressions retain the deterministic archive settings. Extracted executable permission
 checks run on Unix hosts, which can represent those permission bits; payload and checksum
 assertions run on every host. The tag workflow's **native** job runs `scripts/native-release.mjs`
@@ -237,6 +259,8 @@ The probe runner owns Vite through an unpredictable readiness header, rejects po
 collisions, uses a fresh context per scenario, and retains a 120-second scenario
 budget and the 480-second batch watchdog. Catalog entrypoints use at most two
 independent scenario contexts; `--workers 1` reproduces identical coverage serially.
+A scenario marked `shouldRunAlone`, one that asserts motion frame by frame, runs after
+the rest of its batch with no sibling (ADR 0095).
 Separate built/browser/demo lanes and separate local batches still never overlap.
 Each worker owns its fixture/error/late-fault ledger and outcome; failures are
 collated in catalog order, every admitted worker is joined before shared teardown,
@@ -488,6 +512,8 @@ The phone header breakpoint sweep observes layout completion after each viewport
 
 The existing `dashboard-charts` and `dashboard-model-panels` probes measure compact tooltip gutters, row centers, marker/name columns and numeric edges, including the donut's shared readout, while logic tests cover escaped full names, exact values and localized units. `scroll-smoothing` exercises native Playground model popups with the list library's shared holder structure, repeated/reversed notches, filtering and reopening, alongside the virtual time-zone popup and request list. `provider-model-picker` verifies newly added custom models remain collapsed until explicit disclosure; `oauth-management` and the automatically discovered quota-cooldown logic suite distinguish recognized quota conditions from unexpected reasons, use the generic explanation for blank cooldown tooltips and preserve full Drawer diagnostics.
 
+`dashboard-model-panels` also narrows and re-widens the ring's frame without a window resize and requires the ring to refill it on the readout's centre, the case G2's own window-only refit missed when the console font arrived after the first paint.
+
 ### Dashboard model-view regressions
 
 The existing `dashboard-model-panels-states` probe owns window selection, manual refresh,
@@ -547,6 +573,14 @@ and identity remain covered by the workspace and plugin-logo logic suites.
   end in `font-size`, small radii in shorthand and longhand, undefined and fallback-carrying token
   references, commented-out declarations, and an empty tree. It is automatically discovered by the
   repository self-test runner.
+- `scripts/font-shards.test.mjs` pins the font sharding (ADR 0094): `cmap` formats 4 and 12,
+  WOFF2 and sfnt table directories, `unicode-range` formatting, and the shard plan's order
+  (core, frequency tiers, remainder) with each code point in exactly one shard. It also holds
+  the committed outputs together: `core.css` and `shardUrls.ts` equal what the manifest renders, the shard files
+  are exactly the manifest's, every shard draws every character it declares, ranges never
+  overlap, and every character in `web/src` (colour emoji aside) is in some shard. It is
+  automatically discovered by the repository self-test runner. The logic suite
+  `scripts/test-font-shards.ts` pins which shards an export embeds for its text.
 - The `oauth-management` browser scenario checks that ordinary copy acknowledgements cannot evict
   a persistent quota report, another refresh replaces it, and its close action removes it. It also
   checks one credential-aware authorization toast for a unique new credential, an ambiguous result
@@ -742,7 +776,7 @@ startup. The configuration page must defer its YAML editor until requested.
 
 The hard size checks are broad anomaly ceilings, not per-chunk feature quotas:
 startup JS 3 MiB raw / 1 MiB gzip; startup CSS 256 / 96 KiB; largest JS 4 MiB raw;
-all JS 16 MiB raw; distribution 20 MiB raw; Lobe SVGs 2 MiB raw. Gzip values are
+all JS 16 MiB raw; distribution 32 MiB raw (ADR 0094); Lobe SVGs 2 MiB raw. Gzip values are
 level-6 per-file estimates, including binary files in aggregate estimates, not
 actual served bytes or browser-performance measurements. Growth greater than both
 10% and 16 KiB for entry/startup metrics, or 128 KiB for other metrics, is advisory.
@@ -827,9 +861,10 @@ For changes here, run affected self-tests, `pnpm verify`, `pnpm check:ui` and
   `pricing-book` also checks the translated synchronization group title in phone tools.
   Existing list/touch assertions remain; `config-backups` also exercises the phone menu-owned
   dialog, local table scrolling and Back closure.
-- Automated visible-viewport simulation does not certify iPhone keyboard/selection behaviour. Manual
-  Safari acceptance must additionally exercise address-bar collapse, software keyboard, long-press
-  selection and caret movement in normal and focused editing; record that evidence separately.
+- Automated visible-viewport simulation does not certify iPhone keyboard/selection behaviour. When a
+  change touches these paths and a real device is at hand, exercise address-bar collapse, the software
+  keyboard, long-press selection and caret movement in normal and focused editing, and say what was
+  checked; no automated run can stand in for it.
 
 
 ### Quota reading coverage
@@ -887,7 +922,10 @@ header checkbox sits over the rows', the canvas is drawn and redrawn when a reda
 and both formats download. `request-facet-marks` compares a provider option's mark with the mark on the rows it filters,
 using a provider with artwork of its own so a mark resolved from the wrong key is a different
 picture. `column-alignment` emulates a classic scrollbar so the header and the
-rows are compared at the width a desktop gives them.
+rows are compared at the width a desktop gives them. At 600px it asserts that the
+request-ID text is hidden and the visible copy control puts the full fixture ID on
+the clipboard without opening the detail drawer. Clipboard permissions are scoped
+to the probe origin, and completion waits on the copied value.
 
 ### Built request-record filter coverage
 
@@ -1085,7 +1123,8 @@ graph guard in `scripts/conversation-boundaries.test.mjs` forbids shared workspa
 modules from importing page internals, with eager/lazy negative and erased-type cases
 and nonempty real consumers. The existing Agent/Playground probes use `scripts/acceptance/probes/conversation-export.mjs` to
 own actual downloads, standalone HTML/image rendering, controls, privacy, browser
-encoding and responsive behavior. None of these browser claims move to Node.
+encoding and responsive behavior. These claims live in the browser today; moving one to
+a cheaper layer requires a replacement of equal strength (ADR 0089).
 
 
 ### Bounded probe scheduling
@@ -1097,7 +1136,11 @@ changes scheduling only, not selected IDs, assertions, waits or verdicts.
 increase concurrency or a budget to make a run pass. Watchdog diagnostics name all
 active scenarios/steps. Existing condition-based readiness and complete hosted
 shard coverage remain mandatory. ADR 0091 and the governance ledger record measured
-wall/CPU/memory trade-offs and retained failure ownership.
+wall/CPU/memory trade-offs and retained failure ownership. Scenarios marked
+`shouldRunAlone` in `scripts/acceptance/scenarios.mjs` (`scroll-smoothing`,
+`request-list-touch`) run after the shared part of their batch, one at a time, because a
+sibling context drops frames their checks would count as the defect (ADR 0095). The mark
+states its frame-level reason; it is not a way to quiet a scenario that fails for others.
 
 ### Demo replay and generated-UI exports
 
@@ -1120,13 +1163,15 @@ The existing heatmap probe owns newest-edge mobile scrolling and resize behavior
 The existing `agent-stream` probe exports a generated component as standalone HTML and PNG:
 it requires script-set content in the opaque sandbox and an exact fixture color in PNG
 pixels, then checks temporary-frame cleanup. The common conversation-export helper retains
-real download/controls/mobile checks. These browser claims are not replaced by DOM tests.
+real download/controls/mobile checks. These claims stay in the browser until a
+replacement of equal strength exists.
 
 ### README screenshot readiness
 
 `scripts/readme-screenshot-readiness.test.mjs` pins the capture predicate: visible
 page content, no visible loading surfaces, and no mounted toast (including its exit
-motion). It is automatically discovered by `pnpm test:self`; it does not launch a
+motion), and the font predicate that waits for the deferred Sarasa shards (ADR 0094)
+before capture. It is automatically discovered by `pnpm test:self`; it does not launch a
 browser or certify pixels. `pnpm build && pnpm readme:screenshots` supplies the real
 Chromium evidence and regenerates the English/Chinese desktop and mobile images
 under `docs/images/readme/`. The dashboard combines light and dark captures in one
@@ -1142,3 +1187,63 @@ admission, timeout propagation, and context cleanup without launching Chromium;
 the immediate-check implementation fails these cases. Image freshness remains
 outside verification gates because the sample traffic is rebased to the capture
 clock.
+
+### Credential warmup verification
+
+`internal/warmup` tests own calendar, explicit billing evidence, sliding/fixed boundaries,
+cycle decisions and fixed adapter terminal responses. API tests exercise real CPA-facade
+requests, persistent receipts, confirmed revisions, paid protection and uncertain/concurrent
+execution. Handler regressions exercise first reset-driven and daily automatic attempts for
+both Codex and Claude, with fresh or absent prior observations, changed-model history,
+active-window projection, bounded pending confirmation and persistence of an unsupported-model
+refusal across a non-consuming manual recheck and a rate-limited consuming recheck,
+including legacy state reload, unchanged retry backoff and immediate or delayed activation
+that clears the pause. A refused new request cannot overwrite the observed prior activation. Pure policy tests retain an
+observed unsupported-response pause without treating missing activation history as a gate.
+`scripts/acceptance/contracts/warmup.json` is certified by a Go handler test and
+consumed by the actual typed client in `web/tests/warmup.contract.test.ts`. Rendered tests
+own inheritance and draft controls; the `oauth-window-warmup` browser scenario owns
+viewport geometry and native Back discard confirmation. It independently checks that
+Drawer wrappers transition only transform normally and have no transition under reduced
+motion, retaining the unchanged 320px containment assertion after resize in both preferences; adding a delay cannot satisfy the transition-property check.
+All are discovered by the
+existing runners. Real-account activation is explicitly consented manual acceptance,
+never a hermetic test or automatic development step.
+
+Warmup review regressions pin field-by-field run validation (including reordered or changed
+refusal bodies), the typed client's emitted confirmation/revision, and credential/provider
+fixture isolation. API tests inject pre-send credential/policy refusals and an observable
+startup database failure with manually delivered ticks. Rendered tests cover both field-save
+close paths with an externally owned draft, a draft flag changing during an in-flight save,
+explicit protection facts, and a
+single inline run outcome. The browser warmup scenario also saves another section, retains
+its draft and exercises the subsequent native discard decision. These extend existing
+owners; no new runner, fixed wait or live consuming test is introduced.
+
+## Console updates (ADR 0099)
+
+The updater is tested against a Docker daemon it cannot tell from a real one.
+`internal/updater/fake_daemon_test.go` is an in-memory Engine served over a real unix
+socket, so the production client, its API-version negotiation and its wire format are
+what run; `internal/updater/updater_test.go` owns replacement (including what is and is
+not inherited from the old image), rollback and tag restoration, pinned and unidentified
+targets, signature, repository and version checks, token derivation, self-replacement
+and the job hand-off, the installer, and reconciliation after an interrupted job.
+`internal/api/management_system_updater_test.go` owns the console side: each state a
+missing updater reduces to, admission recorded before the updater is asked, refusal when
+the audit write fails, and one outcome event across a restart.
+
+The wire corpus is `scripts/acceptance/contracts/system-updater.json`, certified by
+`TestSystemUpdaterSharedWireContract` and consumed by the typed client in
+`web/tests/system-updater.contract.test.ts` and by
+`scripts/acceptance/system-updater-fixture.mjs`, the mock every other layer answers
+with. `web/tests/system-update.component.test.tsx` owns what a pure function cannot
+observe: the question before the request, the card holding its state while the console
+restarts under it, a result reported once, and giving up on an updater that forgot the
+job or stopped answering. `scripts/test-system-versions.ts` owns the offer derivation.
+The `system-information-narrow` scenario owns the update action's geometry beside the
+version comparison at 320px in the longest catalog. Signing is covered by
+`scripts/sign-release-manifest.test.mjs` and the release workflow's ordering invariants
+by `scripts/release-plan.test.mjs`; `scripts/deployment.test.mjs` holds the Compose
+service to its boundary (the socket and nothing else). Real container replacement is
+exercised only by `scripts/docker-smoke.mjs`, described above.
