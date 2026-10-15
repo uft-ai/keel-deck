@@ -115,6 +115,13 @@ export async function modelSquare({ base, page, context, check, state = {} }) {
   }));
   const rows = Map.groupBy(layout, item => item.top);
   check('cards in a row share one height', [...rows.values()].every(row => row.every(item => item.height === row[0].height)), JSON.stringify(layout));
+  // The header keeps one minimum height, so ordinary cards match across rows and sections too;
+  // only the section holding the long unbroken title grows, and never shrinks below the others.
+  const longSection = await titleOf(LONG_UPSTREAM).evaluate(title => title.closest('[data-model-group]').getAttribute('data-model-group'));
+  const sectionHeights = await sections.evaluateAll(elements => elements.map(section => ({ id: section.getAttribute('data-model-group'), heights: [...section.querySelectorAll('[data-model-card]')].map(card => Math.round(card.getBoundingClientRect().height)) })));
+  const ordinary = sectionHeights.filter(section => section.id !== longSection).flatMap(section => section.heights);
+  check('ordinary cards share one height across rows and sections', ordinary.length > 1 && ordinary.every(height => height === ordinary[0]), JSON.stringify(sectionHeights));
+  check('a long title grows its own section’s shared height instead of clipping', sectionHeights.find(section => section.id === longSection).heights.every((height, _, all) => height === all[0] && height >= ordinary[0]), JSON.stringify(sectionHeights));
   check('connection headers and three slots align across cards', layout.every(item => item.tail === layout[0].tail && item.head >= 44), JSON.stringify(layout));
   const columns = async () => new Set(await cards.evaluateAll(elements => elements.map(element => Math.round(element.getBoundingClientRect().left)))).size;
   check('cards lay out in several columns on a wide page', await columns() >= 2, `columns=${await columns()}`);
@@ -187,6 +194,10 @@ export async function modelSquare({ base, page, context, check, state = {} }) {
   await drawer.getByRole('button', { name: 'Next' }).click();
   await until(async () => (await drawer.locator('.ant-drawer-title').innerText()) === 'GPT-5 mini', { label: 'next model' });
   check('Next steps through the filtered cards', (await drawer.innerText()).includes('2 / 2') && await panel.getAttribute('data-panel') === 'global');
+  check('the drawer heading carries the model mark beside its name', await drawer.locator('.ant-drawer-title [class*="drawer-title"]').evaluate(title => {
+    const [mark, name] = title.children;
+    return Boolean(mark && name) && mark.getBoundingClientRect().width >= 20 && name.textContent === 'GPT-5 mini';
+  }));
   await page.goBack();
   await drawer.waitFor({ state: 'hidden' });
   check('one Back dismisses details and keeps the maker filter', new URL(page.url()).searchParams.get('maker') === 'openai' && await cards.count() === 2);
@@ -270,6 +281,14 @@ export async function modelSquare({ base, page, context, check, state = {} }) {
     check(`card controls are full touch targets within ${width}px`, controls.every(control => control.isFit), JSON.stringify(controls.filter(control => !control.isFit)));
     const longTitle = await titleOf(LONG_UPSTREAM).boundingBox();
     check(`long model names wrap within ${width}px`, longTitle.x >= 0 && longTitle.x + longTitle.width <= width + 1, JSON.stringify(longTitle));
+    // One column makes every card its own row: a wrapped long title grows its section's shared
+    // row height instead of clipping, and its neighbours keep the same height and aligned tail.
+    const stacked = await sections.evaluateAll(elements => elements.map(section => [...section.querySelectorAll('[data-model-card]')].map(card => {
+      const bounds = card.getBoundingClientRect();
+      const title = card.querySelector('h3').getBoundingClientRect();
+      return { height: Math.round(bounds.height), tail: Math.round(bounds.bottom - card.querySelector('button[class*="served-head"]').getBoundingClientRect().top), isTitleInside: title.bottom <= card.querySelector('button[class*="served-head"]').getBoundingClientRect().top + 1 };
+    })));
+    check(`wrapped rows keep equal cards and unclipped titles at ${width}px`, stacked.every(section => section.every(card => card.height === section[0].height && card.tail === stacked[0][0].tail && card.isTitleInside)), JSON.stringify(stacked));
     if (width === 320) await page.screenshot({ path: 'tmp/model-square-preview/phone.png', fullPage: true });
     await target.click();
     await drawer.waitFor({ state: 'visible' });

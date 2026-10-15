@@ -440,8 +440,8 @@ snapshot date and unknown fields, and renders without browser catalog/CDN reques
 External reference links are user-initiated navigation. Pricing remains on its existing
 OpenRouter source and is not synchronized by viewing Model Square. The page additionally
 reads the existing `GET /api/v1/pricing` and `GET /api/v1/usage/facets?preset=24h` to show
-each name's price and recent requests; if either fails, the directory still renders and
-those cells stay blank.
+each name's price and recent requests; if either fails, the directory still renders,
+prices read "Price unavailable" and request counts stay unknown, never unpriced or zero.
 
 ## OAuth model rules
 

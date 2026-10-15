@@ -580,7 +580,10 @@ export const ModelSquarePage: React.FC = () => {
       <Pager className={styles['pagination']} page={currentPage} pageSize={PAGE_SIZE} total={views.length} onChange={setPage} />
     </>}
     <AppDrawer
-      title={selectedCard ? (selectedConnection ? `${selectedCard.title} · ${connectionLabel(selectedConnection, t)}` : selectedCard.title) : ''}
+      title={selectedCard ? <span className={styles['drawer-title']}>
+        <ManufacturerMark manufacturer={selectedCard.isMixed ? { id: 'multiple', name: '' } : selectedCard.manufacturer} size={24} />
+        <span>{selectedConnection ? `${selectedCard.title} · ${connectionLabel(selectedConnection, t)}` : selectedCard.title}</span>
+      </span> : ''}
       open={isDetailsOpen}
       onClose={closeDetails}
       className={styles['details-drawer']}

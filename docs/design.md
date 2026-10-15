@@ -2764,7 +2764,10 @@ Makers are open sections under a heading rule. Named makers sort alphabetically;
 multiple-maker group (a shared alias spanning several makers) and the unidentified group follow
 them. Inside a section each resolved model is one card on `--surface` with a 1px `--border`
 and the 4px radius; cards fill the section's width in as many columns as fit (300px minimum,
-`auto-fill`, 12px gaps) and stretch to the row's height through the grid, never by measuring.
+`auto-fill`, 12px gaps). Every grid row of a section shares one height, and the header area
+keeps a 188px minimum, so ordinary cards match across rows and sections; a long title or
+badge list grows its section's rows instead of being clipped. Sizing is pure CSS grid,
+never measured.
 The header holds the maker label, the model mark and title, the global price as plain text
 and the reference's input badges (Text, Image input, Audio input, Video input, PDF input;
 "Reference unknown" without a reference, "Mixed models" for different targets). Badges

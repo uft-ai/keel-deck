@@ -3380,8 +3380,10 @@ prefix enforcement is off or `p` equals the base, mirroring the gateway's
 the `prefix_policy` partial and no guessed bare route. Unprefixed rows are `global`;
 OAuth and unmatched advertised routes are `unknown`. Each configured route carries a
 handwritten `configuration` projection (operations, native, input/output modalities,
-positive context/output limits), keeping null apart from an explicit empty list; a
-row that write-time validation would reject projects nothing and adds the
+positive context/output limits), keeping null apart from an explicit empty list. The
+projection checks only those fields against the editor's allowed values (known
+operations, native limited to declared Responses/Completions, bounded modality tokens,
+non-negative limits); a row whose projected fields fail projects nothing and adds the
 `route_configuration` partial. Routes deduplicate only when identity, scope and
 configuration are all equal.
 
@@ -3457,8 +3459,8 @@ one pure module, `web/src/types/modelSquareLedger.ts`, and rests on one contract
   builds the request list's own `preset` + `model_alias` query; the ledger suite parses that
   link with the request list's reader, so a renamed filter fails a test, not a click.
 - **Degradation.** The directory is authoritative and renders alone. A neighbour that failed
-  or has not answered yields `unknown` - a blank cell and no price action - never "unpriced"
-  or zero. A name the loaded book does not list is unpriced by definition. Linkage is per model
+  or has not answered yields `unknown` - "Price unavailable" with no price action, and an
+  unknown request count - never "unpriced" or zero. A name the loaded book does not list is unpriced by definition. Linkage is per model
   only, and every usage figure shares the one 24-hour window (`MODEL_REQUEST_PRESET`); the price
   book's 30-day usage is not read, because it is grouped by the recorded upstream model rather
   than the call name: the page aggregates nothing about the book, whose summary belongs to Cost & Usage. The facet returns
