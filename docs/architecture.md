@@ -3359,8 +3359,8 @@ The shared `WorkspaceLayout` also bounds its own height to the phone visible vie
 The lazy `/model-square` route reads `GET /management/model-square` through
 `web/src/api/client.ts`. The HTTP adapter in `internal/api/model_square.go` and the
 read-only `models_list` capability share `operations.Service.ListModelSquare`.
-The server reads CPA's configured client keys, selects the first nonempty one and
-calls the gateway's `/v1/models`. Client keys never enter the result or frontend state;
+The server reads CPA's configuration view once, selects the first nonempty client key
+and `routing.force-model-prefix`, and calls the gateway's `/v1/models`. Client keys never enter the result or frontend state;
 a deployment without one returns HTTP 409 with `client_key_required`. Gateway failures
 use the existing safe error projection. This directory makes no inference request.
 
@@ -3373,10 +3373,33 @@ live advertised IDs. Unmatched live models retain empty provider/upstream identi
 failed enrichment emits named `partial` conditions without hiding the live list. This
 additional in-memory projection does not change pricing persistence.
 
+A configured API-key row keeps its base name (alias, else name). With prefix `p` it
+publishes `p/base` as a `provider` route, plus the bare base as a `global` route when
+prefix enforcement is off or `p` equals the base, mirroring the gateway's
+`applyModelPrefixes`. An omitted setting is off; a present null or malformed value adds
+the `prefix_policy` partial and no guessed bare route. Unprefixed rows are `global`;
+OAuth and unmatched advertised routes are `unknown`. Each configured route carries a
+handwritten `configuration` projection (operations, native, input/output modalities,
+positive context/output limits), keeping null apart from an explicit empty list. The
+projection checks only those fields against the editor's allowed values (known
+operations, native limited to declared Responses/Completions, bounded modality tokens,
+non-negative limits); a row whose projected fields fail projects nothing and adds the
+`route_configuration` partial. Routes deduplicate only when identity, scope and
+configuration are all equal.
+
+Each route also carries `reference_id`, resolved once on the server by
+`Catalog.MatchFrom`: the exact canonical upstream, then, for a verified source host
+(`ConfiguredModelProvider.CatalogProvider`, currently `nan` for the official NaN API
+host only), that source's qualified alias, then the generic matcher. Connection names
+and prefixes never change the lookup. `model_info` keeps the generic per-identity
+entries and adds each canonical record under its canonical key, so a provider-qualified
+match is never stored under a shared bare name.
+
 The shared management snapshot also reads sanitized global OAuth alias rules once
 when enabled credentials exist. Only rules matching a credential's registered ID
 add their upstream to the pricing identity map and OAuth route provenance.
-Provider `Models` remain client-visible; `internal/app` adapts OAuth membership
+Provider `Models` remain client-visible and include configured prefixed API-key names
+(disabled rows too, through the same ambiguity rule); `internal/app` adapts OAuth membership
 through `ConfiguredModelProvider.ListPricingModelIDs` for the price book. A failed
 alias read makes pricing discovery incomplete, preserving its persisted catalog;
 Model Square continues to intersect provenance with the live advertised list.
@@ -3401,14 +3424,21 @@ HTTPS URLs. `pnpm models:sync` regenerates the snapshot from fixed models.dev so
 ordinary requests never fetch third-party catalogs. Metadata is returned only for
 identities represented in this deployment's live routes. Unknowns remain unknown.
 
-`web/src/types/modelSquare.ts` groups client names by maker, orders named makers ahead of
-the multiple and unidentified groups, preserves multiple targets while giving one profile per distinct source model, searches the advertised set,
-applies the maker filter, decides which reference a row may caption, classifies openness
-(closed-source, open-weight, open-source by a license allowlist) and constructs safe
-reference navigation. The page draws open maker sections and a Back-aware model-detail
-Drawer that names the serving connections and steps through the filtered list. Search and
-maker are reflected in `q` and `maker`; pagination is
-bounded to 120 rows. External links go to
+`web/src/types/modelSquare.ts` builds cards from the full directory before any filter:
+an alias whose complete routes share one known `reference_id` joins that model's card;
+an unresolved alias whose routes share one provider/upstream joins that connection's
+card; mixed, partial or unknown aliases keep their own card keyed by the exact name.
+Connections are `(provider_id, upstream_model)` rows. `classifyAliasScope` places each
+name in the card's global, provider-scoped or `Other advertised names` set. The module
+also orders makers, applies search, maker and connection filters to displayed rows
+only, classifies openness (closed-source, open-weight, open-source by a license
+allowlist) and constructs safe reference navigation. `referenceContextWindow` returns
+the smallest reference context only when every route of the exact name has known
+provenance and reference context and the directory is complete. The page draws maker
+sections of equal-height cards with three connection rows and a Back-aware Drawer whose
+global, connection-list and provider panels share one overlay and step through the
+filtered cards. Search, maker and connection are reflected in `q`, `maker` and
+`provider`; pagination is bounded to 120 cards. External links go to
 models.dev's canonical detail, OpenRouter lookup or pi.dev's `name` search; they open
 only on the operator's explicit action. All brand artwork is served locally.
 
@@ -3429,8 +3459,8 @@ one pure module, `web/src/types/modelSquareLedger.ts`, and rests on one contract
   builds the request list's own `preset` + `model_alias` query; the ledger suite parses that
   link with the request list's reader, so a renamed filter fails a test, not a click.
 - **Degradation.** The directory is authoritative and renders alone. A neighbour that failed
-  or has not answered yields `unknown` - a blank cell and no price action - never "unpriced"
-  or zero. A name the loaded book does not list is unpriced by definition. Linkage is per model
+  or has not answered yields `unknown` - "Price unavailable" with no price action, and an
+  unknown request count - never "unpriced" or zero. A name the loaded book does not list is unpriced by definition. Linkage is per model
   only, and every usage figure shares the one 24-hour window (`MODEL_REQUEST_PRESET`); the price
   book's 30-day usage is not read, because it is grouped by the recorded upstream model rather
   than the call name: the page aggregates nothing about the book, whose summary belongs to Cost & Usage. The facet returns

@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -14,10 +16,29 @@ import (
 	"github.com/oh-my-cpa/oh-my-cpa/internal/modelcatalog"
 )
 
+// ModelSquareRoute is one way an advertised client name can reach a model.
+// ReferenceID is the models.dev key resolved for this route, "" when unresolved.
+// NameScope records how the name was constructed: "provider" for a configured
+// prefix, "global" for an unprefixed name, "unknown" when reads do not prove it.
 type ModelSquareRoute struct {
-	ProviderID    string `json:"provider_id"`
-	UpstreamModel string `json:"upstream_model"`
-	CallPoint     string `json:"call_point"`
+	ProviderID    string                              `json:"provider_id"`
+	UpstreamModel string                              `json:"upstream_model"`
+	CallPoint     string                              `json:"call_point"`
+	ReferenceID   string                              `json:"reference_id"`
+	NameScope     string                              `json:"name_scope"`
+	Configuration *management.ModelRouteConfiguration `json:"configuration"`
+}
+
+const (
+	NameScopeGlobal   = "global"
+	NameScopeProvider = "provider"
+	NameScopeUnknown  = "unknown"
+)
+
+// ModelPrefixPolicy is CPA's routing.force-model-prefix as far as it could be read.
+type ModelPrefixPolicy struct {
+	IsForced bool
+	IsKnown  bool
 }
 type ModelSquareProvider struct {
 	ID           string `json:"id"`
@@ -43,17 +64,32 @@ type ModelSquareDirectory struct {
 
 // ProjectModelSquare does not use the pricing alias map: an alias with several targets
 // must retain every route here, rather than becoming the pricing ambiguity sentinel.
-func ProjectModelSquare(snapshot management.ConfiguredModelSnapshot, aliases map[string][]management.OAuthModelAlias, hasAliases bool) ModelSquareDirectory {
+func ProjectModelSquare(snapshot management.ConfiguredModelSnapshot, aliases map[string][]management.OAuthModelAlias, hasAliases bool, policy ModelPrefixPolicy) ModelSquareDirectory {
 	directory := ModelSquareDirectory{Providers: []ModelSquareProvider{}, Routes: []ModelSquareRoute{}, Partial: []string{}}
 	if !hasAliases {
 		directory.Partial = append(directory.Partial, "oauth_aliases")
 	}
-	seen := map[ModelSquareRoute]bool{}
-	addRoute := func(route ModelSquareRoute) {
-		if route.CallPoint != "" && !seen[route] {
-			directory.Routes = append(directory.Routes, route)
-			seen[route] = true
+	markPartial := func(marker string) {
+		if !slices.Contains(directory.Partial, marker) {
+			directory.Partial = append(directory.Partial, marker)
 		}
+	}
+	type routeIdentity struct{ provider, upstream, callPoint, scope string }
+	seen := map[routeIdentity][]*management.ModelRouteConfiguration{}
+	// Equal routes collapse only with equal configuration: two rows for one upstream
+	// can state different operations, and neither may overwrite the other.
+	addRoute := func(route ModelSquareRoute) {
+		if route.CallPoint == "" {
+			return
+		}
+		identity := routeIdentity{route.ProviderID, route.UpstreamModel, route.CallPoint, route.NameScope}
+		if slices.ContainsFunc(seen[identity], func(other *management.ModelRouteConfiguration) bool {
+			return reflect.DeepEqual(other, route.Configuration)
+		}) {
+			return
+		}
+		seen[identity] = append(seen[identity], route.Configuration)
+		directory.Routes = append(directory.Routes, route)
 	}
 	for _, provider := range snapshot.Providers {
 		directory.Providers = append(directory.Providers, ModelSquareProvider{ID: provider.ID, Family: provider.Family, Name: provider.Name, EndpointHost: provider.EndpointHost, IsOAuth: provider.IsOAuth})
@@ -62,7 +98,24 @@ func ProjectModelSquare(snapshot management.ConfiguredModelSnapshot, aliases map
 				if isModelExcluded(route.UpstreamModel, provider.ExcludedModels) {
 					continue
 				}
-				addRoute(ModelSquareRoute{provider.ID, route.UpstreamModel, route.CallPoint})
+				if route.IsConfigurationInvalid {
+					markPartial("route_configuration")
+				}
+				base := route.BaseCallPoint
+				if base == "" || base == route.CallPoint {
+					addRoute(ModelSquareRoute{ProviderID: provider.ID, UpstreamModel: route.UpstreamModel, CallPoint: route.CallPoint, NameScope: NameScopeGlobal, Configuration: route.Configuration})
+					continue
+				}
+				addRoute(ModelSquareRoute{ProviderID: provider.ID, UpstreamModel: route.UpstreamModel, CallPoint: route.CallPoint, NameScope: NameScopeProvider, Configuration: route.Configuration})
+				// CPA also publishes the bare name unless prefixes are forced, and always
+				// when the prefix equals the name. An unreadable policy proves neither.
+				if !policy.IsKnown {
+					markPartial("prefix_policy")
+					continue
+				}
+				if !policy.IsForced || management.NormalizeModelPrefix(provider.Prefix) == base {
+					addRoute(ModelSquareRoute{ProviderID: provider.ID, UpstreamModel: route.UpstreamModel, CallPoint: base, NameScope: NameScopeGlobal, Configuration: route.Configuration})
+				}
 			}
 			continue
 		}
@@ -82,12 +135,14 @@ func ProjectModelSquare(snapshot management.ConfiguredModelSnapshot, aliases map
 			} else {
 				targets = append(targets, "")
 			}
+			// OAuth groups several credentials per family and the directory does not show
+			// their prefixes, so whether a name is shared or scoped stays unknown.
 			for _, target := range targets {
-				addRoute(ModelSquareRoute{provider.ID, target, model})
+				addRoute(ModelSquareRoute{ProviderID: provider.ID, UpstreamModel: target, CallPoint: model, NameScope: NameScopeUnknown})
 			}
 		}
 	}
-	sort.Slice(directory.Routes, func(left, right int) bool {
+	sort.SliceStable(directory.Routes, func(left, right int) bool {
 		first, second := directory.Routes[left], directory.Routes[right]
 		if first.CallPoint != second.CallPoint {
 			return first.CallPoint < second.CallPoint
@@ -97,7 +152,41 @@ func ProjectModelSquare(snapshot management.ConfiguredModelSnapshot, aliases map
 		}
 		return first.ProviderID < second.ProviderID
 	})
+	catalogProviders := map[string]string{}
+	for _, provider := range snapshot.Providers {
+		catalogProviders[provider.ID] = provider.CatalogProvider
+	}
+	for index := range directory.Routes {
+		route := &directory.Routes[index]
+		if route.UpstreamModel == "" {
+			continue
+		}
+		if model, exists := modelcatalog.DEFAULT_CATALOG.MatchFrom(catalogProviders[route.ProviderID], route.UpstreamModel); exists {
+			route.ReferenceID = model.ID
+		}
+	}
 	return directory
+}
+
+// modelSquareReferences keys each route's resolved record by its canonical ID, and
+// keeps the earlier generic per-identity entries for existing readers. A record found
+// through a provider's qualified alias is only ever stored under its canonical key.
+func modelSquareReferences(routes []ModelSquareRoute) map[string]modelcatalog.Model {
+	identities := []string{}
+	for _, route := range routes {
+		identity := route.UpstreamModel
+		if identity == "" {
+			identity = route.CallPoint
+		}
+		identities = append(identities, identity)
+	}
+	references := modelcatalog.DEFAULT_CATALOG.Select(identities)
+	for _, route := range routes {
+		if model, exists := modelcatalog.DEFAULT_CATALOG.Models[route.ReferenceID]; exists {
+			references[route.ReferenceID] = model
+		}
+	}
+	return references
 }
 
 func (s *Service) ListModelSquare(ctx context.Context, input ModelSquareQuery) (ModelSquareDirectory, error) {
@@ -105,12 +194,14 @@ func (s *Service) ListModelSquare(ctx context.Context, input ModelSquareQuery) (
 	if err != nil {
 		return ModelSquareDirectory{}, err
 	}
-	keys, err := client.ClientAPIKeys(ctx)
+	view, _, err := client.ConfigView(ctx)
 	if err != nil {
 		return ModelSquareDirectory{}, err
 	}
+	var policy ModelPrefixPolicy
+	policy.IsForced, policy.IsKnown = management.ForceModelPrefixIn(view)
 	selectedKey := ""
-	for _, key := range keys {
+	for _, key := range management.ClientAPIKeysIn(view) {
 		if key = strings.TrimSpace(key); key != "" {
 			selectedKey = key
 			break
@@ -165,28 +256,17 @@ func (s *Service) ListModelSquare(ctx context.Context, input ModelSquareQuery) (
 			if isModelExcluded(model.ID, provider.ExcludedModels) {
 				continue
 			}
-			callPoint := model.ID
-			if provider.Prefix != "" {
-				callPoint = strings.TrimSuffix(provider.Prefix, "/") + "/" + callPoint
-			}
-			provider.Routes = append(provider.Routes, management.ConfiguredModelRoute{UpstreamModel: model.ID, CallPoint: callPoint})
+			// Built-in definitions have no configured row, so no configuration either.
+			provider.Routes = append(provider.Routes, management.ConfiguredModelRoute{UpstreamModel: model.ID, CallPoint: management.PrefixModelID(provider.Prefix, model.ID), BaseCallPoint: model.ID})
 		}
 	}
 	aliases, aliasErr := client.OAuthModelAliases(ctx)
-	directory := ProjectModelSquare(snapshot, aliases, aliasErr == nil)
+	directory := ProjectModelSquare(snapshot, aliases, aliasErr == nil, policy)
 	if snapshotErr != nil {
 		directory.Partial = append(directory.Partial, "routes")
 	}
 	directory = RetainAdvertisedModels(directory, advertised)
-	identities := []string{}
-	for _, route := range directory.Routes {
-		identity := route.UpstreamModel
-		if identity == "" {
-			identity = route.CallPoint
-		}
-		identities = append(identities, identity)
-	}
-	directory.ModelInfo = modelcatalog.DEFAULT_CATALOG.Select(identities)
+	directory.ModelInfo = modelSquareReferences(directory.Routes)
 	directory.MetadataUpdatedAt = modelcatalog.DEFAULT_CATALOG.UpdatedAt
 	if hasMissingModels {
 		directory.Partial = append(directory.Partial, "provider_models")
@@ -233,7 +313,13 @@ func RetainAdvertisedModels(directory ModelSquareDirectory, advertised []gateway
 	}
 	for _, model := range advertised {
 		if !represented[model.ID] {
-			filtered = append(filtered, ModelSquareRoute{CallPoint: model.ID})
+			// The literal name may still match a reference; that describes the
+			// name only and gives the route no provider or scope.
+			route := ModelSquareRoute{CallPoint: model.ID, NameScope: NameScopeUnknown}
+			if reference, exists := modelcatalog.DEFAULT_CATALOG.Match(model.ID); exists {
+				route.ReferenceID = reference.ID
+			}
+			filtered = append(filtered, route)
 		}
 	}
 	directory.Routes = filtered
@@ -262,7 +348,7 @@ func isModelExcluded(model string, patterns []string) bool {
 }
 
 func (s *Service) registerModelSquare(registry *capability.Registry) error {
-	return read(registry, "models_list", "List models advertised by CPA /v1/models for an existing client key, with configured route provenance when known. Defaults to the first configured client key. Empty upstream_model or provider_id means unresolved provenance. Includes bundled models.dev reference metadata; it never establishes availability. No inference or credential disclosure.", func(ctx context.Context, input ModelSquareQuery) (ModelSquareDirectory, error) {
+	return read(registry, "models_list", "List models advertised by CPA /v1/models for an existing client key, with configured route provenance when known. Defaults to the first configured client key. Empty upstream_model or provider_id means unresolved provenance. reference_id keys model_info for that route, empty when unresolved. name_scope is global, provider (configured prefix) or unknown. configuration is the route's configured model-row settings or null; configured values do not verify provider support. Includes bundled models.dev reference metadata; it never establishes availability. No inference or credential disclosure.", func(ctx context.Context, input ModelSquareQuery) (ModelSquareDirectory, error) {
 		directory, err := s.ListModelSquare(ctx, input)
 		if len(directory.Routes) > 2000 {
 			return ModelSquareDirectory{}, errors.New("tool_result_too_large")

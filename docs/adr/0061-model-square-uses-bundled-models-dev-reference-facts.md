@@ -31,12 +31,18 @@ by opening a management page.
    router tag, without one enumerated request-variant suffix, without leading routing
    namespaces - each of which must match exactly, the literal name first. Ambiguous or
    absent matches remain unknown; version/family similarity never fills specifications.
-   A shared call point can expose several independently identified profiles.
+   A shared call point can expose several independently identified profiles. The server
+   resolves each route's upstream once: exact canonical identity first, then, only for a
+   verified source host, that source's provider-qualified alias, then the generic rules.
+   A connection's name or prefix is never lookup evidence, and a provider-specific match
+   is stored under its canonical key, never under a shared bare name.
 4. Open-weight status, license and weight links are separate facts. A model is called
    open-source only when published weights carry a recognised open-source license; an
    open weight flag or a download link alone does not establish one. Reference token
    limits do not guarantee the limits a particular connection enforces.
-5. The default page groups client model names vertically by maker and offers search.
+5. The default page groups models vertically by maker and offers search. One card
+   describes one resolved model; client names join it only through an equal known
+   reference, and unresolved or mixed names keep their own card.
    A Back-aware Drawer shows facts and explicit models.dev, OpenRouter and pi.dev
    navigation. External references open only on user action with opener/referrer
    protection; all icon artwork is local.

@@ -15,6 +15,33 @@ func TestCatalogMatchesOnlyExactUnambiguousIdentities(t *testing.T) {
 		}
 	}
 }
+func TestCatalogMatchFromPrefersCanonicalThenProviderQualifiedAlias(t *testing.T) {
+	catalog := Catalog{
+		Models:  map[string]Model{"maker/model-v2": {ID: "maker/model-v2"}, "model": {ID: "model"}, "maker/generic": {ID: "maker/generic"}},
+		Aliases: map[string]string{"nan/model-flash": "maker/model-v2", "nan/model": "maker/model-v2", "generic": "maker/generic"},
+	}
+	for _, input := range [][3]string{
+		{"nan", "model-flash", "maker/model-v2"}, // qualified alias
+		{"nan", "model", "model"},                // exact canonical wins over the qualified alias
+		{"nan", "generic", "maker/generic"},      // generic matcher still applies
+		{"", "generic", "maker/generic"},
+	} {
+		if model, exists := catalog.MatchFrom(input[0], input[1]); !exists || model.ID != input[2] {
+			t.Fatalf("MatchFrom(%q, %q) = %#v %v", input[0], input[1], model, exists)
+		}
+	}
+	if _, exists := catalog.MatchFrom("", "model-flash"); exists {
+		t.Fatal("unverified source borrowed a provider-qualified alias")
+	}
+	// The shipped snapshot resolves NaN's DeepSeek name only through its source context.
+	if model, exists := DEFAULT_CATALOG.MatchFrom("nan", "deepseek-v4-flash"); !exists || model.ID != "deepseek/deepseek-v4.1-flash" {
+		t.Fatalf("snapshot qualified match = %#v %v", model, exists)
+	}
+	if _, exists := DEFAULT_CATALOG.MatchFrom("", "deepseek-v4-flash"); exists {
+		t.Fatal("bare DeepSeek name resolved without source context")
+	}
+}
+
 func TestCatalogResolvesRequestVariantsToTheirBaseModel(t *testing.T) {
 	catalog := Catalog{
 		Models:  map[string]Model{"maker/model": {ID: "maker/model"}, "maker/model-high": {ID: "maker/model-high"}},

@@ -1,17 +1,15 @@
 import React from 'react';
 import clsx from 'clsx';
-import { Button } from 'antd';
+import { Button, Select } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api, ApiError } from '../api/client';
 import { useT } from '../i18n';
 import { LobeIcon, ProviderBrandIcon } from '../components/LobeIcon';
-import { BoxOutlined, CheckOutlined, CloseOutlined, CopyOutlined, DownOutlined, ExternalLinkOutlined, LayersOutlined, RightOutlined, UpOutlined } from '../components/icons';
+import { ArrowLeftOutlined, BoxOutlined, CheckOutlined, CloseOutlined, CopyOutlined, DownOutlined, ExternalLinkOutlined, LayersOutlined, RightOutlined, UpOutlined } from '../components/icons';
 import { PageHeader } from '../components/common/PageHeader';
 import { PageLoading } from '../components/common/PageLoading';
 import { RefreshButton } from '../components/common/RefreshButton';
-import { CopyButton } from '../components/common/CopyButton';
-import { StatusLabel } from '../components/common/StatusLabel';
 import { credentialProviderIconId, getCredentialProviderMetadata } from '../components/common/providerMetadata';
 import { LoadFailure, Notice, useToast } from '../components/feedback';
 import { useOpenPriceEditor } from '../components/pricing/PricingEditorContext';
@@ -20,20 +18,24 @@ import { useOverlayHistory } from '../hooks/useOverlayHistory';
 import { copyText } from '../utils/clipboard';
 import { formatRatePer1M } from '../types/pricingDisplay';
 import { isUsageFacetsResponse } from '../types/usageEvents';
-import { MODEL_REQUEST_FACET_QUERY, buildModelLedger, modelRequestsLink, type ModelLedgerEntry } from '../types/modelSquareLedger';
+import { MODEL_REQUEST_FACET_QUERY, buildModelLedger, modelRequestsLink, type ModelLedger } from '../types/modelSquareLedger';
 import {
+  UNRESOLVED_CONNECTION,
   buildModelReferenceLinks,
-  buildModelSquareEntries,
+  buildModelSquareCards,
   classifyModelOpenness,
   countModelManufacturers,
-  filterModelSquareEntries,
+  filterModelSquareCards,
   isSafeReferenceURL,
-  resolveEntryReference,
   resolveModelManufacturer,
+  summarizeModelCards,
+  type ModelCard,
+  type ModelCardView,
+  type ModelConnection,
   type ModelManufacturer,
   type ModelReference,
   type ModelReferenceLink,
-  type ModelSquareEntry,
+  type ModelRouteConfiguration,
   type ModelSquareProvider,
 } from '../types/modelSquare';
 import styles from './ModelSquarePage.module.css';
@@ -46,11 +48,12 @@ import { Pager } from '../components/common/Pager';
 import { Count } from '../components/common/Count';
 
 const PAGE_SIZE = 120;
-/** How long the check mark stands in for the copy glyph, matching `CopyButton`. */
-const COPIED_MS = 1500;
+/** A card previews this many connections; its header opens the rest. */
+const PREVIEW_CONNECTIONS = 3;
 const KNOWN_MODALITIES = ['text', 'image', 'audio', 'video', 'pdf'];
 
 type Translate = ReturnType<typeof useT>;
+type OpenPriceEditor = (model: string) => void;
 
 function manufacturerLabel(manufacturer: ModelManufacturer, t: Translate): string {
   return manufacturer.name || t(manufacturer.id === 'multiple' ? 'models.multiple_makers' : 'models.unknown_maker');
@@ -78,9 +81,6 @@ const ManufacturerMark: React.FC<{ manufacturer: ModelManufacturer; size: number
 
 // A connection named after its own adapter ("codex") carries no name of its own, so the adapter's
 // display label stands in for it.
-/** Marks drawn for a model served by several connections; the count beside them states the rest. */
-const MAX_SOURCE_MARKS = 3;
-
 function describeProvider(provider: ModelSquareProvider): { name: string; iconId: string } {
   const hasOwnName = provider.name !== '' && provider.name.toLowerCase() !== provider.family.toLowerCase();
   return {
@@ -89,91 +89,203 @@ function describeProvider(provider: ModelSquareProvider): { name: string; iconId
   };
 }
 
-function entryProviders(entry: ModelSquareEntry, providers: ReadonlyMap<string, ModelSquareProvider>): ModelSquareProvider[] {
-  const ids = [...new Set(entry.routes.map(route => route.provider_id))];
-  return ids.flatMap(id => providers.get(id) ?? []);
+/** Where a name's requests go: the gateway, not this view, picks among its connections. */
+type AliasScopeLabel = { kind: 'global' | 'shared' | 'unknown' } | { kind: 'provider'; connection: string };
+
+function aliasScopeLabel(card: ModelCard, alias: string): AliasScopeLabel {
+  const owner = card.connections.find(connection => connection.scopedAliases.includes(alias));
+  if (owner) return { kind: 'provider', connection: owner.name };
+  if (!card.globalAliases.includes(alias)) return { kind: 'unknown' };
+  const targets = card.connections.filter(connection => connection.routes.some(route => route.call_point === alias));
+  return { kind: targets.length > 1 ? 'shared' : 'global' };
 }
 
 /**
- * The call name as the row's copy control.
+ * An exact client name's copy control, shown on hover or focus of its group.
  *
- * The directory exists so an operator can take a name to a client, so the name itself is the
- * target rather than a small glyph beside it. What is copied is the advertised call name, never
- * the reference's display name or the upstream identity a connection maps it to.
+ * The check mark stays until the pointer or focus enters the group again, rather than on a timer:
+ * an operator looking back at the row still sees which name went to the clipboard. A copy that
+ * finishes after the group was re-entered or the name changed does not mark the new state.
  */
-const CopyModelName: React.FC<{ identity: string }> = ({ identity }) => {
+export const NameGroup: React.FC<{ alias?: string; isQuick?: boolean; className?: string; children: React.ReactNode }> = ({ alias, isQuick, className, children }) => {
   const t = useT();
   const toast = useToast();
-  const [hasCopied, setHasCopied] = React.useState(false);
-  const timerRef = React.useRef<ReturnType<typeof setTimeout>>();
-  React.useEffect(() => () => clearTimeout(timerRef.current), []);
+  const [copied, setCopied] = React.useState<string>();
+  const attempt = React.useRef(0);
+  // The selection fallback (no or refused `navigator.clipboard`, e.g. plain HTTP) moves focus to a
+  // scratch field outside the group, removes it and focuses the button again; that round trip is
+  // the copy itself, not a re-entry. Only a return from a now-detached element during a copy is
+  // that round trip: leaving to anything still on the page is a genuine leave and resets.
+  const isCopying = React.useRef(false);
+  const leftTo = React.useRef<Element | null>(null);
+  const reset = () => { attempt.current += 1; setCopied(undefined); };
+  // A different name, or none, makes any pending copy result stale.
+  React.useEffect(() => () => { attempt.current += 1; setCopied(undefined); }, [alias]);
   const copy = async () => {
-    if (!(await copyText(identity))) {
+    if (!alias) return;
+    const current = ++attempt.current;
+    isCopying.current = true;
+    const isCopied = await copyText(alias).finally(() => { isCopying.current = false; });
+    if (current !== attempt.current) return;
+    if (!isCopied) {
       toast.error(t('common.copy_failed'));
       return;
     }
-    setHasCopied(true);
-    clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(() => setHasCopied(false), COPIED_MS);
+    setCopied(alias);
   };
-  return <button type="button" className={styles['copy-name']} data-copy-model={identity} data-copied={hasCopied || undefined} onClick={() => void copy()} aria-label={hasCopied ? t('common.copied') : t('models.copy_named', { model: identity })}>
-    <span className={styles['model-identity']}>{identity}</span>
-    {hasCopied ? <CheckOutlined /> : <CopyOutlined />}
-  </button>;
+  const hasCopied = alias !== undefined && copied === alias;
+  return <span
+    className={clsx(styles['name-group'], className)}
+    onPointerEnter={reset}
+    onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) leftTo.current = event.relatedTarget instanceof Element ? event.relatedTarget : null; }}
+    onFocus={event => {
+      const isFallbackReturn = isCopying.current && leftTo.current !== null && !leftTo.current.isConnected;
+      leftTo.current = null;
+      if (!isFallbackReturn && !event.currentTarget.contains(event.relatedTarget)) reset();
+    }}
+  >
+    {children}
+    {alias && <button
+      type="button"
+      className={clsx(styles['copy-button'], isQuick && styles['quick-copy'])}
+      data-copy-model={alias}
+      data-copied={hasCopied || undefined}
+      onClick={() => void copy()}
+      aria-label={t(hasCopied ? 'models.copied_named' : 'models.copy_named', { model: alias })}
+      title={t(hasCopied ? 'models.copied_named' : 'models.copy_named', { model: alias })}
+    >
+      {hasCopied ? <CheckOutlined /> : <CopyOutlined />}
+    </button>}
+    <span className="sr-only" aria-live="polite">{hasCopied ? t('models.copied_named', { model: alias }) : ''}</span>
+  </span>;
 };
 
-interface ModelRowProps {
-  entry: ModelSquareEntry;
-  ledger: ModelLedgerEntry;
-  providers: ReadonlyMap<string, ModelSquareProvider>;
-  onOpen: (identity: string) => void;
-  onSetPrice?: (identity: string) => void;
+interface PriceControlProps {
+  names: readonly string[];
+  scope: 'global' | 'provider';
+  ledger: ModelLedger;
+  onSetPrice?: OpenPriceEditor;
+  onOpenNames: () => void;
 }
 
-const ModelRow: React.FC<ModelRowProps> = React.memo(({ entry, ledger, providers, onOpen, onSetPrice }) => {
+/**
+ * The price-book rate for a scope's one exact name, or why there is no single rate to show.
+ *
+ * Several names never share a rate here: each has its own price row, so the control opens them.
+ */
+const PriceControl: React.FC<PriceControlProps> = ({ names, scope, ledger, onSetPrice, onOpenNames }) => {
   const t = useT();
-  const reference = resolveEntryReference(entry);
-  const connections = entryProviders(entry, providers).map(describeProvider);
-  const upstream = entry.profiles[0].identity;
-  let caption = '';
-  // Several routes to one model repeat its name; the caption names each distinct model once.
-  if (entry.profiles.length > 1) caption = [...new Set(entry.profiles.map(profile => profile.metadata?.name || profile.identity))].join(' · ');
-  else if (reference) caption = reference.name;
-  else if (upstream !== entry.identity) caption = upstream;
-  const { price } = ledger;
+  if (names.length === 0) return <span className={styles['price-state']}>{t(scope === 'global' ? 'models.no_global_name' : 'models.no_scoped_name')}</span>;
+  if (names.length > 1) return <button type="button" className={styles['price-button']} onClick={onOpenNames}>{t('models.per_name_prices')}</button>;
+  const [name] = names;
+  const { price } = ledger.entryFor(name);
+  if (price.status === 'unknown') return <span className={styles['price-state']}>{t('models.price_unavailable')}</span>;
+  const label = price.status === 'priced' ? `${formatRatePer1M(price.price.prompt_price_per_1m)} / ${formatRatePer1M(price.price.completion_price_per_1m)}` : t('pricing.set_price');
+  if (!onSetPrice) return <span className={styles['price-state']}>{price.status === 'priced' ? label : t('models.unpriced')}</span>;
+  return <button
+    type="button"
+    className={clsx(styles['price-button'], price.status === 'unpriced' && styles['set-price'])}
+    data-price-model={name}
+    onClick={() => onSetPrice(name)}
+    aria-label={t(price.status === 'unpriced' ? 'models.set_price_for' : 'models.edit_price_for', { model: name })}
+    title={t('models.rate_legend')}
+  >{label}</button>;
+};
 
-  return <li className={styles['model-row']}>
-    <span className={styles['model-name']}>
-      <CopyModelName identity={entry.identity} />
-      {caption && <span className={styles['model-caption']}>{caption}</span>}
-    </span>
-    <span className={styles['model-meta']}>
-      <span className={styles['model-price']} title={t('models.price_head')}>
-        {price.status === 'priced' && <>{formatRatePer1M(price.price.prompt_price_per_1m)} / {formatRatePer1M(price.price.completion_price_per_1m)}</>}
-        {price.status === 'unpriced' && (onSetPrice
-          ? <button type="button" className={styles['set-price']} onClick={() => onSetPrice(entry.identity)}><StatusLabel tone="warn">{t('pricing.set_price')}</StatusLabel></button>
-          : <StatusLabel tone="warn">{t('models.unpriced')}</StatusLabel>)}
-      </span>
-      <span className={styles['model-sources']}>
-        {/* One connection is named. Several would wrap the card to a height its neighbours do not share,
-            so they collapse to their marks and a count; the details list every one of them. */}
-        {connections.length === 1
-          ? <span className={styles['model-source']}><ProviderBrandIcon iconId={connections[0].iconId} size={14} />{connections[0].name}</span>
-          : connections.length > 1 && <span className={styles['model-source']} title={connections.map(connection => connection.name).join(' · ')}>
-            <span className={styles['source-marks']}>
-              {connections.slice(0, MAX_SOURCE_MARKS).map(connection => <ProviderBrandIcon key={connection.name} iconId={connection.iconId} size={14} />)}
-            </span>
-            {t('models.source_count', { count: connections.length })}
-          </span>}
-      </span>
-    </span>
-    {/* Last in the card and stretched over it: everything that is not its own control opens the details. */}
-    <button type="button" className={styles['model-details']} data-model-identity={entry.identity} onClick={() => onOpen(entry.identity)} aria-label={t('models.details_for', { model: entry.identity })}>
-      <RightOutlined />
+function connectionLabel(connection: ModelConnection, t: Translate): string {
+  return connection.name || t('models.unresolved_connection');
+}
+
+/**
+ * Same-named connections in one list need their host or upstream model to tell them apart; when
+ * those match too, the connection's own ID does.
+ */
+function connectionHint(connection: ModelConnection, siblings: readonly ModelConnection[], providers: ReadonlyMap<string, ModelSquareProvider>): string {
+  if (!connection.providerId) return '';
+  const describe = (item: ModelConnection) => {
+    const provider = providers.get(item.providerId);
+    return [provider && !provider.is_oauth ? provider.endpoint_host : '', item.upstreamModel].filter(Boolean).join(' · ');
+  };
+  const namesakes = siblings.filter(sibling => sibling.name === connection.name);
+  if (namesakes.length < 2) return '';
+  const hint = describe(connection);
+  return namesakes.some(sibling => sibling !== connection && describe(sibling) === hint) ? [hint, connection.providerId].filter(Boolean).join(' · ') : hint;
+}
+
+interface ConnectionRowProps {
+  card: ModelCard;
+  connection: ModelConnection;
+  siblings: readonly ModelConnection[];
+  providers: ReadonlyMap<string, ModelSquareProvider>;
+  ledger: ModelLedger;
+  onOpenConnection: (connectionKey: string) => void;
+  onSetPrice?: OpenPriceEditor;
+}
+
+const ConnectionRow: React.FC<ConnectionRowProps> = ({ card, connection, siblings, providers, ledger, onOpenConnection, onSetPrice }) => {
+  const t = useT();
+  const provider = providers.get(connection.providerId);
+  const label = connectionLabel(connection, t);
+  const hint = connectionHint(connection, siblings, providers);
+  return <li className={styles['connection-row']} data-connection={connection.providerId || UNRESOLVED_CONNECTION}>
+    <NameGroup alias={connection.scopedAliases.length === 1 ? connection.scopedAliases[0] : undefined} isQuick className={styles['connection-group']}>
+      <button type="button" className={styles['connection-name']} onClick={() => onOpenConnection(connection.key)} aria-label={t('models.through_named', { model: card.title, connection: label })}>
+        {provider ? <ProviderBrandIcon iconId={describeProvider(provider).iconId} size={16} /> : <BoxOutlined />}
+        <span className={styles['connection-label']}>{label}{hint && <span className={styles['connection-hint']}> · {hint}</span>}</span>
+      </button>
+    </NameGroup>
+    <PriceControl names={connection.scopedAliases} scope="provider" ledger={ledger} onSetPrice={onSetPrice} onOpenNames={() => onOpenConnection(connection.key)} />
+  </li>;
+};
+
+function connectionCountLabel(shown: number, total: number, t: Translate): string {
+  if (shown < total) return t('models.connection_count_filtered', { shown, total });
+  return t(total === 1 ? 'models.connection_count_one' : 'models.connection_count', { count: total });
+}
+
+function inputBadges(card: ModelCard, t: Translate): string[] {
+  if (card.isMixed) return [t('models.mixed_models')];
+  const inputs = card.reference?.modalities.input;
+  if (!inputs?.length) return [t('models.reference_unknown')];
+  return inputs.map(value => (KNOWN_MODALITIES.includes(value) ? t(`models.input_badge.${value}`) : value));
+}
+
+interface ModelCardItemProps {
+  view: ModelCardView;
+  providers: ReadonlyMap<string, ModelSquareProvider>;
+  ledger: ModelLedger;
+  onOpen: (cardKey: string, view: PanelView, connectionKey?: string) => void;
+  onSetPrice?: OpenPriceEditor;
+}
+
+const ModelCardItem: React.FC<ModelCardItemProps> = React.memo(({ view: { card, connections }, providers, ledger, onOpen, onSetPrice }) => {
+  const t = useT();
+  return <li className={styles['card']} data-model-card={card.key}>
+    <div className={styles['card-main']}>
+      <span className={styles['eyebrow']}>{manufacturerLabel(card.manufacturer, t)}</span>
+      <NameGroup alias={card.globalAliases.length === 1 ? card.globalAliases[0] : undefined} isQuick className={styles['title-group']}>
+        <button type="button" className={styles['card-title']} data-model-identity={card.identity} onClick={() => onOpen(card.key, 'global')} aria-label={t('models.details_for', { model: card.title })}>
+          <ManufacturerMark manufacturer={card.isMixed ? { id: 'multiple', name: '' } : card.manufacturer} size={28} />
+          <h3>{card.title}</h3>
+        </button>
+      </NameGroup>
+      <div className={styles['global-price']}>
+        <PriceControl names={card.globalAliases} scope="global" ledger={ledger} onSetPrice={onSetPrice} onOpenNames={() => onOpen(card.key, 'global')} />
+      </div>
+      <ul className={styles['badges']} aria-label={t('models.reference_inputs')}>
+        {inputBadges(card, t).map(badge => <li key={badge} className={styles['badge']}>{badge}</li>)}
+      </ul>
+    </div>
+    <button type="button" className={styles['served-head']} onClick={() => onOpen(card.key, 'list')}>
+      <span>{t(card.isMixed ? 'models.possible_targets' : 'models.served_by')}</span>
+      <span>{connectionCountLabel(connections.length, card.connections.length, t)}<RightOutlined /></span>
     </button>
+    <ul className={styles['connection-preview']}>
+      {connections.slice(0, PREVIEW_CONNECTIONS).map(connection => <ConnectionRow key={connection.key} card={card} connection={connection} siblings={card.connections} providers={providers} ledger={ledger} onOpenConnection={key => onOpen(card.key, 'provider', key)} onSetPrice={onSetPrice} />)}
+    </ul>
   </li>;
 });
-ModelRow.displayName = 'ModelRow';
+ModelCardItem.displayName = 'ModelCardItem';
 
 const ReferenceLinks: React.FC<{ links: readonly Pick<ModelReferenceLink, 'label' | 'url'>[] }> = ({ links }) => <>
   {links.filter(link => isSafeReferenceURL(link.url)).map(link => <a key={link.url} className={styles['reference-link']} href={link.url} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer">
@@ -244,59 +356,108 @@ const ModelProfile: React.FC<{ identity: string; metadata?: ModelReference }> = 
   </section>;
 };
 
-interface ModelCostProps {
-  identity: string;
-  ledger: ModelLedgerEntry;
-  onSetPrice?: (identity: string) => void;
+interface ClientNamesProps {
+  card: ModelCard;
+  title: string;
+  names: readonly string[];
+  empty: string;
+  ledger: ModelLedger;
+  onSetPrice?: OpenPriceEditor;
 }
 
-/**
- * What calling this model costs and how much it has been called, with the two places to act.
- *
- * The figures are the price book's and the request records' own; this section only shows them
- * and hands off - to the shared price editor, and to the request list on the same window.
- */
-const ModelCost: React.FC<ModelCostProps> = ({ identity, ledger, onSetPrice }) => {
+/** Each exact name with its own copy, price and request-history actions; never a sibling's. */
+const ClientNames: React.FC<ClientNamesProps> = ({ card, title, names, empty, ledger, onSetPrice }) => {
   const t = useT();
-  const { price, recentRequests } = ledger;
-  const unknown = <span className={styles['is-absent']}>{t('models.unknown')}</span>;
-  const noPrice = price.status === 'unpriced' ? <span className={styles['is-absent']}>{t('models.unpriced')}</span> : unknown;
-  return <section className={styles['cost-section']} data-testid="model-cost">
-    <h3>{t('nav.pricing')}</h3>
-    {price.status === 'unpriced' && <Notice tone="warning" title={t('pricing.unpriced_note')} />}
-    <dl className={clsx(styles['stat-tiles'], styles['cost-tiles'])}>
-      <div><dt>{t('models.input_price')}</dt><dd>{price.status === 'priced' ? formatRatePer1M(price.price.prompt_price_per_1m) : noPrice}</dd></div>
-      <div><dt>{t('models.output_price')}</dt><dd>{price.status === 'priced' ? formatRatePer1M(price.price.completion_price_per_1m) : noPrice}</dd></div>
-      <div><dt>{t('models.requests_24h')}</dt><dd>{recentRequests === undefined ? unknown : recentRequests.toLocaleString()}</dd></div>
-    </dl>
-    <div className={styles['cost-actions']}>
-      {onSetPrice && price.status !== 'unknown' && <Button type={price.status === 'unpriced' ? 'primary' : 'default'} onClick={() => onSetPrice(identity)}>
-        {t(price.status === 'unpriced' ? 'pricing.set_price' : 'pricing.edit')}
-      </Button>}
-      <Link className={styles['reference-link']} to={modelRequestsLink(identity)}>{t('models.view_requests')}<RightOutlined /></Link>
-    </div>
+  const scopeText = (alias: string) => {
+    const scope = aliasScopeLabel(card, alias);
+    return scope.kind === 'provider' ? t('models.scope.provider', { connection: scope.connection }) : t(`models.scope.${scope.kind}`);
+  };
+  return <section className={styles['client-names']}>
+    <h3>{title}</h3>
+    {names.length === 0 ? <p className={styles['is-absent']}>{empty}</p> : <ul>
+      {names.map(alias => {
+        const { recentRequests } = ledger.entryFor(alias);
+        return <li key={alias} data-client-name={alias}>
+          <NameGroup alias={alias} className={styles['client-name']}><code>{alias}</code></NameGroup>
+          <span className={styles['client-scope']}>{scopeText(alias)}</span>
+          <span className={styles['client-actions']}>
+            <PriceControl names={[alias]} scope="global" ledger={ledger} onSetPrice={onSetPrice} onOpenNames={() => undefined} />
+            <span className={styles['client-requests']}>{t('models.requests_24h')}: {recentRequests === undefined ? <span className={styles['is-absent']}>{t('models.unknown')}</span> : recentRequests.toLocaleString()}</span>
+            <Link className={styles['requests-link']} to={modelRequestsLink(alias)}>{t('models.view_requests')}<RightOutlined /></Link>
+          </span>
+        </li>;
+      })}
+    </ul>}
   </section>;
 };
+
+function listText(values: string[] | null, absent: string, empty: string): string {
+  if (values === null) return absent;
+  return values.length === 0 ? empty : values.join(' · ');
+}
+
+const ConfigurationFacts: React.FC<{ configuration: ModelRouteConfiguration | null }> = ({ configuration }) => {
+  const t = useT();
+  if (!configuration) return <p className={styles['is-absent']}>{t('models.config_unavailable')}</p>;
+  const notConfigured = t('models.config_not_configured');
+  const none = t('models.config_none');
+  const limit = (value: number | null) => value === null ? notConfigured : value.toLocaleString();
+  return <dl className={styles['model-facts']}>
+    <div><dt>{t('models.config_operations')}</dt><dd>{listText(configuration.operations, t('models.config_inherited'), none)}</dd></div>
+    <div><dt>{t('models.config_native')}</dt><dd>{listText(configuration.native, t('models.config_no_native'), none)}</dd></div>
+    <div><dt>{t('models.config_input')}</dt><dd>{listText(configuration.input_modalities, notConfigured, none)}</dd></div>
+    <div><dt>{t('models.config_output')}</dt><dd>{listText(configuration.output_modalities, notConfigured, none)}</dd></div>
+    <div><dt>{t('models.config_context')}</dt><dd>{limit(configuration.max_context_length)}</dd></div>
+    <div><dt>{t('models.config_output_limit')}</dt><dd>{limit(configuration.max_output_tokens)}</dd></div>
+  </dl>;
+};
+
+/**
+ * Settings shared by every row on a connection are shown once; otherwise each exact name lists
+ * every distinct setting it carries, since one name can keep several configured rows.
+ */
+export const ConnectionConfiguration: React.FC<{ connection: ModelConnection }> = ({ connection }) => {
+  const t = useT();
+  const variants = new Map<string, { alias: string; configuration: ModelRouteConfiguration | null }>();
+  for (const route of connection.routes) variants.set(JSON.stringify([route.call_point, route.configuration]), { alias: route.call_point, configuration: route.configuration });
+  const distinct = new Set([...variants.values()].map(variant => JSON.stringify(variant.configuration)));
+  return <section className={styles['configuration']}>
+    <h3>{t('models.configuration')}</h3>
+    {distinct.size <= 1
+      ? <ConfigurationFacts configuration={connection.routes[0]?.configuration ?? null} />
+      : [...variants.entries()].sort(([leftKey, left], [rightKey, right]) => left.alias.localeCompare(right.alias) || leftKey.localeCompare(rightKey)).map(([key, variant]) => <div key={key} className={styles['configuration-alias']} data-configuration-alias={variant.alias}>
+        <code>{variant.alias}</code>
+        <ConfigurationFacts configuration={variant.configuration} />
+      </div>)}
+    <p className={styles['scope-note']}>{t('models.config_note')}</p>
+  </section>;
+};
+
+type PanelView = 'global' | 'list' | 'provider';
+interface Panel { cardKey: string; view: PanelView; connectionKey?: string; back?: Panel }
 
 export const ModelSquarePage: React.FC = () => {
   const t = useT();
   const [params, setParams] = useSearchParams();
   const search = params.get('q') ?? '';
   const manufacturerId = params.get('maker') ?? '';
+  const providerId = params.get('provider') ?? '';
   const [page, setPage] = React.useState(1);
-  const [selectedIdentity, setSelectedIdentity] = React.useState<string>();
-  const closeDetails = React.useCallback(() => setSelectedIdentity(undefined), []);
-  useOverlayHistory({ isOpen: selectedIdentity !== undefined, onClose: closeDetails });
+  const [panel, setPanel] = React.useState<Panel>();
+  const closeDetails = React.useCallback(() => setPanel(undefined), []);
   const detailsRef = React.useRef<HTMLDivElement>(null);
 
   const directory = useQuery({ queryKey: ['model-square'], queryFn: () => api.getModelSquare(), staleTime: 30_000 });
-  const allEntries = React.useMemo(() => directory.data ? buildModelSquareEntries(directory.data, '') : [], [directory.data]);
-  const searched = React.useMemo(() => directory.data ? buildModelSquareEntries(directory.data, search) : [], [directory.data, search]);
-  // The maker strip counts what the search leaves, so a count is what selecting that maker will
-  // show; the maker filter itself must not zero its own siblings.
-  const makers = React.useMemo(() => countModelManufacturers(searched), [searched]);
-  const entries = React.useMemo(() => filterModelSquareEntries(searched, manufacturerId), [searched, manufacturerId]);
   const providers = React.useMemo(() => new Map((directory.data?.providers ?? []).map(provider => [provider.id, provider])), [directory.data]);
+  // Cards, names and scope come from the whole directory; filters below only choose what shows.
+  const cards = React.useMemo(() => directory.data ? buildModelSquareCards(directory.data, id => {
+    const provider = providers.get(id);
+    return provider ? describeProvider(provider).name : id;
+  }) : [], [directory.data, providers]);
+  // The maker strip counts what search and connection leave, so the maker filter never zeroes its siblings.
+  const unmade = React.useMemo(() => filterModelSquareCards(cards, { search, providerId }), [cards, search, providerId]);
+  const makers = React.useMemo(() => countModelManufacturers(unmade.map(view => view.card)), [unmade]);
+  const views = React.useMemo(() => manufacturerId ? unmade.filter(view => view.card.manufacturer.id === manufacturerId) : unmade, [unmade, manufacturerId]);
 
   // Both neighbours are optional: a price book or request count that cannot be read leaves its
   // cells unstated and the directory itself untouched. The price book shares the pricing page's
@@ -312,46 +473,81 @@ export const ModelSquarePage: React.FC = () => {
     staleTime: 30_000,
     retry: false,
   });
-  const ledger = React.useMemo(() => buildModelLedger(allEntries.map(entry => entry.identity), pricing.data, requests.data), [allEntries, pricing.data, requests.data]);
+  const ledger = React.useMemo(() => buildModelLedger(cards.flatMap(card => card.aliases), pricing.data, requests.data), [cards, pricing.data, requests.data]);
   const openPriceEditor = useOpenPriceEditor() ?? undefined;
   const refresh = () => { void directory.refetch(); void pricing.refetch(); void requests.refetch(); };
 
-  const pageCount = Math.max(1, Math.ceil(entries.length / PAGE_SIZE));
+  const pageCount = Math.max(1, Math.ceil(views.length / PAGE_SIZE));
   const currentPage = Math.min(page, pageCount);
-  const visibleEntries = entries.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
-  const groups = countModelManufacturers(visibleEntries).map(({ manufacturer }) => ({
+  const visibleViews = views.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+  const groups = countModelManufacturers(visibleViews.map(view => view.card)).map(({ manufacturer }) => ({
     manufacturer,
-    entries: visibleEntries.filter(entry => entry.manufacturer.id === manufacturer.id),
-    total: entries.filter(entry => entry.manufacturer.id === manufacturer.id).length,
+    views: visibleViews.filter(view => view.card.manufacturer.id === manufacturer.id),
+    total: views.filter(view => view.card.manufacturer.id === manufacturer.id).length,
   }));
+
+  const connectionOptions = React.useMemo(() => {
+    const options = [...providers.values()].map(provider => ({ value: provider.id, label: describeProvider(provider).name }))
+      .sort((left, right) => left.label.localeCompare(right.label) || left.value.localeCompare(right.value));
+    if (cards.some(card => card.connections.some(connection => connection.providerId === ''))) options.push({ value: UNRESOLVED_CONNECTION, label: t('models.unresolved_connection') });
+    return [{ value: '', label: t('models.all_connections') }, ...options];
+  }, [providers, cards, t]);
 
   const updateParams = (change: (next: URLSearchParams) => void) => {
     setPage(1);
     setParams(current => { const next = new URLSearchParams(current); change(next); return next; }, { replace: true });
   };
   const setParam = (name: string, value: string) => updateParams(next => { if (value) next.set(name, value); else next.delete(name); });
-  const isFiltered = search !== '' || manufacturerId !== '';
-  const clearFilters = () => updateParams(next => { next.delete('q'); next.delete('maker'); });
+  const isFiltered = search !== '' || manufacturerId !== '' || providerId !== '';
+  const clearFilters = () => updateParams(next => { next.delete('q'); next.delete('maker'); next.delete('provider'); });
 
-  const selectedIndex = entries.findIndex(entry => entry.identity === selectedIdentity);
-  const selected = selectedIndex >= 0 ? entries[selectedIndex] : allEntries.find(entry => entry.identity === selectedIdentity);
+  const openPanel = React.useCallback((cardKey: string, view: PanelView, connectionKey?: string) => {
+    setPanel(current => ({ cardKey, view, connectionKey, back: current?.cardKey === cardKey ? current : undefined }));
+  }, []);
+  const selectedIndex = panel ? views.findIndex(view => view.card.key === panel.cardKey) : -1;
+  const selectedCard = panel ? cards.find(card => card.key === panel.cardKey) : undefined;
+  // A refresh can remove the open card. The drawer and its history entry then close together,
+  // so Back is never spent on a hidden overlay, and the card cannot reappear on a later read.
+  const isDetailsOpen = selectedCard !== undefined;
+  useOverlayHistory({ isOpen: isDetailsOpen, onClose: closeDetails });
+  React.useEffect(() => { if (panel && !isDetailsOpen) setPanel(undefined); }, [panel, isDetailsOpen]);
+  // Rows the filters leave; a card the filters no longer show keeps all of its own.
+  const selectedRows = selectedIndex >= 0 ? views[selectedIndex].connections : selectedCard?.connections ?? [];
+  // A refresh can remove the connection a panel was showing; its model details remain.
+  const selectedConnection = panel?.view === 'provider' ? selectedCard?.connections.find(connection => connection.key === panel.connectionKey) : undefined;
   const stepSelection = (offset: number) => {
-    const target = entries[selectedIndex + offset];
+    const target = views[selectedIndex + offset];
     if (!target) return;
-    setSelectedIdentity(target.identity);
+    setPanel({ cardKey: target.card.key, view: 'global' });
     // The neighbour's page must be the visible one, so closing the details lands beside it.
     setPage(Math.floor((selectedIndex + offset) / PAGE_SIZE) + 1);
     detailsRef.current?.closest('.ant-drawer-body')?.scrollTo({ top: 0 });
   };
-  const selectedRoutes = selected?.routes.filter(route => providers.has(route.provider_id)) ?? [];
 
   const errorCode = directory.error instanceof ApiError ? (directory.error.data as { code?: string })?.code : undefined;
   const needsKey = errorCode === 'client_key_required' || errorCode === 'client_key_missing';
+  const summary = summarizeModelCards(cards);
   const subtitle = directory.data && t('models.summary_line', {
-    models: directory.data.models.length,
-    makers: countModelManufacturers(allEntries).length,
+    models: summary.models,
+    others: summary.otherCards,
+    names: summary.names,
+    makers: countModelManufacturers(cards).length,
     date: directory.data.metadata_updated_at,
   });
+
+  const connectionsSection = selectedCard && <section className={styles['served-by']}>
+    <h3>{t(selectedCard.isMixed ? 'models.possible_targets' : 'models.served_by')} · {connectionCountLabel(selectedRows.length, selectedCard.connections.length, t)}</h3>
+    <ul>
+      {selectedRows.map(connection => <ConnectionRow key={connection.key} card={selectedCard} connection={connection} siblings={selectedCard.connections} providers={providers} ledger={ledger} onOpenConnection={key => openPanel(selectedCard.key, 'provider', key)} onSetPrice={openPriceEditor} />)}
+    </ul>
+  </section>;
+  const overview = selectedCard && <>
+    <ClientNames card={selectedCard} title={t('models.use_in_client')} names={selectedCard.globalAliases} empty={t('models.no_global_name')} ledger={ledger} onSetPrice={openPriceEditor} />
+    {selectedCard.otherAliases.length > 0 && <ClientNames card={selectedCard} title={t('models.other_names')} names={selectedCard.otherAliases} empty="" ledger={ledger} onSetPrice={openPriceEditor} />}
+  </>;
+  const profiles = selectedCard?.profiles.map(profile => <ModelProfile key={profile.metadata?.id ?? profile.identity} identity={profile.identity} metadata={profile.metadata} />);
+  const selectedProvider = selectedConnection && providers.get(selectedConnection.providerId);
+  const connectionProfiles = selectedCard && selectedConnection && selectedCard.profiles.filter(profile => selectedConnection.routes.some(route => (route.reference_id ? profile.metadata?.id === route.reference_id : !profile.metadata && profile.identity === (route.upstream_model || route.call_point))));
 
   return <div className={clsx(styles['page'], 'terminal-page', 'model-square-page')}>
     <PageHeader title={t('nav.model_square')} subtitle={subtitle} actions={<RefreshButton isRefreshing={directory.isFetching || pricing.isFetching || requests.isFetching} onRefresh={refresh} />} />
@@ -360,22 +556,24 @@ export const ModelSquarePage: React.FC = () => {
     {directory.isPending ? <PageLoading variant="block" /> : directory.data && <>
       <Toolbar>
         <SearchInput className={styles['search']} label={t('models.search')} value={search} onChange={(text) => setParam('q', text)} />
+        <Select className={styles['connection-filter']} value={providerId} onChange={(value: string) => setParam('provider', value)} aria-label={t('models.filter_connections')} options={connectionOptions} popupMatchSelectWidth={false} />
         <span className={styles['result-count']} role="status">
-          {isFiltered ? t('models.showing', { shown: entries.length, total: allEntries.length }) : ''}
+          {isFiltered ? t('models.showing', { shown: views.length, total: cards.length }) : ''}
         </span>
         {isFiltered && <Button type="link" size="small" className={styles['clear-filters']} onClick={clearFilters}>{t('models.clear_filters')}</Button>}
       </Toolbar>
       <div className={clsx(styles['chip-group'], styles['maker-strip'])} role="group" aria-label={t('models.filter_makers')}>
         <button type="button" className={styles['chip']} aria-pressed={manufacturerId === ''} onClick={() => setParam('maker', '')}>
-          {t('common.all')}<Count size="small">{searched.length}</Count>
+          {t('common.all')}<Count size="small">{unmade.length}</Count>
         </button>
         {makers.map(({ manufacturer, count }) => <button key={manufacturer.id} type="button" className={styles['chip']} data-maker={manufacturer.id} aria-pressed={manufacturerId === manufacturer.id} onClick={() => setParam('maker', manufacturerId === manufacturer.id ? '' : manufacturer.id)}>
           <ManufacturerMark manufacturer={manufacturer} size={14} />
           {manufacturerLabel(manufacturer, t)}<Count size="small">{count}</Count>
         </button>)}
       </div>
+      <p className={styles['rate-legend']}>{t('models.rate_legend')}</p>
       {directory.data.partial.length > 0 && <Notice tone="warning" title={t('models.provenance_partial')} />}
-      {entries.length === 0 ? <EmptyState className={styles['empty']} title={t(directory.data.models.length ? 'models.no_results' : 'models.empty')}>
+      {views.length === 0 ? <EmptyState className={styles['empty']} title={t(directory.data.models.length ? 'models.no_results' : 'models.empty')}>
         {directory.data.models.length ? <Button onClick={clearFilters}>{t('models.clear_filters')}</Button> : <Link to="/ai-providers">{t('models.manage_connections')}</Link>}
       </EmptyState> : <ul className={styles['group-list']}>
         {groups.map(group => <li className={styles['model-group']} key={group.manufacturer.id} data-model-group={group.manufacturer.id}>
@@ -386,44 +584,45 @@ export const ModelSquarePage: React.FC = () => {
               <span>{t('models.group_count', { count: group.total })}</span>
             </div>
           </div>
-          <ul className={styles['model-rows']}>
-            {group.entries.map(entry => <ModelRow key={entry.identity} entry={entry} ledger={ledger.entryFor(entry.identity)} providers={providers} onOpen={setSelectedIdentity} onSetPrice={openPriceEditor} />)}
+          <ul className={styles['cards']}>
+            {group.views.map(view => <ModelCardItem key={view.card.key} view={view} providers={providers} ledger={ledger} onOpen={openPanel} onSetPrice={openPriceEditor} />)}
           </ul>
         </li>)}
       </ul>}
-      <Pager className={styles['pagination']} page={currentPage} pageSize={PAGE_SIZE} total={entries.length} onChange={setPage} />
+      <Pager className={styles['pagination']} page={currentPage} pageSize={PAGE_SIZE} total={views.length} onChange={setPage} />
     </>}
     <AppDrawer
-      title={selected?.identity ?? ''}
-      extra={selected && <CopyButton text={selected.identity} label={t('models.copy_model')} />}
-      open={selected !== undefined}
+      title={selectedCard ? <span className={styles['drawer-title']}>
+        <ManufacturerMark manufacturer={selectedCard.isMixed ? { id: 'multiple', name: '' } : selectedCard.manufacturer} size={24} />
+        <span>{selectedConnection ? `${selectedCard.title} · ${connectionLabel(selectedConnection, t)}` : selectedCard.title}</span>
+      </span> : ''}
+      open={isDetailsOpen}
       onClose={closeDetails}
       className={styles['details-drawer']}
       destroyOnHidden
-      footerStart={selected && selectedIndex >= 0 && entries.length > 1 && <>
+      footerStart={selectedCard && selectedIndex >= 0 && views.length > 1 && <>
         <Button icon={<UpOutlined />} disabled={selectedIndex === 0} onClick={() => stepSelection(-1)}>{t('models.previous')}</Button>
-        <Button icon={<DownOutlined />} disabled={selectedIndex === entries.length - 1} onClick={() => stepSelection(1)}>{t('models.next')}</Button>
+        <Button icon={<DownOutlined />} disabled={selectedIndex === views.length - 1} onClick={() => stepSelection(1)}>{t('models.next')}</Button>
       </>}
-      footer={selected && selectedIndex >= 0 && entries.length > 1 && <span className={styles['details-position']}>{selectedIndex + 1} / {entries.length}</span>}
+      footer={selectedCard && selectedIndex >= 0 && views.length > 1 && <span className={styles['details-position']}>{selectedIndex + 1} / {views.length}</span>}
     >
-      {selected && <div ref={detailsRef}>
-        <ModelCost identity={selected.identity} ledger={ledger.entryFor(selected.identity)} onSetPrice={openPriceEditor} />
-        {selectedRoutes.length > 0 && <div className={styles['served-by']}>
-          <h3>{t('models.served_by')}</h3>
-          <ul>
-            {selectedRoutes.map(route => {
-              const provider = providers.get(route.provider_id)!;
-              const connection = describeProvider(provider);
-              return <li key={`${route.provider_id}\n${route.upstream_model}`}>
-                <ProviderBrandIcon iconId={connection.iconId} size={16} />
-                <span className={styles['served-name']}>{connection.name}</span>
-                <span className={styles['served-kind']}>{provider.is_oauth ? 'OAuth' : provider.endpoint_host}</span>
-                {route.upstream_model && route.upstream_model !== selected.identity && <code>{route.upstream_model}</code>}
-              </li>;
-            })}
-          </ul>
-        </div>}
-        {selected.profiles.map(profile => <ModelProfile key={profile.identity} identity={profile.identity} metadata={profile.metadata} />)}
+      {selectedCard && <div ref={detailsRef} data-panel={selectedConnection ? 'provider' : panel?.view}>
+        {panel?.back && <Button type="link" className={styles['panel-back']} icon={<ArrowLeftOutlined />} onClick={() => setPanel(panel.back)}>{t('models.back')}</Button>}
+        {selectedConnection ? <>
+          <section className={styles['connection-facts']}>
+            <h3>{t('models.through', { connection: connectionLabel(selectedConnection, t) })}</h3>
+            {selectedConnection.providerId ? <dl className={styles['model-facts']}>
+              <div><dt>{t('models.endpoint')}</dt><dd>{selectedProvider?.is_oauth ? 'OAuth' : selectedProvider?.endpoint_host || <span className={styles['is-absent']}>{t('models.unknown')}</span>}</dd></div>
+              <div><dt>{t('models.upstream_model')}</dt><dd><code>{selectedConnection.upstreamModel || t('models.unknown')}</code></dd></div>
+            </dl> : <p className={styles['is-absent']}>{t('models.provenance_unknown')}</p>}
+          </section>
+          <ClientNames card={selectedCard} title={t('models.use_in_client')} names={selectedConnection.scopedAliases} empty={t('models.no_scoped_name')} ledger={ledger} onSetPrice={openPriceEditor} />
+          {selectedConnection.providerId && <ConnectionConfiguration connection={selectedConnection} />}
+          <details className={styles['canonical-reference']}>
+            <summary>{t('models.canonical_reference')}</summary>
+            {connectionProfiles?.map(profile => <ModelProfile key={profile.metadata?.id ?? profile.identity} identity={profile.identity} metadata={profile.metadata} />)}
+          </details>
+        </> : panel?.view === 'list' ? <>{connectionsSection}{overview}{profiles}</> : <>{overview}{connectionsSection}{profiles}</>}
         <p className={styles['scope-note']}>
           {t('models.reference_note')}
           {directory.data?.metadata_updated_at && <> {t('models.snapshot_date', { date: directory.data.metadata_updated_at })}</>}

@@ -477,19 +477,27 @@ check('an approval address is read only for a well-formed operation id', () => {
 });
 
 check('the context readout needs both a reported input and a listed window, and takes the narrowest route', () => {
-  const reference = (context?: number) => ({ id: 'm', name: 'm', limit: { context }, modalities: {} });
+  const reference = (id: string, context?: number) => ({ id, name: id, limit: { context }, modalities: {} });
+  const route = (provider_id: string, upstream_model: string, call_point: string, reference_id: string) => ({ provider_id, upstream_model, call_point, reference_id, name_scope: 'global' as const, configuration: null });
   const directory: ModelSquareDirectory = {
     models: [], providers: [], partial: [], metadata_updated_at: '',
     routes: [
-      { provider_id: 'a', upstream_model: 'wide', call_point: 'alias' },
-      { provider_id: 'b', upstream_model: 'narrow', call_point: 'alias' },
-      { provider_id: 'b', upstream_model: 'unlisted', call_point: 'other' },
+      route('a', 'wide-upstream', 'alias', 'lab/wide'),
+      route('b', 'narrow-upstream', 'alias', 'lab/narrow'),
+      route('b', 'narrow-upstream', 'scoped', 'lab/narrow'),
+      route('a', 'wide-upstream', 'half', 'lab/wide'),
+      route('b', 'unlisted', 'half', ''),
+      route('a', 'blank-upstream', 'blank', 'lab/blank'),
+      // A literal match for a name with no provenance never counts.
+      route('', '', 'literal', 'lab/wide'),
     ],
-    model_info: { wide: reference(400_000), narrow: reference(200_000), direct: reference(128_000), blank: reference() },
+    // Windows are read only by the route's resolved reference, never by the client name.
+    model_info: { 'lab/wide': reference('lab/wide', 400_000), 'lab/narrow': reference('lab/narrow', 200_000), 'lab/blank': reference('lab/blank'), direct: reference('direct', 128_000) },
   };
   assert.equal(referenceContextWindow(directory, 'alias'), 200_000);
-  assert.equal(referenceContextWindow(directory, 'direct'), 128_000);
-  for (const callPoint of ['other', 'blank', 'missing', '']) assert.equal(referenceContextWindow(directory, callPoint), undefined, callPoint);
+  assert.equal(referenceContextWindow(directory, 'scoped'), 200_000);
+  for (const callPoint of ['half', 'blank', 'literal', 'direct', 'missing', '']) assert.equal(referenceContextWindow(directory, callPoint), undefined, callPoint);
+  assert.equal(referenceContextWindow({ ...directory, partial: ['routes'] }, 'alias'), undefined);
   assert.equal(referenceContextWindow(undefined, 'alias'), undefined);
 
   assert.equal(contextShare(50_000, 200_000), 0.25);

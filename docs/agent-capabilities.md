@@ -585,7 +585,11 @@ Without one, the operation returns `client_key_required`.
 
 Exact call points may retain several upstream targets. Empty `upstream_model` or
 `provider_id` denotes unresolved provenance; unreadable enrichment does not suppress
-advertised models. Bundled models.dev facts are matched only by exact canonical identity
+advertised models. Each route adds `reference_id` (canonical `model_info` key, empty
+when unresolved), `name_scope` (`global`, `provider` or `unknown`) and `configuration`
+(null, or operations/native/input/output modality lists and positive context/output
+limits, each null when not configured). Configuration states the operator's settings,
+not verified provider support. Bundled models.dev facts are matched only by exact canonical identity
 or an unambiguous source alias. They do not establish operational availability or an
 open-source license. Names/icons use current deployment overlays; endpoints are reduced
 to hostnames. Secrets and account fields are excluded. Results exceeding 2,000 routes

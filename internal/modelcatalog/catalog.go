@@ -103,6 +103,23 @@ func (catalog Catalog) Match(identity string) (Model, bool) {
 	return Model{}, false
 }
 
+// MatchFrom resolves one configured upstream model served by a known catalog provider.
+// The canonical identity wins; then that provider's own declared alias, exactly; then
+// the generic matcher. The provider is lookup context from a verified endpoint, never
+// a label: a bare name such as "deepseek-v4-flash" can mean different models elsewhere.
+func (catalog Catalog) MatchFrom(provider, identity string) (Model, bool) {
+	identity = strings.TrimSpace(identity)
+	if model, exists := catalog.Models[identity]; exists {
+		return model, true
+	}
+	if provider != "" && identity != "" {
+		if model, exists := catalog.matchExact(provider + "/" + identity); exists {
+			return model, true
+		}
+	}
+	return catalog.Match(identity)
+}
+
 func (catalog Catalog) matchExact(identity string) (Model, bool) {
 	if model, exists := catalog.Models[identity]; exists {
 		return model, true

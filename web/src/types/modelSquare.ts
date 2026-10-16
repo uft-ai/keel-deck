@@ -8,10 +8,28 @@ export interface ModelSquareProvider {
   is_oauth: boolean;
   icon_id?: string;
 }
+/** How a route's client name was constructed: unprefixed, a configured provider prefix, or not established. */
+export type ModelNameScope = 'global' | 'provider' | 'unknown';
+/**
+ * The explicit settings of the configured model row behind a route. `null` means the row does not
+ * state the setting, which is not the same as an empty list it does state.
+ */
+export interface ModelRouteConfiguration {
+  operations: string[] | null;
+  native: string[] | null;
+  input_modalities: string[] | null;
+  output_modalities: string[] | null;
+  max_context_length: number | null;
+  max_output_tokens: number | null;
+}
 export interface ModelSquareRoute {
   provider_id: string;
   upstream_model: string;
   call_point: string;
+  /** The canonical reference the server resolved for this route; empty when unresolved. */
+  reference_id: string;
+  name_scope: ModelNameScope;
+  configuration: ModelRouteConfiguration | null;
 }
 export interface ModelReferenceLink { label: string; url: string; type?: string }
 export interface ModelReference {
@@ -103,54 +121,202 @@ export function resolveModelManufacturer(identity: string, metadata?: ModelRefer
 }
 
 /**
- * The context window the reference catalog lists for a call point, or undefined when it lists none.
+ * The models.dev context window for an exact client name, or undefined when it is not known.
  *
- * A call point can route to several upstream models; the smallest window among them is the one a
- * conversation is sure to fit, whichever route the gateway picks.
+ * Every route the gateway may pick for the name must have known provenance and a resolved
+ * reference with a window; the smallest is the one a conversation is sure to fit. One unknown
+ * route, or a directory whose enrichment was partial, makes the whole estimate unknown: a number
+ * from a sibling route would claim a fit nobody established. A literal match for an unresolved
+ * name has no provenance and therefore never counts.
  */
 export function referenceContextWindow(directory: ModelSquareDirectory | undefined, callPoint: string): number | undefined {
-  if (!directory || !callPoint) return undefined;
-  const identities = [callPoint, ...directory.routes.filter(route => route.call_point === callPoint).map(route => route.upstream_model)];
-  const windows = identities
-    .map(identity => directory.model_info[identity]?.limit.context)
-    .filter((window): window is number => typeof window === 'number' && window > 0);
-  return windows.length > 0 ? Math.min(...windows) : undefined;
-}
-
-export interface ModelSquareEntry {
-  identity: string;
-  manufacturer: ModelManufacturer;
-  routes: ModelSquareRoute[];
-  profiles: { identity: string; metadata?: ModelReference }[];
-}
-
-export function buildModelSquareEntries(directory: ModelSquareDirectory, search: string): ModelSquareEntry[] {
-  const advertised = new Set(directory.models.map(model => model.id));
-  const routesByIdentity = new Map<string, ModelSquareRoute[]>();
-  for (const route of directory.routes) {
-    if (!advertised.has(route.call_point)) continue;
-    const routes = routesByIdentity.get(route.call_point) ?? [];
-    if (!routes.some(item => item.provider_id === route.provider_id && item.upstream_model === route.upstream_model)) routes.push(route);
-    routesByIdentity.set(route.call_point, routes);
+  if (!directory || !callPoint || directory.partial.length > 0) return undefined;
+  const routes = directory.routes.filter(route => route.call_point === callPoint);
+  if (!hasCompleteProvenance(routes)) return undefined;
+  let smallest: number | undefined;
+  for (const route of routes) {
+    const window = route.reference_id ? directory.model_info[route.reference_id]?.limit.context : undefined;
+    if (typeof window !== 'number' || !Number.isFinite(window) || window <= 0) return undefined;
+    smallest = smallest === undefined ? window : Math.min(smallest, window);
   }
-  const needle = search.trim().toLowerCase();
-  return directory.models.map(model => {
-    const routes = routesByIdentity.get(model.id) ?? [{ provider_id: '', upstream_model: '', call_point: model.id }];
-    // A profile is a distinct model, not a distinct route: two connections reaching the same
-    // source record under different upstream names describe one model once.
-    const profiles: ModelSquareEntry['profiles'] = [];
-    for (const identity of new Set(routes.map(route => route.upstream_model || route.call_point))) {
-      const metadata = directory.model_info[identity];
-      if (metadata && profiles.some(profile => profile.metadata?.id === metadata.id)) continue;
-      profiles.push({ identity, metadata });
+  return smallest;
+}
+
+export type ModelCardKind = 'model' | 'unresolved' | 'alias';
+export type AliasScope = 'global' | 'provider' | 'unknown';
+
+/** One provider/model pair serving a card, with every advertised name routed through it. */
+export interface ModelConnection {
+  key: string;
+  /** Empty for a name whose provenance is not known. */
+  providerId: string;
+  upstreamModel: string;
+  name: string;
+  routes: ModelSquareRoute[];
+  /** Names proven to belong to this connection alone, sorted. */
+  scopedAliases: string[];
+}
+
+export interface ModelCard {
+  key: string;
+  kind: ModelCardKind;
+  /** The canonical reference ID, the shared upstream model, or the client name the card is keyed by. */
+  identity: string;
+  title: string;
+  manufacturer: ModelManufacturer;
+  /** The one reference the whole card describes, if there is one. */
+  reference?: ModelReference;
+  /** Distinct models behind the card, each described once. */
+  profiles: { identity: string; metadata?: ModelReference }[];
+  /** Several different models may answer one of its names. */
+  isMixed: boolean;
+  aliases: string[];
+  globalAliases: string[];
+  otherAliases: string[];
+  connections: ModelConnection[];
+}
+
+const tupleKey = (...parts: string[]) => JSON.stringify(parts);
+
+/**
+ * How an exact client name may be offered: as one connection's own name only when every route
+ * for it is provider-scoped to that same connection; as a global or shared name when every route
+ * is known; otherwise its scope is unknown and it is offered apart from both.
+ */
+export function classifyAliasScope(routes: readonly ModelSquareRoute[], isPartial = false): AliasScope {
+  if (isPartial || !hasCompleteProvenance(routes) || routes.some(route => route.name_scope === 'unknown')) return 'unknown';
+  const [first] = routes;
+  const isExclusive = routes.every(route => route.name_scope === 'provider' && route.provider_id === first.provider_id && route.upstream_model === first.upstream_model);
+  return isExclusive ? 'provider' : 'global';
+}
+
+function hasCompleteProvenance(routes: readonly ModelSquareRoute[]): boolean {
+  return routes.length > 0 && routes.every(route => route.provider_id !== '' && route.upstream_model !== '');
+}
+
+function uniqueRoutes(routes: readonly ModelSquareRoute[]): ModelSquareRoute[] {
+  const seen = new Set<string>();
+  return routes.filter(route => {
+    const key = JSON.stringify([route.provider_id, route.upstream_model, route.call_point, route.reference_id, route.name_scope, route.configuration]);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+/**
+ * Model cards built from the whole directory, before any display filter.
+ *
+ * A name joins a model card only when every route for it has known provenance and the same
+ * resolved reference; unresolved names served by one provider/model pair share that pair's card;
+ * anything else - several targets, a mix of known and unknown, or missing provenance - is its own
+ * card keyed by the exact name, so it is never presented as one model.
+ */
+export function buildModelSquareCards(directory: ModelSquareDirectory, connectionName: (providerId: string) => string = id => id): ModelCard[] {
+  const advertised = [...new Set(directory.models.map(model => model.id))];
+  const advertisedSet = new Set(advertised);
+  const routesByAlias = new Map<string, ModelSquareRoute[]>();
+  for (const route of directory.routes) {
+    if (!advertisedSet.has(route.call_point)) continue;
+    routesByAlias.set(route.call_point, [...(routesByAlias.get(route.call_point) ?? []), route]);
+  }
+
+  // A partial directory may be missing routes for any name, so none can be shown as complete.
+  const isPartial = directory.partial.length > 0;
+  const cards = new Map<string, { kind: ModelCardKind; identity: string; aliases: { alias: string; routes: ModelSquareRoute[] }[] }>();
+  for (const alias of advertised) {
+    const routes = uniqueRoutes(routesByAlias.get(alias) ?? []);
+    const isComplete = !isPartial && hasCompleteProvenance(routes);
+    const [first] = routes;
+    let kind: ModelCardKind = 'alias';
+    let identity = alias;
+    if (isComplete && first.reference_id && routes.every(route => route.reference_id === first.reference_id)) {
+      kind = 'model';
+      identity = first.reference_id;
+    } else if (isComplete && routes.every(route => !route.reference_id && route.provider_id === first.provider_id && route.upstream_model === first.upstream_model)) {
+      kind = 'unresolved';
+      identity = first.upstream_model;
     }
+    const key = kind === 'unresolved' ? tupleKey(kind, first.provider_id, first.upstream_model) : tupleKey(kind, identity);
+    const card = cards.get(key) ?? { kind, identity, aliases: [] };
+    card.aliases.push({ alias, routes });
+    cards.set(key, card);
+  }
+
+  return [...cards.entries()].map(([key, { kind, identity, aliases }]): ModelCard => {
+    const connections = new Map<string, ModelConnection>();
+    const globalAliases: string[] = [];
+    const otherAliases: string[] = [];
+    for (const { alias, routes } of aliases) {
+      const scope = classifyAliasScope(routes, isPartial);
+      if (scope === 'global') globalAliases.push(alias);
+      if (scope === 'unknown') otherAliases.push(alias);
+      // A name with no route at all still gets a row, so every advertised name stays reachable.
+      const rows = routes.length > 0 ? routes : [{ provider_id: '', upstream_model: '', call_point: alias, reference_id: '', name_scope: 'unknown' as const, configuration: null }];
+      for (const route of rows) {
+        const connectionKey = route.provider_id ? tupleKey(route.provider_id, route.upstream_model) : tupleKey('', alias);
+        const connection = connections.get(connectionKey) ?? { key: connectionKey, providerId: route.provider_id, upstreamModel: route.upstream_model, name: route.provider_id ? connectionName(route.provider_id) : '', routes: [], scopedAliases: [] };
+        connection.routes.push(route);
+        if (scope === 'provider' && !connection.scopedAliases.includes(alias)) connection.scopedAliases.push(alias);
+        connections.set(connectionKey, connection);
+      }
+    }
+    const profiles: ModelCard['profiles'] = [];
+    for (const { alias, routes } of aliases) {
+      for (const route of routes.length > 0 ? routes : [undefined]) {
+        const metadata = route?.reference_id ? directory.model_info[route.reference_id] : undefined;
+        const profileIdentity = metadata?.id ?? (route?.upstream_model || alias);
+        if (profiles.some(profile => (profile.metadata?.id ?? profile.identity) === profileIdentity)) continue;
+        profiles.push({ identity: route?.upstream_model || alias, metadata });
+      }
+    }
+    const reference = profiles.length === 1 ? profiles[0].metadata : undefined;
     const makers = profiles.map(profile => resolveModelManufacturer(profile.identity, profile.metadata));
-    const manufacturer = makers.every(maker => maker.id === makers[0].id) ? makers[0] : { id: 'multiple', name: '' };
-    return { identity: model.id, manufacturer, routes, profiles };
-  }).filter(entry => !needle || [entry.identity, entry.manufacturer.name, ...entry.profiles.flatMap(profile => [profile.identity, profile.metadata?.name ?? '', profile.metadata?.id ?? '', resolveModelManufacturer(profile.identity, profile.metadata).name, profile.metadata?.family ?? ''])].some(value => value.toLowerCase().includes(needle)))
-    .sort((left, right) => manufacturerRank(left.manufacturer) - manufacturerRank(right.manufacturer)
-      || manufacturerSortName(left.manufacturer).localeCompare(manufacturerSortName(right.manufacturer))
-      || left.identity.localeCompare(right.identity));
+    const manufacturer = makers.length > 0 && makers.every(maker => maker.id === makers[0].id) ? makers[0] : { id: 'multiple', name: '' };
+    const sortedConnections = [...connections.values()].map(connection => ({ ...connection, scopedAliases: connection.scopedAliases.sort() }))
+      .sort((left, right) => (left.name || '\uffff').localeCompare(right.name || '\uffff') || left.providerId.localeCompare(right.providerId) || left.upstreamModel.localeCompare(right.upstreamModel) || left.key.localeCompare(right.key));
+    return {
+      key, kind, identity,
+      title: kind === 'model' ? reference?.name || identity : identity,
+      manufacturer, reference, profiles,
+      isMixed: profiles.length > 1,
+      aliases: aliases.map(item => item.alias).sort(),
+      globalAliases: globalAliases.sort(),
+      otherAliases: otherAliases.sort(),
+      connections: sortedConnections,
+    };
+  }).sort((left, right) => manufacturerRank(left.manufacturer) - manufacturerRank(right.manufacturer)
+    || manufacturerSortName(left.manufacturer).localeCompare(manufacturerSortName(right.manufacturer))
+    || left.title.localeCompare(right.title) || left.key.localeCompare(right.key));
+}
+
+/** The connection filter value for rows whose provenance is not known. */
+export const UNRESOLVED_CONNECTION = 'unresolved';
+
+export interface ModelCardView {
+  card: ModelCard;
+  /** The rows the search and connection filters leave, in display order. */
+  connections: ModelConnection[];
+}
+
+/**
+ * What the search, maker and connection filters leave on display.
+ *
+ * Filters only choose what is shown: a card's identity, names and prices come from the whole
+ * directory. A match on the model itself keeps all its matching connections; a match on a
+ * connection or a name keeps just the rows it matched.
+ */
+export function filterModelSquareCards(cards: readonly ModelCard[], filters: { search?: string; manufacturerId?: string; providerId?: string }): ModelCardView[] {
+  const needle = (filters.search ?? '').trim().toLowerCase();
+  const matches = (values: (string | undefined)[]) => values.some(value => value?.toLowerCase().includes(needle));
+  return cards.flatMap(card => {
+    if (filters.manufacturerId && card.manufacturer.id !== filters.manufacturerId) return [];
+    const byProvider = card.connections.filter(connection => !filters.providerId
+      || (filters.providerId === UNRESOLVED_CONNECTION ? connection.providerId === '' : connection.providerId === filters.providerId));
+    const isModelMatch = !needle || matches([card.title, card.identity, card.manufacturer.name, ...card.profiles.flatMap(profile => [profile.identity, profile.metadata?.name, profile.metadata?.id, profile.metadata?.family])]);
+    const connections = isModelMatch ? byProvider : byProvider.filter(connection => matches([connection.name, connection.upstreamModel, ...connection.routes.map(route => route.call_point)]));
+    return connections.length > 0 ? [{ card, connections }] : [];
+  });
 }
 
 // Named makers read alphabetically by the name the heading shows; the two groups that are not a
@@ -162,36 +328,26 @@ function manufacturerSortName(manufacturer: ModelManufacturer): string {
   return (manufacturer.name || manufacturer.id).toLowerCase();
 }
 
-export function filterModelSquareEntries(entries: readonly ModelSquareEntry[], manufacturerId: string): ModelSquareEntry[] {
-  return manufacturerId ? entries.filter(entry => entry.manufacturer.id === manufacturerId) : [...entries];
-}
-
 export interface ModelManufacturerCount {
   manufacturer: ModelManufacturer;
   count: number;
 }
 
-/** Makers in the order their sections appear, each with the number of client names it holds. */
-export function countModelManufacturers(entries: readonly ModelSquareEntry[]): ModelManufacturerCount[] {
+/** Makers in the order their sections appear, each with the number of cards it holds. */
+export function countModelManufacturers(cards: readonly Pick<ModelCard, 'manufacturer'>[]): ModelManufacturerCount[] {
   const counts = new Map<string, ModelManufacturerCount>();
-  for (const entry of entries) {
-    const current = counts.get(entry.manufacturer.id);
+  for (const card of cards) {
+    const current = counts.get(card.manufacturer.id);
     if (current) current.count += 1;
-    else counts.set(entry.manufacturer.id, { manufacturer: entry.manufacturer, count: 1 });
+    else counts.set(card.manufacturer.id, { manufacturer: card.manufacturer, count: 1 });
   }
   return [...counts.values()];
 }
 
-/**
- * The reference a row may name.
- *
- * A client name that fans out to different models has no single reference, and naming one
- * target's would state it for the others.
- */
-export function resolveEntryReference(entry: ModelSquareEntry): ModelReference | undefined {
-  const [first, ...rest] = entry.profiles;
-  if (!first?.metadata) return undefined;
-  return rest.every(profile => profile.metadata?.id === first.metadata?.id) ? first.metadata : undefined;
+/** Resolved models, other cards and distinct client names: three different counts, never one. */
+export function summarizeModelCards(cards: readonly ModelCard[]): { models: number; otherCards: number; names: number } {
+  const models = cards.filter(card => card.kind === 'model').length;
+  return { models, otherCards: cards.length - models, names: new Set(cards.flatMap(card => card.aliases)).size };
 }
 
 export type ModelOpenness = 'closed' | 'open_weights' | 'open_source';

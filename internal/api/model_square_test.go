@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/oh-my-cpa/oh-my-cpa/internal/cpa/gateway"
+	"github.com/oh-my-cpa/oh-my-cpa/internal/cpa/management"
 	"github.com/oh-my-cpa/oh-my-cpa/internal/modelcatalog"
 	"github.com/oh-my-cpa/oh-my-cpa/internal/operations"
 )
@@ -165,6 +166,103 @@ func TestModelSquareNativeDefaultsRespectPrefixAndExclusions(t *testing.T) {
 	}
 }
 
+// modelSquareWireRoute decodes the route fields this change adds, so the test also
+// compiles against a directory that does not publish them yet.
+type modelSquareWireRoute struct {
+	ProviderID    string                     `json:"provider_id"`
+	UpstreamModel string                     `json:"upstream_model"`
+	CallPoint     string                     `json:"call_point"`
+	ReferenceID   string                     `json:"reference_id"`
+	NameScope     string                     `json:"name_scope"`
+	Configuration map[string]json.RawMessage `json:"configuration"`
+}
+
+func TestModelSquareRoutesKeepBareProvenanceAndQualifiedReferences(t *testing.T) {
+	fixture := newProviderTestFixture(t)
+	upstream := newFakeCPA(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v8/management/config":
+			io.WriteString(writer, `{"access":{"api-keys":["directory-scope-fixture"]},"routing":{"force-model-prefix":false}}`)
+		case "/v1/models":
+			io.WriteString(writer, `{"data":[{"id":"team/deepseek-v4-flash"},{"id":"nan/deepseek-v4-flash"},{"id":"deepseek-v4-flash"}]}`)
+		case "/v8/management/config/oauth/model-alias":
+			io.WriteString(writer, `{}`)
+		case "/v8/management/credentials":
+			io.WriteString(writer, `{"files":[]}`)
+		case "/v0/management/openai-compatibility":
+			// The official NaN host is renamed Work with prefix team; a generic host is
+			// named and prefixed nan, which must not make it NaN.
+			io.WriteString(writer, `{"openai-compatibility":[
+				{"name":"Work","base-url":"https://api.nan.builders/v1","prefix":"team","models":[{"name":"deepseek-v4-flash","operations":["chat"],"input-modalities":[],"max-context-length":65536}]},
+				{"name":"nan","base-url":"https://generic.example.test/v1","prefix":"nan","models":[{"name":"deepseek-v4-flash"}]}]}`)
+		default:
+			if strings.HasPrefix(request.URL.Path, "/v0/management/") && strings.HasSuffix(request.URL.Path, "-api-key") {
+				io.WriteString(writer, `{}`)
+			} else {
+				t.Errorf("unexpected read: %s", request.URL.Path)
+				writer.WriteHeader(404)
+			}
+		}
+	}))
+	defer upstream.Close()
+	pointPlaygroundAt(t, fixture.handler, upstream.URL)
+	response, body := getJSON(t, fixture.client, fixture.baseURL+"/omc/api/v1/management/model-square")
+	if response.StatusCode != 200 {
+		t.Fatalf("directory: %d %s", response.StatusCode, body)
+	}
+	var directory struct {
+		Providers []operations.ModelSquareProvider `json:"providers"`
+		Routes    []modelSquareWireRoute           `json:"routes"`
+		Partial   []string                         `json:"partial"`
+		ModelInfo map[string]modelcatalog.Model    `json:"model_info"`
+	}
+	if err := json.Unmarshal(body, &directory); err != nil {
+		t.Fatal(err)
+	}
+	providerNames := map[string]string{}
+	for _, provider := range directory.Providers {
+		providerNames[provider.ID] = provider.Name
+	}
+	got := []string{}
+	for _, route := range directory.Routes {
+		got = append(got, fmt.Sprintf("%s|%s|%s|%s|%s", providerNames[route.ProviderID], route.CallPoint, route.UpstreamModel, route.NameScope, route.ReferenceID))
+	}
+	sort.Strings(got)
+	want := []string{
+		"Work|deepseek-v4-flash|deepseek-v4-flash|global|deepseek/deepseek-v4.1-flash",
+		"Work|team/deepseek-v4-flash|deepseek-v4-flash|provider|deepseek/deepseek-v4.1-flash",
+		"nan|deepseek-v4-flash|deepseek-v4-flash|global|",
+		"nan|nan/deepseek-v4-flash|deepseek-v4-flash|provider|",
+	}
+	if !reflect.DeepEqual(got, want) || len(directory.Partial) != 0 {
+		t.Fatalf("routes = %v partial = %v, want %v", got, directory.Partial, want)
+	}
+	if _, exists := directory.ModelInfo["deepseek/deepseek-v4.1-flash"]; !exists {
+		t.Fatal("canonical reference missing from model_info")
+	}
+	// A record found through NaN's qualified alias must not sit under the shared
+	// bare key the generic provider's route would read.
+	if _, exists := directory.ModelInfo["deepseek-v4-flash"]; exists {
+		t.Fatal("provider-qualified reference stored under the shared bare name")
+	}
+	for _, route := range directory.Routes {
+		fields := []string{}
+		for field, value := range route.Configuration {
+			fields = append(fields, field+"="+string(value))
+		}
+		sort.Strings(fields)
+		// A configured row that states nothing still has a configuration: every
+		// setting is present and null, which the console shows as not configured.
+		wantFields := []string{`input_modalities=null`, `max_context_length=null`, `max_output_tokens=null`, `native=null`, `operations=null`, `output_modalities=null`}
+		if providerNames[route.ProviderID] == "Work" {
+			wantFields = []string{`input_modalities=[]`, `max_context_length=65536`, `max_output_tokens=null`, `native=null`, `operations=["chat"]`, `output_modalities=null`}
+		}
+		if !reflect.DeepEqual(fields, wantFields) {
+			t.Fatalf("configuration = %v, want %v", fields, wantFields)
+		}
+	}
+}
+
 func TestModelSquareDTOFieldAllowlists(t *testing.T) {
 	isSupported := true
 	reference := modelcatalog.Model{
@@ -179,7 +277,7 @@ func TestModelSquareDTOFieldAllowlists(t *testing.T) {
 	directory := operations.ModelSquareDirectory{
 		Models:    []gateway.Model{{ID: "client-name", CallPoint: "client-name", Vision: "unknown"}},
 		Providers: []operations.ModelSquareProvider{{ID: "relay", Family: "openai-compatibility", Name: "Relay", EndpointHost: "relay.example.test", IconID: "OpenAI"}},
-		Routes:    []operations.ModelSquareRoute{{ProviderID: "relay", UpstreamModel: reference.ID, CallPoint: "client-name"}},
+		Routes:    []operations.ModelSquareRoute{{ProviderID: "relay", UpstreamModel: reference.ID, CallPoint: "client-name", ReferenceID: reference.ID, NameScope: operations.NameScopeGlobal, Configuration: &management.ModelRouteConfiguration{Operations: []string{}}}},
 		Partial:   []string{}, ModelInfo: map[string]modelcatalog.Model{reference.ID: reference}, MetadataUpdatedAt: "2026-03-01",
 	}
 	data, err := json.Marshal(projectModelSquareDTO(directory))
@@ -194,7 +292,7 @@ func TestModelSquareDTOFieldAllowlists(t *testing.T) {
 	for field, allowed := range map[string][]string{
 		"models":    {"id", "call_point", "vision"},
 		"providers": {"id", "family", "name", "endpoint_host", "is_oauth", "icon_id"},
-		"routes":    {"provider_id", "upstream_model", "call_point"},
+		"routes":    {"provider_id", "upstream_model", "call_point", "reference_id", "name_scope", "configuration"},
 	} {
 		var items []json.RawMessage
 		if err := json.Unmarshal(body[field], &items); err != nil {
@@ -204,6 +302,16 @@ func TestModelSquareDTOFieldAllowlists(t *testing.T) {
 			t.Fatalf("%s: %s", field, body[field])
 		}
 		assertModelSquareFields(t, items[0], allowed...)
+		if field == "routes" {
+			var route map[string]json.RawMessage
+			if err := json.Unmarshal(items[0], &route); err != nil {
+				t.Fatal(err)
+			}
+			assertModelSquareFields(t, route["configuration"], "operations", "native", "input_modalities", "output_modalities", "max_context_length", "max_output_tokens")
+			if !strings.Contains(string(route["configuration"]), `"operations":[]`) || !strings.Contains(string(route["configuration"]), `"native":null`) {
+				t.Fatalf("null and empty were not kept apart: %s", route["configuration"])
+			}
+		}
 	}
 	var references map[string]json.RawMessage
 	if err := json.Unmarshal(body["model_info"], &references); err != nil {

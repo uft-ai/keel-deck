@@ -54,9 +54,22 @@ type modelSquareProviderDTO struct {
 	IconID       string `json:"icon_id,omitempty"`
 }
 type modelSquareRouteDTO struct {
-	ProviderID    string `json:"provider_id"`
-	UpstreamModel string `json:"upstream_model"`
-	CallPoint     string `json:"call_point"`
+	ProviderID    string                       `json:"provider_id"`
+	UpstreamModel string                       `json:"upstream_model"`
+	CallPoint     string                       `json:"call_point"`
+	ReferenceID   string                       `json:"reference_id"`
+	NameScope     string                       `json:"name_scope"`
+	Configuration *modelSquareConfigurationDTO `json:"configuration"`
+}
+
+// Nil lists and limits serialize as null: absent configuration is not an empty one.
+type modelSquareConfigurationDTO struct {
+	Operations       []string `json:"operations"`
+	Native           []string `json:"native"`
+	InputModalities  []string `json:"input_modalities"`
+	OutputModalities []string `json:"output_modalities"`
+	MaxContextLength *int     `json:"max_context_length"`
+	MaxOutputTokens  *int     `json:"max_output_tokens"`
 }
 type modelSquareReferenceLinkDTO struct {
 	Label string `json:"label"`
@@ -109,7 +122,15 @@ func projectModelSquareDTO(directory operations.ModelSquareDirectory) modelSquar
 		result.Providers = append(result.Providers, modelSquareProviderDTO{ID: provider.ID, Family: provider.Family, Name: provider.Name, EndpointHost: provider.EndpointHost, IsOAuth: provider.IsOAuth, IconID: provider.IconID})
 	}
 	for _, route := range directory.Routes {
-		result.Routes = append(result.Routes, modelSquareRouteDTO{ProviderID: route.ProviderID, UpstreamModel: route.UpstreamModel, CallPoint: route.CallPoint})
+		projected := modelSquareRouteDTO{ProviderID: route.ProviderID, UpstreamModel: route.UpstreamModel, CallPoint: route.CallPoint, ReferenceID: route.ReferenceID, NameScope: route.NameScope}
+		if configuration := route.Configuration; configuration != nil {
+			projected.Configuration = &modelSquareConfigurationDTO{
+				Operations: configuration.Operations, Native: configuration.Native,
+				InputModalities: configuration.InputModalities, OutputModalities: configuration.OutputModalities,
+				MaxContextLength: configuration.MaxContextLength, MaxOutputTokens: configuration.MaxOutputTokens,
+			}
+		}
+		result.Routes = append(result.Routes, projected)
 	}
 	for identity, model := range directory.ModelInfo {
 		result.ModelInfo[identity] = modelSquareReferenceDTO{

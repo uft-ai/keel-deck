@@ -41,6 +41,18 @@ export async function mobileConsole({ base, page, check, errors }) {
       });
       check(`${route} fits ${width}px with two reachable header tools`, geometry.overflow <= 1 && geometry.headerOverflow <= 1 && geometry.actions === 2 && geometry.hasReachableControls, JSON.stringify(geometry));
       check(`${route} has no recovery fallback at ${width}px`, await page.locator('#route-error-title').count() === 0);
+      if (route === '/model-square') {
+        // A coarse pointer has no hover: every quick copy stays visible, and each card control is a
+        // full 44px target in both directions.
+        await page.locator('[data-model-card]').first().waitFor({ state: 'visible' });
+        const cardControls = await page.locator('[data-model-card]').first().evaluate((card, limit) => [...card.querySelectorAll('button')].map((button) => {
+          const bounds = button.getBoundingClientRect();
+          return { label: button.getAttribute('aria-label') ?? button.innerText, width: bounds.width, height: bounds.height, opacity: getComputedStyle(button).opacity, isFit: bounds.width >= 44 && bounds.height >= 44 && bounds.left >= 0 && bounds.right <= limit + 1 };
+        }), width);
+        const copies = await page.locator('[data-model-card] [data-copy-model]').evaluateAll((buttons) => buttons.map((button) => getComputedStyle(button).opacity));
+        check(`/model-square card controls are 44px wide and tall at ${width}px`, cardControls.length > 0 && cardControls.every((control) => control.isFit), JSON.stringify(cardControls.filter((control) => !control.isFit)));
+        check(`/model-square quick copy stays visible on a coarse pointer at ${width}px`, copies.length > 0 && copies.every((value) => value === '1'), JSON.stringify(copies));
+      }
       if (route === '/dashboard') {
         const pageTools = page.locator('.terminal-page-actions').getByRole('button', { name: 'More', exact: true });
         check(`loaded dashboard discloses secondary phone tools at ${width}px`, await pageTools.count() === 1);

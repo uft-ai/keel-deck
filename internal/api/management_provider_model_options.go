@@ -162,10 +162,7 @@ func normalizedProviderModelOptions(family, modelName string, options ProviderMo
 	return options, nil
 }
 
-var openAICompatOperationNames = []string{
-	"chat", "completions", "responses", "embeddings", "rerank",
-	"speech", "transcription", "image-generation", "image-edit",
-}
+var openAICompatOperationNames = management.OpenAICompatOperationNames
 
 func normalizedOperationList(values []string, nativeOnly bool) ([]string, error) {
 	if values == nil {

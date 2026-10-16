@@ -9,7 +9,7 @@ export function agentFixtures() {
   return [
     ...playgroundFixtures(),
     [url => url.pathname.endsWith('/agent/session'), initial],
-    [url => url.pathname.endsWith('/management/model-square'), () => ({ models: [], providers: [], routes: [], partial: [], metadata_updated_at: '', model_info: { 'vision-alias': { id: 'vision-alias', name: 'Vision', limit: { context: 4000 }, modalities: {} } } })],
+    [url => url.pathname.endsWith('/management/model-square'), () => ({ models: [{ id: 'vision-alias', call_point: 'vision-alias', vision: 'unknown' }], providers: [{ id: 'relay', family: 'openai-compatibility', name: 'Relay', is_oauth: false }], routes: [{ provider_id: 'relay', upstream_model: 'vision-upstream', call_point: 'vision-alias', reference_id: 'lab/vision', name_scope: 'global', configuration: null }], partial: [], metadata_updated_at: '', model_info: { 'lab/vision': { id: 'lab/vision', name: 'Vision', limit: { context: 4000 }, modalities: {} } } })],
     [url => url.pathname.endsWith('/capabilities'), () => ({ capabilities: [
       { name: 'providers_delete', description: 'Delete exactly one provider and its credentials and mappings.', permission: 'destructive', risk: 'high', version: 1, adapters: ['agent'] },
       { name: 'providers_list', description: 'List configured API providers and callable model mappings.', permission: 'read', risk: 'low', version: 1, adapters: ['agent'] },
