@@ -4,28 +4,29 @@ Oh My CPA takes the security of credentials, proxy configurations, and administr
 
 ## Supported Versions
 
-Only the latest commit on the `main` branch and the most recent release tag receive security patches.
+This repository is the Keel fork of [Oh My CPA](https://github.com/WizisCool/oh-my-cpa). Only the latest commit on the `main` branch receives security patches. Development happens on `next` and reaches `main` through a pull request.
 
 | Version / Branch | Supported |
 | --- | --- |
 | `main` | Yes |
-| Older releases | No (please upgrade to latest) |
+| `next` | Development only |
+| Older commits | No (please upgrade to latest) |
 
 ## Reporting a Vulnerability
 
 **Please do not report security vulnerabilities through public GitHub issues, discussions, or pull requests.**
 
-If you discover a potential vulnerability in Oh My CPA, please report it through **GitHub Private Vulnerability Reporting**:
+If you discover a potential vulnerability in this fork, please report it through **GitHub Private Vulnerability Reporting**:
 
-1. Navigate to the [Security tab](https://github.com/WizisCool/oh-my-cpa/security) of the repository.
-2. Click **Report a vulnerability** under "Advisories".
+1. Open the [private report form](https://github.com/uft-ai/keel-deck/security/advisories/new) of this repository.
+2. Alternatively, navigate to the [Security tab](https://github.com/uft-ai/keel-deck/security) and click **Report a vulnerability** under "Advisories".
 3. Provide a detailed report including:
    - Type of issue (e.g., SSRF, auth bypass, secret disclosure, SQL injection).
    - Clear step-by-step instructions or proof-of-concept (PoC) to reproduce.
    - Affected components, endpoints, or versions.
    - Potential impact of exploitation.
 
-If GitHub Private Vulnerability Reporting is unavailable, you may contact the maintainers directly via email at `127123086+WizisCool@users.noreply.github.com` with `[SECURITY]` in the subject line.
+If the issue also affects the original project's code, report it to [Oh My CPA](https://github.com/WizisCool/oh-my-cpa/security) as well, following its security policy.
 
 ## Response Process
 
