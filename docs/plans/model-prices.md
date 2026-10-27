@@ -32,6 +32,22 @@ decision record is ADR 0030; the request-time lock it extends is ADR 0003.
 
 ## Price structure
 
+A model's shared price can be overridden with custom rates and tiers for one
+recorded CPA channel (`usage_events.provider`). Migration 043 stores these in
+`channel_model_prices`, keyed by `(channel, model)`, and appends their history to
+`model_price_versions` with a channel discriminator. Requests choose an available
+channel version first, otherwise the shared version, both at request time. Removing
+an override appends a tombstone and restores shared pricing for later requests.
+The existing channel multiplier applies to either price. Shared automatic matching,
+links and custom prices retain their existing semantics; channel overrides are custom.
+
+The editor's `GET|PUT|DELETE /v1/pricing/models/{model}` accepts an optional `channel`
+query parameter. A write must name a model in that channel's persisted membership.
+Scoped reads return the effective price and `is_inherited`; the price book includes
+`channel_models` when overrides exist. Model Square maps call names through its
+actual routes and provider membership, keeping prefixes, aliases and upstream
+names separate. Several targets are offered individually instead of selecting one.
+
 A price is four rates per 1M tokens (prompt, completion, cache read, cache
 write), a model multiplier, and an optional list of **tiers**:
 
@@ -46,10 +62,26 @@ write), a model multiplier, and an optional list of **tiers**:
   is placed on that zone's wall clock at its own instant, so a zone's daylight
   saving moves the window with the vendor. The zone is unrelated to the OMC
   Time Zone, which only decides how the console displays time (ADR 0063);
-- a tier carrying both applies only when both hold.
+- a **service-tier tier** (`service_tiers`, such as `["priority","fast"]`)
+  applies when the request was billed on one of the named upstream service
+  tiers. For Codex, the final outbound `effective_service_tier` governs when
+  nonempty; otherwise the client `service_tier` remains the evidence. Its response
+  can report `default` or `auto` even for Fast. Explicit outbound `auto` selects
+  no lane. Other providers prefer a non-`auto`
+  `response_service_tier`, falling back to the request. A missing Codex request
+  field can fall back to the response; an explicit `auto` names no lane and
+  does not fall through. `auto` and empty never match. Names are compared
+  lowercased and trimmed. Which provider spellings share a rate is
+  listed in the price itself: no mapping between `fast` and `priority` is built
+  in;
+- a tier carrying several conditions applies only when all of them hold.
 
-Exactly one tier governs a request: the highest applicable threshold, then a
-windowed tier over an unwindowed one, then stored order. Rates a tier leaves
+Exactly one tier governs a request: a service-tier tier over one without, then
+the highest applicable threshold, then a windowed tier over an unwindowed one,
+then stored order. Providers publish a priority lane as its own rate card, so a
+priority long-context price is one tier carrying both `service_tiers` and
+`min_prompt_tokens`; without it, a priority request above the threshold pays the
+priority lane's rates, never a stack of both. Rates a tier leaves
 out inherit the base price. `pricing.Quote` is the single implementation; the
 console's editor preview mirrors it in `web/src/types/pricingDisplay.ts` and
 the logic suite pins the two against the same cases.
@@ -65,6 +97,24 @@ tiered base cost × model multiplier × channel multiplier
 Both multipliers are applied as exact fractions before a single half-up
 rounding to nanos, so a request with no tiers and a 1× channel costs exactly
 what the pre-tier formula charged (`FuzzQuoteLegacyParity`).
+
+The resolved service tier and its outbound/request/response source are saved with new
+request costs (migration 045). Historical records without that selection retain
+the original response-first policy when their locked cost is explained. Neither
+amounts nor price versions are rewritten. Mode indicators and the
+`resolved_service_tier` filter use the current provider-aware interpretation;
+`service_tier` continues to filter the original client request.
+
+CPA v8.0.39 adds optional `effective_service_tier` telemetry from the final outbound
+request after translation and payload rules. Codex prefers this evidence, including
+explicit `default` downgrades; outbound `auto` selects no service-tier price and
+never revives the original client priority. Missing or empty outbound evidence
+retains the existing request-aware resolver, without a gateway-version gate.
+Other providers retain response-first pricing. Migration 046 adds the raw field
+and extends the immutable snapshot source with `outbound`, preserving old rows,
+amounts and explanations. CPA omits an empty outbound tier, so an old publisher
+and a payload rule that removed the tier are indistinguishable. OMC does not
+infer missing evidence from current configuration or request latency.
 
 ## Decoding OpenRouter
 
@@ -252,7 +302,7 @@ Model membership is collected during the same complete CPA catalog sweep as alia
 
 `GET /v1/pricing` includes `providers`, with id, family, display name, channel, priority, OAuth marker, model membership, an optional icon override and a hostname-only endpoint hint for the existing provider icon resolver. URL userinfo, paths and query parameters are excluded. The facade resolves current provider name/icon preferences at read time; the frontend uses the same default provider marks and plugin-owned logos as provider management. Individual model names are text-only; `pricingModelIdentity` is the metadata extension point.
 
-Groups sort by descending routing priority, then natural provider name and stable id. Models sort naturally by name, case-insensitively first and uppercase first for case-only ties. Membership uses exact model identities: two names differing only in case remain distinct. A model served by multiple providers appears in each relevant group, but all entries edit the same global price. Models without recorded membership appear in an explicit unconfirmed group rather than a guessed maker group.
+Groups sort by descending routing priority, then natural provider name and stable id. Models sort naturally by name, case-insensitively first and uppercase first for case-only ties. Membership uses exact model identities: two names differing only in case remain distinct. Each provider/model membership has one row showing its channel override when configured, otherwise the shared price. Priced rows label channel-specific or inherited shared pricing and retain separate editing actions for both scopes. Coverage and mode counts use these effective membership rows, including models priced only on a channel. Usage beside these rows remains the model's deployment-wide 30-day usage. Models without recorded membership appear in an explicit unconfirmed group rather than a guessed maker group.
 
 Search, price-mode filters and a provider selector operate on the grouped book. One global page renders at most 20 membership rows across all groups on desktop and phones. Unpriced models occupy their normal sorted position and show any suggested link beside their name. The OpenRouter picker searches ids, canonical slugs and display names with separator-tolerant search; it paginates all matches in groups of 12 instead of truncating the catalog. Channel multipliers use 20-row pages and reuse known provider aliases/icons; a channel shared by several configured providers names those providers together.
 
@@ -341,3 +391,17 @@ Price history rejects corrupt tier snapshots rather than presenting them as base
   matcher. The fixture writes the price and channel versions its fabricated
   history is priced against (`Repository.SeedModelPriceHistoryBackfill`,
   `Repository.SeedChannelHistoryBackfill`). See `docs/architecture.md` §13.
+
+## Canonical token accounting at ingestion
+
+A complete validated CPA v2 breakdown supplies the normalized input, cache-read,
+cache-write and output totals used by the request-time quote. The completion
+bucket includes canonical reasoning exactly once; no universal reasoning
+addition is applied to vendor output. Request records retain the original counts,
+version, typed partition and validation status in immutable accounting evidence,
+which the cost explanation and Agent/MCP request reads also return. Missing
+evidence retains legacy accounting. Supplied unresolved accounting is unpriced
+rather than guessed, and editing prices never backfills it. Existing recorded
+counts, amounts and append-only price versions are unchanged by migration
+`048_usage_token_accounting.sql`; the permanent facts preserve corrected usage
+and raw-evidence measures after request-detail retention.

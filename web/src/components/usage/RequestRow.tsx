@@ -1,3 +1,4 @@
+import { tokenAccountingMessage } from './TokenAccountingNote';
 import { useTimeZone } from '../../utils/TimeZoneProvider';
 import React from 'react';
 import { RequestTooltip } from './RequestTooltip';
@@ -10,9 +11,9 @@ import { useOpenPriceEditor } from '../pricing/PricingEditorContext';
 import { copyText } from '../../utils/clipboard';
 import { maskKeyText } from '../../utils/maskKey';
 import { cacheScaleMix, formatCacheRate } from '../../theme/cacheScale';
-import { displayEffortName, effortColor, effortStep } from '../../theme/effortScale';
+import { effortBadgeName, effortColor, effortStep } from '../../theme/effortScale';
 import type { UsageEvent } from '../../types/usageEvents';
-import { priceWouldApply } from '../../types/pricing';
+import { priceWouldApply, type UnpricedReason } from '../../types/pricing';
 import {
   resolveProviderInfo,
   type CredentialIndex,
@@ -26,6 +27,7 @@ import {
   formatEventDuration,
   hasMeasurableTTFT,
   isFastTierEvent,
+  fastTierHintKey,
   isNonStreamingEvent,
 } from '../../types/usageEventMetrics';
 import {
@@ -132,7 +134,7 @@ export const RequestRow = React.memo<RequestRowProps>(
     // The level's place on the effort scale, as a token reference; absent for
     // `none` and for a level the scale does not rank, which keep the neutral badge.
     const effortHue = effortColor(effortStep(event.reasoning_effort));
-    const effortLabel = displayEffortName(event.reasoning_effort);
+    const effortLabel = effortBadgeName(event.reasoning_effort);
     const isNonStreaming = isNonStreamingEvent(event);
     const isFastTier = isFastTierEvent(event);
 
@@ -338,11 +340,11 @@ export const RequestRow = React.memo<RequestRowProps>(
                 </RequestTooltip>
               )}
               {isFastTier && (
-                <RequestTooltip title={t('events.fast_tier_hint', { tier: event.response_service_tier ?? '' })}>
+                <RequestTooltip title={t(fastTierHintKey(event), { tier: event.resolved_service_tier ?? '' })}>
                   <span
                     className="req-mode-mark req-fast-icon"
                     role="img"
-                    aria-label={t('events.fast_tier_hint', { tier: event.response_service_tier ?? '' })}
+                    aria-label={t(fastTierHintKey(event), { tier: event.resolved_service_tier ?? '' })}
                     data-testid="request-fast-tier"
                   >
                     <ThunderboltFilled />
@@ -362,20 +364,7 @@ export const RequestRow = React.memo<RequestRowProps>(
           )}
         </div>
 
-        {/* Column 6: total latency */}
-        <div className={`req-col req-col-latency ${requestColumnAlignClass('latency')}`}>
-          <span className="req-mobile-label">{t('events.col_latency')}</span>
-          <strong className="req-latency-val">
-            {formatEventDuration(event.latency_ms)}
-          </strong>
-          {hasMeasurableTTFT(event) && (
-            <span className="req-ttft-val">
-              TTFT {formatEventDuration(event.ttft_ms)}
-            </span>
-          )}
-        </div>
-
-        {/* Column 7: output tokens per second */}
+        {/* Column 6: output tokens per second */}
         <div className={`req-col req-col-tps ${requestColumnAlignClass('tps')}`}>
           <span className="req-mobile-label">{t('events.col_tps')}</span>
           {tpsInfo.basis !== null ? (
@@ -388,6 +377,19 @@ export const RequestRow = React.memo<RequestRowProps>(
             </RequestTooltip>
           ) : (
             <span className="req-tps-none">—</span>
+          )}
+        </div>
+
+        {/* Column 7: total latency */}
+        <div className={`req-col req-col-latency ${requestColumnAlignClass('latency')}`}>
+          <span className="req-mobile-label">{t('events.col_latency')}</span>
+          <strong className="req-latency-val">
+            {formatEventDuration(event.latency_ms)}
+          </strong>
+          {hasMeasurableTTFT(event) && (
+            <span className="req-ttft-val">
+              TTFT {formatEventDuration(event.ttft_ms)}
+            </span>
           )}
         </div>
 
@@ -417,8 +419,8 @@ export const RequestRow = React.memo<RequestRowProps>(
           </div>
         </div>
 
-        {/* Column 9: cost, locked at request time; unpriced stays an em dash
-            rather than a fabricated 0, beside the one action that fixes it */}
+        {/* Missing prices can be configured for future requests; unresolved
+            accounting cannot be repaired by changing the model's price. */}
         <div className={`req-col req-col-cost ${requestColumnAlignClass('cost')}`}>
           <span className="req-mobile-label">{t('events.col_cost')}</span>
           {event.cost_usd != null ? (
@@ -427,16 +429,18 @@ export const RequestRow = React.memo<RequestRowProps>(
             <>
               <RequestTooltip
                 title={
-                  event.unpriced_reason && event.unpriced_reason !== 'no_price'
-                    ? t(`cost.unpriced_reason.${event.unpriced_reason}`)
-                    : t('events.cost_unpriced')
+                  event.token_accounting && event.token_accounting.status !== 'complete'
+                    ? tokenAccountingMessage(t, event.token_accounting)
+                    : event.unpriced_reason && event.unpriced_reason !== 'no_price'
+                      ? t(`cost.unpriced_reason.${event.unpriced_reason as Exclude<UnpricedReason, 'no_price'>}`)
+                      : t('events.cost_unpriced')
                 }
               >
                 <span className="req-cost-none">—</span>
               </RequestTooltip>
               {/* Only a request that ran without a price is fixed by setting one;
                   counters that are not billable counts would stay unpriced. */}
-              {openPriceEditor && event.model && priceWouldApply(event.pricing_status, event.unpriced_reason) && (
+              {openPriceEditor && event.model && priceWouldApply(event.pricing_status, event.unpriced_reason) && (!event.token_accounting || event.token_accounting.status === 'complete') && (
                 <RequestTooltip title={t('cost.set_price', { model: event.model })}>
                   <button
                     type="button"
@@ -470,23 +474,18 @@ export const RequestRow = React.memo<RequestRowProps>(
                 : t('events.cache_no_data')
             }
           >
-            <div className="req-cache-hit">
-              {/* One badge for every reading: 0% keeps the pill, the dot and the
-                  count line — it is a real value, not a missing one. Only the
-                  no-data case drops to the neutral stop. */}
-              <span
-                className={`req-cache-pill${cache.hasData ? '' : ' is-empty'}`}
-                style={cacheScaleStyle}
-              >
-                <i className="req-cache-bullet" />
-                {cacheLabel}
-              </span>
-              {cache.hasData && (
-                <span className="req-cache-count">
-                  {t('events.cache_hit_count', { count: cache.cached.toLocaleString() })}
-                </span>
-              )}
-            </div>
+            {/* One badge for every reading: 0% keeps the pill and the dot — it
+                is a real value, not a missing one. Only the no-data case drops
+                to the neutral stop. The cached count lives in the tooltip: as a
+                second line here it wrapped at six-digit volumes and pushed the
+                row taller. */}
+            <span
+              className={`req-cache-pill${cache.hasData ? '' : ' is-empty'}`}
+              style={cacheScaleStyle}
+            >
+              <i className="req-cache-bullet" />
+              {cacheLabel}
+            </span>
           </RequestTooltip>
         </div>
 

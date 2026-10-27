@@ -17,6 +17,11 @@ import (
 //go:embed testdata/upstream_041_credential_warmup.sql
 var upstream041CredentialWarmupSQL string
 
+// The warmup schema the fork shipped as 042 until upstream assigned 042 to fonts.
+//
+//go:embed testdata/fork_042_credential_warmup.sql
+var fork042CredentialWarmupSQL string
+
 func TestMigration004SanitizesHistoricalData(t *testing.T) {
 	cipher, err := crypto.New("01234567890123456789012345678901")
 	if err != nil {
@@ -469,6 +474,75 @@ func TestUsageReportingColumnsConvergeFromEveryHistory(t *testing.T) {
 			wantBackups: 1,
 		},
 		{
+			name:    "a fork database that recorded warmup as 042",
+			through: 41,
+			preparing: func(t *testing.T, database *DB) {
+				if _, err := database.SQL.Exec(fork042CredentialWarmupSQL); err != nil {
+					t.Fatalf("apply the fork 042: %v", err)
+				}
+				if _, err := database.SQL.Exec(`ALTER TABLE quota_snapshots ADD COLUMN warmup_json TEXT`); err != nil {
+					t.Fatalf("apply the fork 042 hook: %v", err)
+				}
+				if _, err := database.SQL.Exec(`INSERT INTO schema_migrations(version, applied_at) VALUES (42, 4100)`); err != nil {
+					t.Fatalf("record the fork 042: %v", err)
+				}
+				seedMigrationInstance(t, database)
+				seedReportingRows(t, database, map[string]*int64{
+					"fork-null": nil,
+					"fork-zero": int64Pointer(0),
+					"fork-one":  int64Pointer(1),
+				})
+				if _, err := database.SQL.Exec(`INSERT INTO credential_warmup_policies VALUES ('default', 'provider', 'fork', '{"enabled":false}', 4100)`); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := database.SQL.Exec(`INSERT INTO credential_warmup_state VALUES ('default', 'fork-auth', '{"status":"kept"}', 4100)`); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := database.SQL.Exec(`INSERT INTO credential_warmup_runs VALUES ('default', 'fork-auth', 'request-1', '{"result":"kept"}', 4100)`); err != nil {
+					t.Fatal(err)
+				}
+			},
+			verifying: func(t *testing.T, database *DB) {
+				// Upstream 046 rebuilds usage_events; the fork's reporting state survives it.
+				assertReportingValue(t, database.SQL, "fork-null", false, 0, "native", 1, [3]int64{17, 23, 40})
+				assertReportingValue(t, database.SQL, "fork-zero", true, 0, "native", 1, [3]int64{17, 23, 40})
+				assertReportingValue(t, database.SQL, "fork-one", true, 1, "native", 1, [3]int64{17, 23, 40})
+				assertReportingValue(t, database.SQL, "fork-measured-zero", true, 1, "native", 1, [3]int64{})
+				assertWarmupRows(t, database.SQL, "provider", "fork", "fork-auth", "request-1")
+				assertRecordedVersion(t, database.SQL, 42, 4100)
+			},
+			wantBackups: 1,
+		},
+		{
+			name:    "an upstream database at 049",
+			through: 49,
+			preparing: func(t *testing.T, database *DB) {
+				// Upstream recorded its warmup schema as 041 and never had tokens_reported.
+				if _, err := database.SQL.Exec(upstream041CredentialWarmupSQL); err != nil {
+					t.Fatalf("apply frozen upstream 041: %v", err)
+				}
+				if _, err := database.SQL.Exec(`ALTER TABLE usage_events DROP COLUMN tokens_reported`); err != nil {
+					t.Fatalf("shape the upstream usage_events: %v", err)
+				}
+				seedMigrationInstance(t, database)
+				if _, err := database.SQL.Exec(`INSERT INTO usage_events (instance_id, event_key, api_group_key, timestamp_ms, created_at_ms, input_tokens, output_tokens, total_tokens)
+					VALUES ('default', 'upstream-049', 'group', 4900, 4900, 17, 23, 40)`); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := database.SQL.Exec(`INSERT INTO fonts VALUES ('font-1', 'Kept', 'upload', 4900)`); err != nil {
+					t.Fatal(err)
+				}
+			},
+			verifying: func(t *testing.T, database *DB) {
+				assertReportingValue(t, database.SQL, "upstream-049", false, 0, "", 0, [3]int64{17, 23, 40})
+				var fonts int
+				if err := database.SQL.QueryRow(`SELECT COUNT(1) FROM fonts WHERE id = 'font-1'`).Scan(&fonts); err != nil || fonts != 1 {
+					t.Fatalf("upstream font rows = %d: %v", fonts, err)
+				}
+			},
+			wantBackups: 1,
+		},
+		{
 			name:    "a database that has only some of the reporting columns",
 			through: 38,
 			preparing: func(t *testing.T, database *DB) {
@@ -578,20 +652,20 @@ func TestUsageReportingMigrationAddsColumnsOnlyThroughItsHook(t *testing.T) {
 
 func TestCredentialWarmupMigrationRollsBackWhenVersionRecordingFails(t *testing.T) {
 	ctx := context.Background()
-	database := openDatabaseAtMigration(t, 41)
-	if _, err := database.SQL.Exec(`CREATE TRIGGER refuse_042 BEFORE INSERT ON schema_migrations
-		WHEN NEW.version = 42 BEGIN SELECT RAISE(ABORT, 'fixture refuses version 42'); END`); err != nil {
+	database := openDatabaseAtMigration(t, 49)
+	if _, err := database.SQL.Exec(`CREATE TRIGGER refuse_050 BEFORE INSERT ON schema_migrations
+		WHEN NEW.version = 50 BEGIN SELECT RAISE(ABORT, 'fixture refuses version 50'); END`); err != nil {
 		t.Fatal(err)
 	}
 	database.migrateUntil = 0
-	if err := database.Migrate(ctx); err == nil || !strings.Contains(err.Error(), "fixture refuses version 42") {
+	if err := database.Migrate(ctx); err == nil || !strings.Contains(err.Error(), "fixture refuses version 50") {
 		t.Fatalf("migration error = %v, want version recording failure", err)
 	}
 	var tables, columns, recorded int
 	if err := database.SQL.QueryRow(`SELECT
 		(SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name LIKE 'credential_warmup_%'),
 		(SELECT COUNT(*) FROM pragma_table_info('quota_snapshots') WHERE name = 'warmup_json'),
-		(SELECT COUNT(*) FROM schema_migrations WHERE version = 42)`).Scan(&tables, &columns, &recorded); err != nil {
+		(SELECT COUNT(*) FROM schema_migrations WHERE version = 50)`).Scan(&tables, &columns, &recorded); err != nil {
 		t.Fatal(err)
 	}
 	if tables != 0 || columns != 0 || recorded != 0 {

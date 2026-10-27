@@ -1,7 +1,10 @@
 package api
 
 import (
+	"database/sql"
+	"errors"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -52,6 +55,7 @@ func (h *Handler) listOAuthProviders(writer http.ResponseWriter, request *http.R
 
 type startOAuthRequest struct {
 	Provider string `json:"provider"`
+	ProxyURL string `json:"proxy_url,omitempty"`
 }
 
 // normalizeOAuthStatus maps CPA get-auth-status variants to one facade
@@ -71,6 +75,10 @@ func normalizeOAuthStatus(status string) string {
 
 func (h *Handler) startOAuthFlow(writer http.ResponseWriter, request *http.Request) {
 	writer.Header().Set("Cache-Control", "no-store")
+	if query := request.URL.Query(); query.Has("proxy_url") || query.Has("proxy-url") {
+		writeError(writer, http.StatusBadRequest, "proxy_url must be provided in the request body")
+		return
+	}
 	var req startOAuthRequest
 	if err := decodeManagementJSON(writer, request, 8*1024, &req); err != nil {
 		return
@@ -85,14 +93,22 @@ func (h *Handler) startOAuthFlow(writer http.ResponseWriter, request *http.Reque
 		return
 	}
 
-	client, ok := h.managementClientOrError(writer, request)
-	if !ok {
+	proxyURL, err := management.NormalizeOAuthProxyURL(req.ProxyURL)
+	if err != nil {
+		writeCPAFacadeError(writer, err)
 		return
 	}
-
-	authRes, err := client.OAuthAuthURL(request.Context(), provider)
+	if err := h.recordAudit(request, "oauth.start", "oauth_provider", provider, "attempt", nil); err != nil {
+		writeError(writer, http.StatusInternalServerError, "audit failure; authorization aborted")
+		return
+	}
+	authRes, err := h.operationsService().StartOAuth(request.Context(), provider, proxyURL)
 	if err != nil {
-		_ = h.recordAudit(request, "oauth.start", "oauth_provider", provider, "failure", map[string]any{"error": err.Error()})
+		_ = h.recordAudit(request, "oauth.start", "oauth_provider", provider, "failure", nil)
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(writer, http.StatusServiceUnavailable, "default CPA instance is not configured")
+			return
+		}
 		writeCPAFacadeError(writer, err)
 		return
 	}
@@ -141,6 +157,10 @@ func (h *Handler) getOAuthStatus(writer http.ResponseWriter, request *http.Reque
 	// success badge without any session. Require the token instead.
 	if token == "" {
 		writeError(writer, http.StatusBadRequest, "state is required")
+		return
+	}
+	if h.isSIWCBindingState(token) {
+		writeError(writer, http.StatusBadRequest, "use the credential-scoped SIWC status endpoint")
 		return
 	}
 	resp, err := client.OAuthStatus(request.Context(), token)
@@ -192,6 +212,10 @@ func (h *Handler) handleOAuthCallback(writer http.ResponseWriter, request *http.
 		return
 	}
 
+	if parsed, err := url.Parse(req.RedirectURL); err == nil && h.isSIWCBindingState(parsed.Query().Get("state")) {
+		writeError(writer, http.StatusBadRequest, "use the credential-scoped SIWC callback endpoint")
+		return
+	}
 	auditIdentifier := req.Provider
 	if auditErr := h.recordAudit(request, "oauth.callback", "oauth_callback", security.RedactText(auditIdentifier), "attempt", nil); auditErr != nil {
 		writeError(writer, http.StatusInternalServerError, "audit failure; callback aborted")
@@ -234,6 +258,10 @@ func (h *Handler) cancelOAuthSession(writer http.ResponseWriter, request *http.R
 		return
 	}
 
+	if h.isSIWCBindingState(sessionID) {
+		writeError(writer, http.StatusBadRequest, "use the credential-scoped SIWC cancellation endpoint")
+		return
+	}
 	_ = h.recordAudit(request, "oauth.cancel", "oauth_session", security.RedactText(sessionID), "attempt", nil)
 	result, err := client.CancelOAuthSession(request.Context(), sessionID)
 	if err != nil {

@@ -1,6 +1,6 @@
 import { ActionMenu } from '../../components/common/ActionMenu';
 import React from 'react';
-import { useBlocker, useSearchParams } from 'react-router-dom';
+import { useBlocker } from 'react-router-dom';
 import {
   App as AntdApp,
   Button,
@@ -23,7 +23,7 @@ import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-quer
 import { api } from '../../api/client';
 import { useT } from '../../i18n';
 import { useDebouncedSearch } from '../../components/usage/useDebouncedSearch';
-import { usePreference } from '../../hooks/usePreference';
+import { useOAuthManagementViewState } from './useOAuthManagementViewState';
 import { useVisibleNow } from '../../hooks/useVisibleNow';
 import { isDemoMode } from '../../types/demoMode';
 import { pluginOAuthLogoFor, pluginOAuthProviderLogos } from '../../types/pluginOAuthProviders';
@@ -40,21 +40,22 @@ import { CredentialWarmup, WarmupSettingsDrawer } from '../../components/authFil
 import { OAuthModelRulesDrawer } from '../../components/authFiles/OAuthModelRulesDrawer';
 import { ProviderFilterTabs } from '../../components/common/ProviderFilterTabs';
 import { oauthProviderChoices } from '../oauthProviderLogic';
-import { CompactQuotaView } from '../quota/CompactQuotaView';
 import { CredentialQuotaBody } from '../quota/CredentialQuotaBody';
 import { VertexImportModal } from '../../components/authFiles/VertexImportModal';
 import { OAuthConnectPanel } from './OAuthConnectPanel';
-import { OAuthCredentialRecord } from './OAuthCredentialRecord';
+import { CredentialSection, type CredentialRowActions } from './CredentialSection';
+import { buildCredentialSections, orderBySection, type QuotaColumnSort } from './credentialSections';
 import { useOAuthSessions } from './useOAuthSessions';
+import { isSIWCPending, siwcTargetKey, useSIWCBindings } from '../../hooks/useSIWCBindings';
+import { SIWCDialog } from '../../components/authFiles/SIWCDialog';
+import { siwcBadgeState } from '../../components/authFiles/siwcBadge';
 import { useOAuthWorkspaceActions } from './useOAuthWorkspaceActions';
 import {
   buildOAuthWorkspaceProjection,
   consumeOneShotIntent,
   filterOAuthWorkspaceRecords,
-  parseOAuthWorkspaceQuery,
   resolveAuthorizationProviderId,
   sortOAuthWorkspaceRecords,
-  updateWorkspaceSearch,
   workspaceProviderCounts,
   workspaceProviderOptions,
   type OAuthWorkspaceQuotaFilter,
@@ -66,24 +67,8 @@ import { LoadFailure, Notice, useToast } from '../../components/feedback';
 import { SearchInput } from '../../components/common/SearchInput';
 import { EmptyState } from '../../components/common/EmptyState';
 import { Toolbar } from '../../components/common/Toolbar';
+import { ToolButton } from '../../components/common/ToolButton';
 import { Pager } from '../../components/common/Pager';
-
-interface OAuthManagementViewPreference {
-  pageSize: 12 | 24 | 48;
-}
-
-const DEFAULT_VIEW_PREFERENCE: OAuthManagementViewPreference = {
-  pageSize: 12,
-};
-
-function parseViewPreference(raw: unknown): OAuthManagementViewPreference | undefined {
-  if (!raw || typeof raw !== 'object') return undefined;
-  const record = raw as Record<string, unknown>;
-  const pageSize = record.pageSize === 12 || record.pageSize === 24 || record.pageSize === 48
-    ? record.pageSize
-    : DEFAULT_VIEW_PREFERENCE.pageSize;
-  return { pageSize };
-}
 
 interface CompletionPending {
   providerId: string;
@@ -108,16 +93,11 @@ export const OAuthManagementPage: React.FC = () => {
   const { modal } = AntdApp.useApp();
   const toast = useToast();
   const queryClient = useQueryClient();
-  const [searchParams, setSearchParams] = useSearchParams();
+  const { searchParams, setSearchParams, queryState, setSearch, isViewLoaded } = useOAuthManagementViewState();
   const visibleNow = useVisibleNow();
   const [isFiltersOpen, setIsFiltersOpen] = React.useState(false);
+  const [quotaColumnSorts, setQuotaColumnSorts] = React.useState<Partial<Record<string, QuotaColumnSort>>>({});
   const isDemo = isDemoMode();
-  const viewPreference = usePreference<OAuthManagementViewPreference>(
-    'oauth_management_view_v1',
-    DEFAULT_VIEW_PREFERENCE,
-    parseViewPreference,
-  );
-  const queryState = React.useMemo(() => parseOAuthWorkspaceQuery(searchParams), [searchParams]);
   React.useEffect(() => {
     if (queryState.status !== 'all' || queryState.quota !== 'all' || queryState.sort !== 'name-asc') {
       setIsFiltersOpen(true);
@@ -171,7 +151,7 @@ export const OAuthManagementPage: React.FC = () => {
 
   const providerOptions = React.useMemo(() => workspaceProviderOptions(records, choices), [choices, records]);
   const providerCounts = React.useMemo(() => workspaceProviderCounts(records), [records]);
-  const visibleRecords = React.useMemo(
+  const sortedRecords = React.useMemo(
     () => sortOAuthWorkspaceRecords(
       filterOAuthWorkspaceRecords(
         records,
@@ -184,8 +164,10 @@ export const OAuthManagementPage: React.FC = () => {
     ),
     [queryState.provider, queryState.query, queryState.quota, queryState.sort, queryState.status, records],
   );
+  // Pages are cut from the section order, so a page groups into the same sections the next page continues.
+  const visibleRecords = React.useMemo(() => orderBySection(sortedRecords, quotaColumnSorts), [sortedRecords, quotaColumnSorts]);
 
-  const pageSize = searchParams.has('page_size') ? queryState.pageSize : viewPreference.value.pageSize;
+  const pageSize = queryState.pageSize;
   const maxPage = Math.max(1, Math.ceil(visibleRecords.length / pageSize));
   const page = Math.min(queryState.page, maxPage);
   const pagedRecords = React.useMemo(
@@ -193,15 +175,10 @@ export const OAuthManagementPage: React.FC = () => {
     [page, pageSize, visibleRecords],
   );
 
-  const setSearch = React.useCallback((
-    changes: Record<string, string | number | null | undefined>,
-  ) => {
-    setSearchParams((current) => updateWorkspaceSearch(current, changes), { replace: true });
-  }, [setSearchParams]);
-
   React.useEffect(() => {
     if (!filesQuery.data || queryState.page <= maxPage) return;
-    setSearch({ page: maxPage === 1 ? null : maxPage });
+    // A clamp corrects the entry in force; pushed, Back would land on the page past the end again.
+    setSearch({ page: maxPage === 1 ? null : maxPage }, { replace: true });
   }, [filesQuery.data, maxPage, queryState.page, setSearch]);
 
   const [resetSearchToken, setResetSearchToken] = React.useState(0);
@@ -211,8 +188,7 @@ export const OAuthManagementPage: React.FC = () => {
     resetSearchToken,
   );
 
-  // Consume one-shot navigation intent before the connect panel arms overlay history,
-  // so Back closes the panel once instead of reopening it from a stale query value.
+  // Consume one-shot navigation intent so it cannot reopen the panel on a later render.
   const [pendingIntent, setPendingIntent] = React.useState<{ connect: boolean; provider?: string; focusQuota: boolean }>();
   const [pendingFocusQuota, setPendingFocusQuota] = React.useState(false);
   React.useEffect(() => {
@@ -262,21 +238,31 @@ export const OAuthManagementPage: React.FC = () => {
       [providerId]: { providerId, snapshot, startedAt: Date.now() },
     }));
   }, []);
+  const siwcBindings = useSIWCBindings();
+  const [siwcRecordKey, setSIWCRecordKey] = React.useState<string>();
   const sessions = useOAuthSessions(choices, handleAuthorizationCompleted, { shouldNotifyCompletion: false });
-  const startSession = React.useCallback((providerId: string) => {
+  const rememberPreStartSnapshot = React.useCallback((providerId: string) => {
     preStartSnapshotRef.current[providerId] = new Set(recordsRef.current.map((record) => record.key));
-    return sessions.start(providerId);
-  }, [sessions]);
+  }, []);
+  const startSession = React.useCallback((providerId: string, proxyUrl?: string) => {
+    rememberPreStartSnapshot(providerId);
+    return sessions.start(providerId, proxyUrl);
+  }, [rememberPreStartSnapshot, sessions]);
+  const startDefaultRouteSession = React.useCallback((providerId: string) => {
+    rememberPreStartSnapshot(providerId);
+    return sessions.startDefaultRoute(providerId);
+  }, [rememberPreStartSnapshot, sessions]);
   const sessionController = React.useMemo(
-    () => ({ ...sessions, start: startSession }),
-    [sessions, startSession],
+    () => ({ ...sessions, start: startSession, startDefaultRoute: startDefaultRouteSession }),
+    [sessions, startDefaultRouteSession, startSession],
   );
 
   // Sessions outlive the drawer, so an ordinary route departure must be an
   // explicit operator decision. The browser handles hard unloads; the router
   // blocker covers in-app navigation without a history monkey patch.
+  const hasPendingAuthorization = sessions.activeProviders.length > 0 || Object.values(siwcBindings.sessions).some(isSIWCPending);
   const routeBlocker = useBlocker(({ currentLocation, nextLocation }) => (
-    sessions.activeProviders.length > 0 && currentLocation.pathname !== nextLocation.pathname
+    hasPendingAuthorization && currentLocation.pathname !== nextLocation.pathname
   ));
   React.useEffect(() => {
     if (routeBlocker.state !== 'blocked') return;
@@ -290,14 +276,14 @@ export const OAuthManagementPage: React.FC = () => {
     });
   }, [modal, routeBlocker, t]);
   React.useEffect(() => {
-    if (sessions.activeProviders.length === 0) return;
+    if (!hasPendingAuthorization) return;
     const warn = (event: BeforeUnloadEvent) => {
       event.preventDefault();
       event.returnValue = '';
     };
     window.addEventListener('beforeunload', warn);
     return () => window.removeEventListener('beforeunload', warn);
-  }, [sessions.activeProviders.length]);
+  }, [hasPendingAuthorization]);
 
   React.useEffect(() => {
     if (Object.keys(completionPending).length === 0 || filesQuery.isFetching) return;
@@ -351,11 +337,18 @@ export const OAuthManagementPage: React.FC = () => {
     });
   }, [records]);
 
+  const selectableFilteredRecords = React.useMemo(
+    () => visibleRecords.filter((record) => record.canSelectForFileBatch),
+    [visibleRecords],
+  );
+  const hasUnselectedFilteredRecords = selectableFilteredRecords.some((record) => !selectedKeySet.has(record.key));
+
   const [selectedIdentity, setSelectedIdentity] = React.useState<SelectedIdentity>();
   const [drawerSection, setDrawerSection] = React.useState<'overview' | 'configuration' | 'models'>('overview');
   const selectedRecord = selectedIdentity
     ? records.find((record) => record.key === selectedIdentity.key)
     : undefined;
+  const siwcRecord = siwcRecordKey ? records.find((record) => record.key === siwcRecordKey) : undefined;
   React.useEffect(() => {
     if (selectedIdentity && !selectedRecord) setSelectedIdentity(undefined);
   }, [selectedIdentity, selectedRecord]);
@@ -372,18 +365,23 @@ export const OAuthManagementPage: React.FC = () => {
   }, []);
   const actions = useOAuthWorkspaceActions(records, selectedKeys, setSelectedKeys, onTargetGone);
 
+  // The two polled reads are invalidated rather than refetched: a refetch of a polled query is
+  // indistinguishable from its poll, so it would not raise the loading bar the reader asked for.
   const reloadWorkspace = React.useCallback(() => {
     void Promise.all([
-      filesQuery.refetch(),
-      quotaQuery.refetch(),
+      queryClient.invalidateQueries({ queryKey: ['management-auth-files'], exact: true }),
+      queryClient.invalidateQueries({ queryKey: ['management-quota'], exact: true }),
       pluginsQuery.refetch(),
     ]);
-  }, [filesQuery, pluginsQuery, quotaQuery]);
+  }, [pluginsQuery, queryClient]);
 
   const totalCount = records.length;
   const disabledCount = records.filter((record) => isAuthFileDisabled(record.file)).length;
   const attentionCount = records.filter((record) => !isAuthFileDisabled(record.file) && (record.isQuotaAttention || isAuthFileProblem(record.file))).length;
-  const healthyCount = records.filter((record) => isAuthFileHealthy(record.file) && !record.isQuotaAttention).length;
+  const healthyCount = records.filter((record) => isAuthFileHealthy(record.file) && !record.isQuotaAttention && record.quotaCondition !== 'stale').length;
+  // A reading whose own window has reset is not "normal": nobody knows the current numbers. It is
+  // counted apart from both, because it is not something to act on now either - refreshing it is.
+  const staleCount = records.filter((record) => !isAuthFileDisabled(record.file) && record.quotaCondition === 'stale').length;
   const knownTotal = filesQuery.isPending ? '—' : totalCount;
 
   const providerTabs = React.useMemo(
@@ -476,17 +474,9 @@ export const OAuthManagementPage: React.FC = () => {
       choice: choices.find((choice) => choice.id === providerId),
     }));
 
-  const quotaBodyForRecord = (record: OAuthWorkspaceRecord, forRow = false): React.ReactNode => {
+  const quotaBodyForRecord = (record: OAuthWorkspaceRecord): React.ReactNode => {
     if (record.quota) {
       const isRefreshing = Boolean(record.authIndex && actions.busyQuotaIndexes.has(record.authIndex));
-      if (forRow) {
-        return (
-          <CompactQuotaView
-            item={record.quota}
-            nowMS={visibleNow}
-          />
-        );
-      }
       return (
         <CredentialQuotaBody
           item={record.quota}
@@ -517,6 +507,27 @@ export const OAuthManagementPage: React.FC = () => {
     );
   };
 
+  const sections = buildCredentialSections(pagedRecords, visibleRecords);
+  const rowActions: CredentialRowActions = {
+    isBusy: (record) => actions.isRecordBusy(record),
+    isRefreshingQuota: (record) => Boolean(record.authIndex && actions.busyQuotaIndexes.has(record.authIndex)),
+    siwcBadge: (record) => siwcBadgeState(record.file, siwcBindings.sessions[siwcTargetKey(record.file)]),
+    onSelect: (targets, isSelected) => {
+      const keys = targets.map((record) => record.key);
+      setSelectedKeys((previous) => (isSelected
+        ? Array.from(new Set([...previous, ...keys]))
+        : previous.filter((key) => !keys.includes(key))));
+    },
+    onToggle: (record) => void actions.toggleOne(record),
+    onDownload: (record) => actions.download(record),
+    onDelete: (record) => void actions.deleteOne(record),
+    onOpen: openCredential,
+    onRefreshQuota: (record) => void actions.refreshQuotaForRecord(record),
+    onClearCooldown: (record) => void actions.clearCooldown(record),
+    onReauthenticate: openConnectForRecord,
+    onOpenSIWC: (record) => setSIWCRecordKey(record.key),
+  };
+
   return (
     <div className={`terminal-page oauth-management-page ${styles.page}`}>
       <input
@@ -536,38 +547,35 @@ export const OAuthManagementPage: React.FC = () => {
         mobileActions={(
           <>
             <ActionMenu>
-              <Button icon={<UploadOutlined />} disabled={isDemo || actions.isOperating} onClick={() => fileInputRef.current?.click()}>{t('af.upload')}</Button>
-              <Button icon={<CloudUploadOutlined />} disabled={isDemo || actions.isOperating} onClick={() => setIsVertexImportOpen(true)}>{t('af.vertex_open')}</Button>
-              <Button icon={<BranchesOutlined />} disabled={actions.isOperating} onClick={() => setIsModelRulesOpen(true)} data-testid="oauth-management-model-rules-open">{t('af.rules_open')}</Button>
+              <ToolButton icon={<UploadOutlined />} label={t('af.upload')} disabled={isDemo || actions.isOperating} onClick={() => fileInputRef.current?.click()} />
+              <ToolButton icon={<CloudUploadOutlined />} label={t('af.vertex_open')} disabled={isDemo || actions.isOperating} onClick={() => setIsVertexImportOpen(true)} />
+              <ToolButton icon={<BranchesOutlined />} label={t('af.rules_open')} disabled={actions.isOperating} onClick={() => setIsModelRulesOpen(true)} data-testid="oauth-management-model-rules-open" />
             </ActionMenu>
             <Button type="primary" icon={<LoginOutlined />} onClick={openConnect}>{t('omc.connect_account')}</Button>
           </>
         )}
         actions={(
           <>
-            <Button
+            <ToolButton
               icon={<UploadOutlined />}
+              label={t('af.upload')}
               disabled={isDemo || actions.isOperating}
               onClick={() => fileInputRef.current?.click()}
-            >
-              {t('af.upload')}
-            </Button>
-            <Button
+            />
+            <ToolButton
               icon={<CloudUploadOutlined />}
+              label={t('af.vertex_open')}
               disabled={isDemo || actions.isOperating}
               onClick={() => setIsVertexImportOpen(true)}
               data-testid="oauth-management-vertex-import-open"
-            >
-              {t('af.vertex_open')}
-            </Button>
-            <Button
+            />
+            <ToolButton
               icon={<BranchesOutlined />}
+              label={t('af.rules_open')}
               disabled={actions.isOperating}
               onClick={() => setIsModelRulesOpen(true)}
               data-testid="oauth-management-model-rules-open"
-            >
-              {t('af.rules_open')}
-            </Button>
+            />
             <Button type="primary" icon={<LoginOutlined />} onClick={openConnect}>
               {t('omc.connect_account')}
             </Button>
@@ -598,6 +606,15 @@ export const OAuthManagementPage: React.FC = () => {
               <span className={styles['summary-attention']}>
                 <span className={styles['status-dot']} />
                 {t('omc.quota_filter_attention')} {filesQuery.isPending ? '—' : attentionCount}
+              </span>
+            </>
+          )}
+          {!filesQuery.isPending && staleCount > 0 && (
+            <>
+              <span className={styles['summary-divider']}>·</span>
+              <span className={styles['summary-disabled']} data-testid="oauth-summary-stale">
+                <span className={styles['status-dot']} />
+                {t('omc.quota_stale_count', { n: staleCount })}
               </span>
             </>
           )}
@@ -686,24 +703,6 @@ export const OAuthManagementPage: React.FC = () => {
         pluginLogos={pluginLogos}
       />
 
-      <BatchActionBar
-        selectedCount={selectedRecords.length}
-        selectablePageCount={pagedRecords.filter((record) => record.canSelectForFileBatch).length}
-        hiddenCount={hiddenSelectionCount}
-        isMutating={actions.isOperating}
-        onSelectPage={() => {
-          const keys = pagedRecords.filter((record) => record.canSelectForFileBatch).map((record) => record.key);
-          setSelectedKeys((previous) => Array.from(new Set([...previous, ...keys])));
-        }}
-        onClearSelection={() => setSelectedKeys([])}
-        onEnable={() => void actions.batchStatus(false, selectedRecords)}
-        onDisable={() => void actions.batchStatus(true, selectedRecords)}
-        onRefresh={() => void actions.batchRefresh(selectedRecords)}
-        // The demonstration never contacts a provider, so it refuses a refresh.
-        canRefresh={!isDemo}
-        onDelete={() => void actions.batchDelete(selectedRecords)}
-      />
-
       <Toolbar className={styles.toolbar}>
         <div className={styles.search}>
           <SearchInput
@@ -722,38 +721,44 @@ export const OAuthManagementPage: React.FC = () => {
         >
           {t('events.more_filters')}
         </Button>
-        {/* The main segment refreshes the filtered set, which is what the list is showing; the
-            caret offers the other scopes. */}
-        <Space.Compact>
-          <Button
-            icon={<SyncOutlined />}
-            disabled={visibleRecords.length === 0}
-            loading={actions.busyQuotaIndexes.size > 0}
-            onClick={() => void actions.refreshQuota('filtered', visibleRecords, pagedRecords, records)}
-          >
-            {t('omc.refresh_quota_count', { n: eligibleFilteredRefreshCount })}
-          </Button>
-          <Dropdown
-            disabled={visibleRecords.length === 0}
-            menu={{
-              items: [
-                { key: 'page', label: t('omc.refresh_scope_page', { n: pagedRecords.filter((record) => record.canRefreshQuota).length }) },
-                { key: 'filtered', label: t('omc.refresh_scope_filtered', { n: eligibleFilteredRefreshCount }) },
-                { key: 'all', label: t('omc.refresh_scope_all', { n: new Set(records.filter((record) => record.canRefreshQuota).map((record) => record.authIndex)).size }) },
-              ],
-              onClick: ({ key }) => void actions.refreshQuota(key as 'page' | 'filtered' | 'all', visibleRecords, pagedRecords, records),
-            }}
-          >
-            <Button icon={<DownOutlined />} disabled={visibleRecords.length === 0} aria-label={t('common.more')} />
-          </Dropdown>
-        </Space.Compact>
-      <Button onClick={() => setIsWarmupSettingsOpen(true)} data-testid="oauth-warmup-settings-open">{t('warmup.settings')}</Button>
+        {/* The two collection actions travel as one group, so on a phone they share a row instead of
+            each wrapping onto its own. */}
+        <div className={styles['collection-actions']}>
+          <Button onClick={() => setIsWarmupSettingsOpen(true)} data-testid="oauth-warmup-settings-open">{t('warmup.settings')}</Button>
+          {/* The main segment refreshes the filtered set, which is what the list is showing; the
+              caret offers the other scopes. */}
+          <Space.Compact className={styles['refresh-quota']}>
+            <Button
+              icon={<SyncOutlined />}
+              disabled={visibleRecords.length === 0}
+              loading={actions.busyQuotaIndexes.size > 0}
+              onClick={() => void actions.refreshQuota('filtered', visibleRecords, pagedRecords, records)}
+            >
+              {t('omc.refresh_quota_count', { n: eligibleFilteredRefreshCount })}
+            </Button>
+            <Dropdown
+              trigger={['click']}
+              disabled={visibleRecords.length === 0}
+              menu={{
+                items: [
+                  { key: 'page', label: t('omc.refresh_scope_page', { n: pagedRecords.filter((record) => record.canRefreshQuota).length }) },
+                  { key: 'filtered', label: t('omc.refresh_scope_filtered', { n: eligibleFilteredRefreshCount }) },
+                  { key: 'all', label: t('omc.refresh_scope_all', { n: new Set(records.filter((record) => record.canRefreshQuota).map((record) => record.authIndex)).size }) },
+                ],
+                onClick: ({ key }) => void actions.refreshQuota(key as 'page' | 'filtered' | 'all', visibleRecords, pagedRecords, records),
+              }}
+            >
+              <Button icon={<DownOutlined />} disabled={visibleRecords.length === 0} aria-label={t('common.more')} />
+            </Dropdown>
+          </Space.Compact>
+        </div>
       </Toolbar>
       {isFiltersOpen && (
         <div id="oauth-collection-filters" className={styles['advanced-filters']}>
           <div className={styles['filter-field']}>
             <span className={styles['filter-field-label']}>{t('af.detail_status')}</span>
             <Select<AuthFileStatusFilter>
+              disabled={!isViewLoaded}
               value={queryState.status}
               onChange={(status) => setSearch({ status: status === 'all' ? null : status, page: null })}
               aria-label={t('af.detail_status')}
@@ -769,6 +774,7 @@ export const OAuthManagementPage: React.FC = () => {
           <div className={styles['filter-field']}>
             <span className={styles['filter-field-label']}>{t('omc.tab_quota')}</span>
             <Select<OAuthWorkspaceQuotaFilter>
+              disabled={!isViewLoaded}
               value={queryState.quota}
               onChange={(quota) => setSearch({ quota: quota === 'all' ? null : quota, page: null })}
               aria-label={t('omc.tab_quota')}
@@ -790,13 +796,14 @@ export const OAuthManagementPage: React.FC = () => {
           <div className={styles['filter-field']}>
             <span className={styles['filter-field-label']}>{t('af.sort_label')}</span>
             <Select<AuthFileSortKey>
+              aria-label={t('af.sort_label')}
+              disabled={!isViewLoaded}
               value={queryState.sort}
               onChange={(sort) => setSearch({ sort: sort === 'name-asc' ? null : sort, page: null })}
               style={{ width: 160 }}
               options={[
                 { value: 'name-asc', label: t('af.sort_name_asc') },
                 { value: 'name-desc', label: t('af.sort_name_desc') },
-                { value: 'requests-desc', label: t('af.sort_requests') },
                 { value: 'priority-desc', label: t('af.sort_priority') },
                 { value: 'weight-desc', label: t('af.sort_weight') },
               ]}
@@ -805,6 +812,7 @@ export const OAuthManagementPage: React.FC = () => {
           <div className={styles['toolbar-actions']}>
             <Button
               icon={<SearchOutlined />}
+              disabled={!isViewLoaded}
               onClick={() => {
                 setResetSearchToken((value) => value + 1);
                 setSearch({ q: null, status: null, quota: null, sort: null, page: null });
@@ -816,6 +824,31 @@ export const OAuthManagementPage: React.FC = () => {
         </div>
       )}
 
+      <BatchActionBar
+        selectedCount={selectedRecords.length}
+        selectablePageCount={pagedRecords.filter((record) => record.canSelectForFileBatch).length}
+        selectableFilteredCount={selectableFilteredRecords.length}
+        canSelectFiltered={hasUnselectedFilteredRecords}
+        isSelectionReady={isViewLoaded}
+        onSelectFiltered={() => {
+          const keys = selectableFilteredRecords.map((record) => record.key);
+          setSelectedKeys((previous) => Array.from(new Set([...previous, ...keys])));
+        }}
+        hiddenCount={hiddenSelectionCount}
+        isMutating={actions.isOperating}
+        onSelectPage={() => {
+          const keys = pagedRecords.filter((record) => record.canSelectForFileBatch).map((record) => record.key);
+          setSelectedKeys((previous) => Array.from(new Set([...previous, ...keys])));
+        }}
+        onClearSelection={() => setSelectedKeys([])}
+        onEnable={() => void actions.batchStatus(false, selectedRecords)}
+        onDisable={() => void actions.batchStatus(true, selectedRecords)}
+        onRefresh={() => void actions.batchRefresh(selectedRecords)}
+        // The demonstration never contacts a provider, so it refuses a refresh.
+        canRefresh={!isDemo}
+        onDelete={() => void actions.batchDelete(selectedRecords)}
+      />
+
       {filesQuery.isPending && !filesQuery.data ? (
         <LoadingRegion>
           <ListPlaceholder rows={6} isFramed />
@@ -826,69 +859,39 @@ export const OAuthManagementPage: React.FC = () => {
         </div>
       ) : (
         <>
-          <div className={`terminal-panel ${styles.records}`}>
-            <div className={styles['table-header']} aria-hidden="true">
-              <div className={styles['th-identity']}>
-                <span>{t('omc.col_credential')}</span>
-              </div>
-              <div className={styles['th-status']}>{t('af.detail_status')}</div>
-              <div className={styles['th-switch']}>{t('pro.col_switch')}</div>
-              <div className={styles['th-management']}>{t('omc.col_traffic')}</div>
-              <div className={styles['th-quota']}>{t('omc.col_quota_window')}</div>
-              <div className={styles['th-actions']}>{t('keys.col_actions')}</div>
-            </div>
-            {pagedRecords.map((record) => (
-              <div key={record.key} data-quota-focus-anchor={record.quota ? record.authIndex : undefined}>
-                <OAuthCredentialRecord
-                  file={record.file}
-                  identityKey={record.key}
-                  displayProvider={record.displayProvider}
-                  pluginLogo={pluginOAuthLogoFor(pluginLogos, record.displayProvider)}
-                  selected={selectedKeySet.has(record.key)}
-                  busy={actions.isRecordBusy(record)}
-                  canTargetFile={record.canSelectForFileBatch}
-                  onSelect={(checked) => {
-                    setSelectedKeys((previous) => (
-                      checked
-                        ? Array.from(new Set([...previous, record.key]))
-                        : previous.filter((key) => key !== record.key)
-                    ));
-                  }}
-                  onToggle={() => void actions.toggleOne(record)}
-                  onDownload={() => actions.download(record)}
-                  onDelete={() => void actions.deleteOne(record)}
-                  onEdit={() => openCredential(record, 'configuration')}
-                  onShowModels={() => openCredential(record, 'models')}
-                  onShowDetails={() => openCredential(record, 'overview')}
-                  onRefreshQuota={() => void actions.refreshQuotaForRecord(record)}
-                  canRefreshQuota={record.canRefreshQuota}
-                  isRefreshingQuota={Boolean(record.authIndex && actions.busyQuotaIndexes.has(record.authIndex))}
-                  onClearCooldown={() => void actions.clearCooldown(record)}
-                  canClearCooldown={record.canClearCooldown}
-                  quotaContent={quotaBodyForRecord(record, true)}
-                  identityDiagnostic={!record.hasUniqueFileName ? (
-                    <Notice
-                      tone="warning"
-                      title={t('omc.duplicate_file_identity', { name: record.fileName })}
-                    />
-                  ) : undefined}
-                  reauthAction={record.quota?.recommendation?.action === 'reauth' ? (
-                    <Button type="link" size="small" onClick={() => openConnectForRecord(record)}>
-                      {t('omc.reauthenticate')}
-                    </Button>
-                  ) : undefined}
-                />
-              </div>
+          <div className={styles.sections}>
+            {sections.map((section) => (
+              <CredentialSection
+                key={section.provider}
+                section={section}
+                title={choices.find((choice) => choice.pluginId && choice.id === section.provider)?.title}
+                pluginLogo={pluginOAuthLogoFor(pluginLogos, section.provider)}
+                selectedKeys={selectedKeySet}
+                nowMS={visibleNow}
+                actions={rowActions}
+                columnSort={quotaColumnSorts[section.provider]}
+                onSort={(key) => {
+                  setQuotaColumnSorts((current) => {
+                    const next = { ...current };
+                    const sort = current[section.provider];
+                    if (sort?.key !== key) next[section.provider] = { key, direction: 'asc' };
+                    else if (sort.direction === 'asc') next[section.provider] = { key, direction: 'desc' };
+                    else delete next[section.provider];
+                    return next;
+                  });
+                  setSearch({ page: null });
+                }}
+              />
             ))}
           </div>
           <div className={styles.pagination}>
             <span>{t('omc.result_count', { n: visibleRecords.length, total: records.length })}</span>
             <Select
               value={pageSize}
+              disabled={!isViewLoaded}
               onChange={(size) => {
                 const next = size as 12 | 24 | 48;
                 setSearch({ page_size: next, page: null });
-                void viewPreference.set({ pageSize: next });
               }}
               style={{ width: 110 }}
               options={[12, 24, 48].map((size) => ({ value: size, label: t('af.page_size_n', { n: size }) }))}
@@ -944,11 +947,17 @@ export const OAuthManagementPage: React.FC = () => {
         initialSection={drawerSection}
         canEdit={Boolean(selectedRecord?.canEditFile)}
         hasExternalDraft={hasWarmupDraft}
-        quotaContent={selectedRecord ? <>{quotaBodyForRecord(selectedRecord, false)}
-          {selectedRecord.authIndex && selectedRecord.hasUniqueAuthIndex && ['codex', 'claude'].includes(selectedRecord.displayProvider) && <CredentialWarmup key={selectedRecord.authIndex} authIndex={selectedRecord.authIndex} onDirtyChange={setHasWarmupDraft} />}
-        </> : undefined}
+        quotaContent={selectedRecord ? quotaBodyForRecord(selectedRecord) : undefined}
+        warmupContent={selectedRecord?.authIndex && selectedRecord.hasUniqueAuthIndex && ['codex', 'claude'].includes(selectedRecord.displayProvider)
+          ? <CredentialWarmup key={selectedRecord.authIndex} authIndex={selectedRecord.authIndex} onDirtyChange={setHasWarmupDraft} /> : undefined}
       />
 
+      <SIWCDialog
+        file={siwcRecord?.file}
+        canEdit={Boolean(siwcRecord?.canEditFile)}
+        bindings={siwcBindings}
+        onClose={() => setSIWCRecordKey(undefined)}
+      />
       <WarmupSettingsDrawer open={isWarmupSettingsOpen} onClose={() => setIsWarmupSettingsOpen(false)} />
       <OAuthModelRulesDrawer
         open={isModelRulesOpen}

@@ -105,8 +105,8 @@ func (h *Handler) redeemQuotaCredit(ctx context.Context, client *management.Clie
 	// next scheduled poll. This credential was already proven to be Codex, so
 	// it has no configured NaN model list.
 	prior := h.loadPriorNormalizedQuota(ctx, authIndex)
-	refreshed, _ := svc.RefreshCredentialQuotaModels(ctx, *foundFile, prior, nil)
-	if refreshed != nil && h.repo != nil && refreshed.Status != "error" && refreshed.Status != "stale" {
+	refreshed, _ := h.refreshQuotaReading(ctx, svc, *foundFile, prior, nil)
+	if refreshed != nil && h.repo != nil {
 		_ = h.persistNormalizedQuotaSnapshot(ctx, refreshed)
 	}
 	h.attachWindowCapacity(ctx, refreshed, h.now().UnixMilli())

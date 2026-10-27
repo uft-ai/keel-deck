@@ -1,8 +1,8 @@
 import type React from 'react';
 import clsx from 'clsx';
-import { Button, Tooltip } from 'antd';
+import { Button } from 'antd';
 import { Switch } from '../common/Switch';
-import { DeleteOutlined, EditOutlined, EyeOutlined } from '../icons';
+import { DeleteOutlined, EditOutlined } from '../icons';
 import type { ColumnsType } from 'antd/es/table';
 
 import { useT } from '../../i18n';
@@ -27,6 +27,7 @@ import {
 import { Tag } from '../common/Tag';
 import { ConfirmAction } from '../common/ConfirmAction';
 import { Meter } from '../common/Meter';
+import { Tooltip } from '../common/Tooltip';
 
 type ProviderManagement = ReturnType<typeof useProviderManagement>;
 
@@ -108,7 +109,7 @@ export function ProviderTable({
       key: 'name',
       // The name is the row's identity: auto layout otherwise hands its width to the endpoint
       // and breaks "Anthropic Claude" one syllable per line.
-      minWidth: 184,
+      minWidth: 208,
       render: (_, record) => {
         const iconId = resolveProviderIcon(
           providerIcons,
@@ -228,9 +229,10 @@ export function ProviderTable({
     {
       title: t('pro.col_models_headers'),
       key: 'models_headers',
-      // Two pills a line: three in a column made every row three pills tall, one line of three
-      // was wider than the traffic column it would have cost.
-      width: 148,
+      // Two counts a line, wrapping between counts and never inside one. The floor is what keeps
+      // auto layout from squeezing it to one count a line to make room for the endpoint.
+      width: 160,
+      minWidth: 160,
       render: (_, record) => {
         const modelCount = providerModelCount(record);
         const keyCount = providerKeyCount(record);
@@ -334,19 +336,10 @@ export function ProviderTable({
     {
       title: t('common.actions'),
       key: 'actions',
-      width: 120,
+      width: 88,
       align: 'right',
       render: (_, record) => (
         <div className="row-actions">
-          <Tooltip title={t('common.details')}>
-            <Button
-              size="small"
-              className="row-action-btn"
-              icon={<EyeOutlined />}
-              onClick={() => handleOpenEdit(record)}
-              aria-label={`${t('common.details')}: ${record.name}`}
-            />
-          </Tooltip>
           <Tooltip title={t('common.edit')}>
             <Button
               size="small"
@@ -361,18 +354,17 @@ export function ProviderTable({
             onConfirm={() => deleteProviderMutation.mutate(record.id)}
             isDanger
             disabled={isDemo}
+            tooltip={isDemo ? t('demo.blocked') : t('common.delete')}
           >
-            <Tooltip title={isDemo ? t('demo.blocked') : t('common.delete')}>
-              <Button
-                size="small"
-                danger
-                className="row-action-btn"
-                icon={<DeleteOutlined />}
-                disabled={isDemo}
-                loading={deleteProviderMutation.isPending && deleteProviderMutation.variables === record.id}
-                aria-label={`${t('common.delete')}: ${record.name}`}
-              />
-            </Tooltip>
+            <Button
+              size="small"
+              danger
+              className="row-action-btn"
+              icon={<DeleteOutlined />}
+              disabled={isDemo}
+              loading={deleteProviderMutation.isPending && deleteProviderMutation.variables === record.id}
+              aria-label={`${t('common.delete')}: ${record.name}`}
+            />
           </ConfirmAction>
         </div>
       ),
@@ -383,14 +375,16 @@ export function ProviderTable({
   // state, the switch and the actions are the row's control strip - printing them twice would make
   // the row read as if it had two states that could disagree.
   return (
-    <ResponsiveList
-      columns={providerColumns}
-      dataSource={providers}
-      rowKey="id"
-      isLoading={providersLoading}
-      isBlocked={isBlocked}
-      emptyText={emptyText}
-      phone={{ identity: 'name', actions: ['status', 'switch', 'actions'] }}
-    />
+    <div className={styles['provider-list']}>
+      <ResponsiveList
+        columns={providerColumns}
+        dataSource={providers}
+        rowKey="id"
+        isLoading={providersLoading}
+        isBlocked={isBlocked}
+        emptyText={emptyText}
+        phone={{ identity: 'name', actions: ['status', 'switch', 'actions'] }}
+      />
+    </div>
   );
 }

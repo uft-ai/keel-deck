@@ -129,11 +129,47 @@ func (c *Client) AuthFileModels(ctx context.Context, name string) ([]AuthModel, 
 	return response.Models, nil
 }
 
+// VERTEX_OPENAPI_FIELDS are the credential metadata keys CPA reads only for a
+// Vertex service account's OpenAPI route to partner and open models.
+var VERTEX_OPENAPI_FIELDS = []string{"openapi", "openapi_location", "openapi_models"}
+
+// IsVertexServiceAccount reports whether the credential is a file-backed Vertex
+// service account, the only kind whose metadata carries the OpenAPI overrides.
+// Vertex API keys are configuration, not credential files.
+func (f AuthFile) IsVertexServiceAccount() bool {
+	return strings.EqualFold(strings.TrimSpace(f.Provider), "vertex") || strings.EqualFold(strings.TrimSpace(f.Type), "vertex")
+}
+
 type AuthFilesResponse struct {
 	Files []AuthFile `json:"files"`
 }
 
+// SIWCSummary contains local state and configuration facts, never token material.
+// A missing support field is deliberately indistinguishable from false.
+type SIWCSummary struct {
+	SIWCStatus        string `json:"siwc_status,omitempty"`
+	SIWCBindSupported bool   `json:"siwc_bind_supported"`
+	UseSIWC           bool   `json:"use_siwc"`
+	SIWCBound         bool   `json:"siwc_bound"`
+	SIWCExpiresAt     string `json:"siwc_expires_at,omitempty"`
+}
+
+func (s SIWCSummary) SafeSIWCSummary() SIWCSummary {
+	switch s.SIWCStatus {
+	case "off", "valid", "invalid":
+	default:
+		s.SIWCStatus = ""
+	}
+	if expiry, err := time.Parse(time.RFC3339, s.SIWCExpiresAt); err == nil {
+		s.SIWCExpiresAt = expiry.UTC().Format(time.RFC3339)
+	} else {
+		s.SIWCExpiresAt = ""
+	}
+	return s
+}
+
 type AuthFile struct {
+	SIWCSummary
 	ID            string `json:"id"`
 	AuthIndex     string `json:"auth_index"`
 	Name          string `json:"name"`
@@ -160,10 +196,14 @@ type AuthFile struct {
 	Quota          map[string]any  `json:"quota"`
 	// SupportsQuota and QuotaProvider are CPA's quota advertisement for this
 	// credential: set when a built-in or plugin quota provider claims it.
+	// QuotaPluginID names the plugin CPA itself selected to serve that quota
+	// (CPA v8.0.25+); it already skips fused plugins in favour of a healthy one.
 	// QuotaProbe carries a declarative quota_probe credential, which has no v8
-	// management route and is reported as unsupported rather than fetched.
+	// management route and is reported as unsupported rather than fetched;
+	// CPA v8.0.25+ no longer advertises it on v8 lists.
 	SupportsQuota bool                      `json:"supports_quota,omitempty"`
 	QuotaProvider string                    `json:"quota_provider,omitempty"`
+	QuotaPluginID string                    `json:"quota_plugin_id,omitempty"`
 	QuotaProbe    json.RawMessage           `json:"quota_probe,omitempty"`
 	ModelQuotas   map[string]map[string]any `json:"model_quotas"`
 	Models        []AuthModel               `json:"models"`

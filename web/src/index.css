@@ -3,7 +3,10 @@
 @import "./assets/fonts/sarasa/core.css";
 
 :root {
-  font-family: "Sarasa Mono SC", "Sarasa UI SC", "Sarasa Term SC", "更纱黑体 SC", "Berkeley Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  /* The two typographic roles, both the bundled Sarasa stack by default; an operator's choice
+     (OMC Settings → Appearance) is written over both on the root element by `theme/fontLibrary.ts`. */
+  --font-ui: "Sarasa Mono SC", "Sarasa UI SC", "Sarasa Term SC", "更纱黑体 SC", "Berkeley Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-family: var(--font-ui);
   line-height: 1.5;
   font-weight: 400;
   color-scheme: dark;
@@ -12,6 +15,8 @@
   --bg: #121214;
   --surface: #1c1c1f;
   --bg-surface: var(--surface);
+  /* The ground the navigation stands on, one step behind the content panel (`derivePalette`). */
+  --canvas: #09090a;
   /* The floating-layer fill and the selected-row fill are set at runtime from the resolved palette;
      they are mirrored here so the first frame and the sign-in screen paint the same console the
      palette resolves to. `scripts/test-theme-presets.ts` asserts this block equals the derived OMC
@@ -41,13 +46,10 @@
   /* Cache-rate sequential scale (design.md §2): 0% yellow → 100% green,
      interpolated in OKLCH so the hue sweep stays perceptually even. Red is
      deliberately absent — a low hit rate is not a failure, and the danger hue
-     belongs to failed requests. These are steps of the semantic hues lightened
-     until 11px badge text clears 4.5:1 against the badge's own tint over --bg;
-     the tint/edge alphas belong to the badge, not to the hue. */
+     belongs to failed requests. These are the semantic hues themselves; the
+     reading is printed in its hue straight on the row. */
   --cache-rate-yellow: #f59e0b;
   --cache-rate-green: #10b981;
-  --cache-rate-tint: 14%;
-  --cache-rate-edge: 32%;
   /* The heatmap's continuous ramp: the quiet stop is the cell's own empty fill, so a day with no
      traffic and the lightest measured shade cannot be confused, and the busy stop is the theme
      accent. Everything between them is mixed in OKLCH by the browser, from a square root of the
@@ -63,14 +65,14 @@
   --heatmap-gap: 4px;
   --heatmap-label: 20px;
   --heatmap-label-gap: 8px;
-  /* The two zero states, as one ordered scale measured against the card rather than against the
-     page. The panel sits at `--surface` (#1c1c1f), and both steps are a shade *lighter* than it,
-     which is the direction GitHub's own graph uses on dark: the gaps then read as the darker
-     card showing through instead of as a bright mesh drawn around every cell.
+  /* The two zero states, as one ordered scale measured against the card. The panel is drawn on the
+     page's own ground (#121214), and both steps are a shade *lighter* than it, which is the
+     direction GitHub's own graph uses on dark: the gaps then read as the darker card showing
+     through instead of as a bright mesh drawn around every cell.
      The order is the meaning. An unrecorded day carries no information, so it is the closest to the
      card; a recorded-but-empty day is a measurement of zero, so it takes a step further; a measured
-     day is the only thing clearly louder than the card. Contrast against the card is 1.06, 1.22 and
-     6.12 respectively, so the two zero states stay quiet and never compete with the ramp. */
+     day is the only thing clearly louder than the card. Contrast against the card is 1.17, 1.35 and
+     up to 6.74 respectively, so the two zero states stay quiet and never compete with the ramp. */
   --heatmap-zero-unrecorded: #212124;
   --heatmap-zero-recorded: #2c2c30;
   /* The link step of the accent ladder. The tooltip sits on the card's surface rather than the page,
@@ -85,6 +87,16 @@
   --series-4: #f43f5e;
   --series-5: #f59e0b;
   --series-6: #06b6d4;
+  /* The live routing map's lane identities (design.md §2, §7 rule 9). A lane is a connection, and a
+     connection drawn in green, amber or red reads as a verdict on it. Every slot therefore stays on
+     the cool side of the wheel, away from the status hues the rest of the map still uses on node
+     surfaces. */
+  --route-1: #3b82f6;
+  --route-2: #8b5cf6;
+  --route-3: #06b6d4;
+  --route-4: #ec4899;
+  --route-5: #d946ef;
+  --route-6: #94a3b8;
   /* The trend's plot floor and the ring's unfilled track: a quiet step against the card, so an empty
      stretch reads as the axis rather than as a gap in the data. */
   --series-track: #2c2c30;
@@ -98,7 +110,6 @@
   --effort-5: #f08dee;
   --effort-6: #ff8cc1;
   --effort-tint: 14%;
-  --effort-edge: 32%;
   /* The type scale (design.md §3). Sizes below the page title are these seven steps; a
      literal size is a display numeral or an icon, which belong to one surface each. */
   --text-2xs: 10px;
@@ -107,17 +118,31 @@
   --text-md: 13px;
   --text-base: 14px;
   --text-lg: 16px;
-  --text-xl: 22px;
+  --text-xl: 20px;
+  /* The corner scale nests: a shape inside another takes the next step down, so an inner
+     corner never reads rounder than the edge around it (design.md §4). */
   --radius-xs: 2px;
-  --radius-sm: 4px;
-  /* Conversation shape stays close to the console's 4px geometry: document frames and
-     controls share it, floating surfaces use 6px, and the composer and bubbles use 8px.
-     Foreground fills group content without adding a border; theme hydration projects
-     the same values from THREAD_RADII and THREAD_FILL_SHARES. */
-  --radius-document: 4px;
-  --radius-control: 4px;
-  --radius-surface: 6px;
-  --radius-thread: 8px;
+  /* A check box is a mark-sized control: the control step would round a 16px box into a dot. */
+  --radius-check: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  /* Conversation shapes sit on the same scale: printed documents and controls take the
+     control step, floating conversation surfaces the menu step, and the composer and
+     bubbles the card step. Foreground fills group content without adding a border; theme
+     hydration projects the same values from THREAD_RADII and THREAD_FILL_SHARES. */
+  --radius-document: 8px;
+  --radius-control: 6px;
+  --radius-surface: 10px;
+  --radius-thread: 12px;
+  /* Elevation belongs to what floats. A static surface is a fill and a hairline; a layer the
+     reader summoned - a menu, a tooltip, a dialog - lifts off the page with a soft shadow, so
+     "above the page" and "part of the page" never share a look. Dark pages need a deeper
+     shadow to read at all, which is why each mode carries its own pair. */
+  --shadow-raised: 0 1px 2px rgb(0 0 0 / 0.32), 0 0 0 0.5px rgb(0 0 0 / 0.28);
+  --shadow-float: 0 12px 32px -8px rgb(0 0 0 / 0.55), 0 2px 8px rgb(0 0 0 / 0.3);
+  --shadow-overlay: 0 28px 64px -16px rgb(0 0 0 / 0.7), 0 4px 16px rgb(0 0 0 / 0.35);
+  --overlay-mask: rgb(0 0 0 / 0.5);
   --thread-field: color-mix(in srgb, var(--fg) 5%, transparent);
   --thread-field-hover: color-mix(in srgb, var(--fg) 8%, transparent);
   --thread-hairline: color-mix(in srgb, var(--fg) 12%, transparent);
@@ -127,30 +152,38 @@
   --hover-inset: var(--bg);
   /* The hover fill for a row or a quiet control that sits on the page or a card. */
   --hover: #272729;
-  /* Motion budget from docs/design.md §7: chrome only, no entrance choreography. These are the
-     same two numbers Ant Design's own motion tokens carry in `themeConfig.ts`
-     (`motionDurationFast`, and `motionDurationMid`/`Slow`), and `test-theme-presets` pins the pair -
-     the stylesheet used to carry 100ms/150ms against the table's 50ms/100ms, so call sites written
-     as `var(--motion-fast, 50ms)` were quietly paying double the budget they named. */
+  /* Motion tokens from docs/design.md §7. `fast`, `base` and `slow` are the numbers Ant Design's
+     own motion tokens carry in `themeConfig.ts` (`motionDurationFast`, `Mid` and `Slow`), and
+     `test-theme-presets` pins them together, so a call site and a component library cannot pay
+     different budgets for the same move. */
   /* The top bar's height. A page that fills the content pane (the request list) subtracts it,
      so the two cannot disagree when a phone takes the shorter bar. */
-  --app-header-height: 56px;
-  --motion-fast: 50ms;
-  --motion-base: 100ms;
-  /* §7's `float`: a click already said "open", so a floating panel only fades. antd has no token for
-     it, which is why this one is the console's own. */
-  --motion-float: 60ms;
+  --app-header-height: 52px;
+  --motion-fast: 120ms;
+  --motion-base: 180ms;
+  --motion-slow: 240ms;
+  /* §7's `float`: a summoned panel fades in while settling from just below full size toward the
+     control that opened it. antd has no token for it, which is why this one is the console's own. */
+  --motion-float: 160ms;
   /* The glyph-only work-in-flight loop uses the same period in every palette. */
   --motion-live-text: 900ms;
   --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  /* Entrances decelerate hard and settle softly: the move is mostly over in the first third, so
+     the reader sees the result arrive rather than watching it travel. */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 :root[data-theme-mode='light'] {
   color-scheme: light;
   --bg: #ffffff;
-  --surface: #f6f6f8;
+  --surface: #f1f1f3;
+  --canvas: #f5f5f5;
   --elevated: #ffffff;
   --selected-inset: #eaedef;
+  --shadow-raised: 0 1px 2px rgb(20 20 30 / 0.08), 0 0 0 0.5px rgb(20 20 30 / 0.06);
+  --shadow-float: 0 12px 32px -8px rgb(20 20 30 / 0.14), 0 2px 8px rgb(20 20 30 / 0.05);
+  --shadow-overlay: 0 28px 64px -16px rgb(20 20 30 / 0.22), 0 4px 16px rgb(20 20 30 / 0.06);
+  --overlay-mask: rgb(20 20 30 / 0.12);
   --fg: #1c1c1e;
   --fg-2: #505055;
   --muted: #787880;
@@ -162,8 +195,8 @@
   --accent-hover: #004a73;
   --accent-active: #023b5d;
   --accent-on: #ffffff;
-  --border: #e5e5ea;
-  --border-soft: #f1f1f4;
+  --border: #dcdce1;
+  --border-soft: #ebebee;
   --hover-inset: #f2f2f2;
   --hover: #f3f3f3;
   --success: #059669;
@@ -173,17 +206,15 @@
      yellow cannot also be legible there, so the low end is ochre. */
   --cache-rate-yellow: #b45309;
   --cache-rate-green: #059669;
-  --cache-rate-tint: 20%;
-  --cache-rate-edge: 34%;
   /* The same ramp read on a light page: the quiet stop is this theme's empty fill and the busy stop
      is the accent step that stays legible on it. */
-  --heatmap-quiet: #f1f1f4;
+  --heatmap-quiet: #ebebee;
   --heatmap-busy: #005d8f;
-  /* On a light page the card sits at #f6f6f8 and the ramp runs the other way: both zero steps are a
-     shade *darker* than it, which is GitHub's light-theme direction. Same order, same meaning -
-     unrecorded 1.04, empty 1.16, measured 6.57 against the card. */
-  --heatmap-zero-unrecorded: #f1f1f4;
-  --heatmap-zero-recorded: #e5e5ea;
+  /* On a light page the card sits on the white ground and the ramp runs the other way: both zero
+     steps are a shade *darker* than it, which is GitHub's light-theme direction. Same order, same
+     meaning - unrecorded 1.19, empty 1.37, measured up to 7.09 against the card. */
+  --heatmap-zero-unrecorded: #ebebee;
+  --heatmap-zero-recorded: #dcdce1;
   /* The link step of the accent ladder for this theme; the tooltip is on the card's surface rather
      than the page, and this is the step that clears 4.5:1 there. */
   --heatmap-tip-link: #005d8f;
@@ -196,7 +227,13 @@
   --series-4: #e11d48;
   --series-5: #b45309;
   --series-6: #0891b2;
-  --series-track: #e5e5ea;
+  --route-1: #2563eb;
+  --route-2: #7c3aed;
+  --route-3: #0891b2;
+  --route-4: #db2777;
+  --route-5: #c026d3;
+  --route-6: #475569;
+  --series-track: #dcdce1;
   /* The same sweep as its darker steps, which is what stays legible on a light page. */
   --effort-1: #39626e;
   --effort-2: #00686c;
@@ -205,7 +242,6 @@
   --effort-5: #8a2b8a;
   --effort-6: #9b2065;
   --effort-tint: 12%;
-  --effort-edge: 30%;
 }
 
 * { box-sizing: border-box; }
@@ -225,38 +261,97 @@ body {
 button, input, textarea, select { font: inherit; }
 a { color: inherit; }
 
-.ant-layout, .ant-card, .ant-drawer-content, .ant-modal-content, .ant-popover-container,
-.ant-dropdown-menu, .ant-select-dropdown, .ant-picker-dropdown .ant-picker-panel-container,
-.ant-notification-notice {
+/* Static surfaces are flat: a card, a table and the layout are a fill and a hairline. */
+.ant-layout, .ant-card, .ant-drawer-section {
   box-shadow: none !important;
 }
-/* Floating panels: their background is one step away from the page in dark mode
-   and the *same* step in light mode, and shadows are off by design. The 1px
-   border is the only thing that tells a menu apart from what it floats over —
-   design.md puts all structure in borders, so this is the rule doing its job
-   rather than a decoration added on top. */
+/* Floating layers lift off the page (design.md §4). A layer the reader summoned carries a soft
+   shadow and a hairline: the shadow says "above", the hairline keeps its edge legible where the
+   shadow has nothing to fall on - a light menu over a light page, a dark one over a dark page. */
 .ant-popover-container, .ant-dropdown-menu, .ant-select-dropdown,
-.ant-picker-dropdown .ant-picker-panel-container, .ant-modal-content,
-.ant-notification-notice {
+.ant-picker-dropdown .ant-picker-panel-container, .ant-notification-notice {
   border: 1px solid var(--border);
+  box-shadow: var(--shadow-float) !important;
 }
+.ant-modal-container {
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-overlay) !important;
+}
+/* The mask dims the page rather than hiding it: the dialog is a question about what is behind it. */
+.ant-modal-mask, .ant-drawer-mask { background: var(--overlay-mask) !important; }
 /* The date panel needs the same fill step as the popover, dropdown and select
    panels above; antd exposes no component token for it. */
 .ant-picker-dropdown .ant-picker-panel-container {
-  background: var(--surface);
+  background: var(--elevated);
 }
-/* A click already said "open"; the panel should be there in that frame. antd's
-   zoom-and-slide is the one motion that fights the user's hand, so floating
-   panels keep a 60ms fade and nothing more. Compositor-only, per §7. */
+/* ── entrances: fade and settle ─────────────────────────────────────────────
+   antd zooms a panel in from 80% (a dialog from 20%, out of the pointer) and stretches a menu
+   down from 80% of its height. Both read as the panel flying in. Here a panel fades in while
+   settling the last few percent toward its origin, a menu also drops the last 4px toward its
+   control, and a dialog rises 8px into place: the reader sees the result arrive, not travel.
+   Opacity and transform only, per §7 rule 1. */
+.ant-zoom-big-enter.ant-zoom-big-enter-active, .ant-zoom-big-appear.ant-zoom-big-appear-active,
+.ant-zoom-big-fast-enter.ant-zoom-big-fast-enter-active, .ant-zoom-big-fast-appear.ant-zoom-big-fast-appear-active {
+  animation-name: omc-float-in !important;
+  animation-timing-function: var(--ease-out) !important;
+}
+.ant-slide-up-enter.ant-slide-up-enter-active, .ant-slide-up-appear.ant-slide-up-appear-active {
+  animation-name: omc-drop-in-below !important;
+  animation-timing-function: var(--ease-out) !important;
+}
+.ant-slide-down-enter.ant-slide-down-enter-active, .ant-slide-down-appear.ant-slide-down-appear-active {
+  animation-name: omc-drop-in-above !important;
+  animation-timing-function: var(--ease-out) !important;
+}
+.ant-zoom-big-leave.ant-zoom-big-leave-active, .ant-zoom-big-fast-leave.ant-zoom-big-fast-leave-active,
+.ant-slide-up-leave.ant-slide-up-leave-active, .ant-slide-down-leave.ant-slide-down-leave-active {
+  animation-name: omc-float-out !important;
+  animation-duration: var(--motion-fast) !important;
+  animation-timing-function: var(--ease-standard) !important;
+}
 .ant-popover,
 .ant-dropdown,
 .ant-select-dropdown,
 .ant-picker-dropdown {
   animation-duration: var(--motion-float) !important;
 }
-.ant-card, .ant-table-wrapper .ant-table, .ant-drawer-content, .ant-modal-content {
-  background: var(--surface);
+.ant-tooltip { animation-duration: var(--motion-fast) !important; }
+.ant-modal.ant-zoom-enter.ant-zoom-enter-active, .ant-modal.ant-zoom-appear.ant-zoom-appear-active {
+  animation-name: omc-dialog-in !important;
+  animation-duration: var(--motion-slow) !important;
+  animation-timing-function: var(--ease-out) !important;
 }
+.ant-modal.ant-zoom-leave.ant-zoom-leave-active {
+  animation-name: omc-float-out !important;
+  animation-duration: var(--motion-base) !important;
+  animation-timing-function: var(--ease-standard) !important;
+}
+@keyframes omc-float-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes omc-drop-in-below {
+  from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes omc-drop-in-above {
+  from { opacity: 0; transform: translateY(4px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes omc-float-out {
+  from { opacity: 1; }
+  to { opacity: 0; transform: scale(0.98); }
+}
+@keyframes omc-dialog-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+/* A card is drawn on the panel's own ground and enclosed by its hairline: grouping comes from the
+   enclosure, not from a second fill, so a page of cards reads as one sheet with sections on it. */
+.ant-card, .ant-table-wrapper .ant-table, .ant-drawer-section {
+  background: var(--bg);
+}
+.ant-modal-container { background: var(--elevated); }
 /* Viewport dimensions land immediately; only the sheet's position slides. */
 .ant-drawer .ant-drawer-content-wrapper {
   transition-property: transform !important;
@@ -266,6 +361,13 @@ a { color: inherit; }
   opacity: 1 !important;
 }
 .ant-btn, .ant-input, .ant-select, .ant-table, .ant-tag, .ant-menu { font-family: inherit; }
+/* A dashed button is an invitation to add the next item, drawn as the outline of the slot it will
+   fill - so it keeps its dashed hairline where every other secondary button is a fill. */
+/* A press answers the finger before the action does: the control gives a little under it and
+   springs back on release, so a click is felt even when what it starts takes a moment. */
+.ant-btn:not(:disabled):active { transform: scale(0.97); }
+.ant-btn-variant-dashed:not(:disabled) { background: transparent !important; border-color: var(--border) !important; }
+.ant-btn-variant-dashed:not(:disabled):hover { border-color: var(--muted) !important; background: color-mix(in srgb, var(--fg) 4%, transparent) !important; }
 .ant-typography, h1, h2, h3, h4 { font-family: inherit; }
 .ant-divider, .ant-tabs-top > .ant-tabs-nav::before { border-color: var(--border) !important; }
 /* ── console chrome: bend antd away from its admin-template defaults ────── */
@@ -276,11 +378,8 @@ a { color: inherit; }
      which is how "前缀" came to read one glyph per line. The strip is the OAuth list's header,
      so every list in the console names its columns the same way. */
   white-space: nowrap;
-  font-family: var(--font-mono);
-  font-size: var(--text-2xs);
-  font-weight: 600;
-  letter-spacing: .05em;
-  text-transform: uppercase;
+  font-size: var(--text-sm);
+  font-weight: 500;
   color: var(--muted) !important;
   background: var(--surface) !important;
   border-bottom: 1px solid var(--border-soft) !important;
@@ -290,21 +389,33 @@ a { color: inherit; }
 .ant-drawer-header { border-bottom: 1px solid var(--border); }
 .ant-drawer-footer { border-top: 1px solid var(--border); }
 .ant-modal-header, .ant-modal-footer { border: 0 !important; }
-.ant-drawer-right .ant-drawer-content { border-left: 1px solid var(--border); }
-.ant-drawer-left .ant-drawer-content { border-right: 1px solid var(--border); }
-.ant-drawer-top .ant-drawer-content { border-bottom: 1px solid var(--border); }
-.ant-drawer-bottom .ant-drawer-content { border-top: 1px solid var(--border); }
-.ant-layout-sider { border-right: 1px solid var(--border); }
-.ant-layout-header { border-bottom: 1px solid var(--border); }
+.ant-drawer-right .ant-drawer-section { border-left: 1px solid var(--border); }
+.ant-drawer-left .ant-drawer-section { border-right: 1px solid var(--border); }
+/* On a desktop a side sheet floats like the page panel it covers: inset from the window's edges,
+   rounded, and lifted by the overlay shadow, so it reads as a layer over the work rather than as
+   a second column bolted onto it. A phone's sheet stays edge to edge (§8). */
+@media (min-width: 901px) {
+  .ant-drawer-right > .ant-drawer-content-wrapper { top: 8px; bottom: 8px; right: 8px; }
+  .ant-drawer-right .ant-drawer-section {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-overlay) !important;
+  }
+}
+.ant-drawer-top .ant-drawer-section { border-bottom: 1px solid var(--border); }
+.ant-drawer-bottom .ant-drawer-section { border-top: 1px solid var(--border); }
 
 .terminal-page {
   max-width: 1440px;
   margin: 0 auto;
   padding: 32px 32px 48px;
 }
+/* The title row is pinned to the top and drawn at the action row's height, so every page's title
+   lands on the same line whether or not a subtitle follows it. Aligned to the bottom, a page
+   with a subtitle lifted its title six pixels above one without, and moving between them jumped. */
 .terminal-page-head {
   display: flex;
-  align-items: flex-end;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 24px;
   flex-wrap: wrap;
@@ -313,7 +424,8 @@ a { color: inherit; }
 /* The head's two halves. The title block may shrink; the actions keep their own width and wrap
    as a group, so a long title in one language never pushes a button off the page. */
 .terminal-page-heading { min-width: 0; }
-.terminal-page-heading .terminal-title { margin: 0; }
+.terminal-page-heading .terminal-title { margin: 0; line-height: 32px; }
+.terminal-page-heading .terminal-subtitle { margin-top: 2px; }
 .terminal-page-actions {
   display: flex;
   align-items: center;
@@ -372,7 +484,7 @@ a { color: inherit; }
   padding: 0;
   list-style: none;
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
 }
 .omc-toast-items li {
   padding: 6px 10px;
@@ -426,9 +538,11 @@ a { color: inherit; }
   font-size: var(--text-md);
   line-height: 1.5;
   text-align: start;
-  background: var(--thread-field);
-  border-inline-start: 2px solid var(--notice-tone);
-  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  /* A notice is a soft wash of its tone rather than a bar on its edge: it belongs to the region it
+     describes, so it is tinted like part of the page instead of flagged like an interruption. */
+  background: color-mix(in srgb, var(--notice-tone) 8%, var(--bg));
+  border: 1px solid color-mix(in srgb, var(--notice-tone) 16%, transparent);
+  border-radius: var(--radius-md);
 }
 /* The basis is the narrowest measure a sentence keeps beside its tools; below it the tools wrap
    under the text instead of squeezing it. */
@@ -442,10 +556,10 @@ a { color: inherit; }
   align-items: center;
   gap: 6px;
   color: var(--notice-tone);
-  font-size: var(--text-2xs);
+  font-size: var(--text-xs);
   font-weight: 600;
   line-height: 16px;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.02em;
   white-space: nowrap;
 }
 .omc-notice-icon { display: inline-flex; font-size: var(--text-sm); }
@@ -549,9 +663,9 @@ a { color: inherit; }
 }
 .status-label-pip {
   flex-shrink: 0;
-  width: 7px;
-  height: 7px;
-  border-radius: var(--radius-xs);
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
   background: var(--meta);
 }
 .status-label.is-success .status-label-pip { background: var(--success); }
@@ -568,36 +682,65 @@ a { color: inherit; }
   flex-direction: column;
   align-items: center;
   gap: 6px;
-  padding: 40px 16px;
+  padding: 48px 16px;
   text-align: center;
 }
 .empty-state.is-compact { padding: 20px 12px; }
+/* The mark is a sheet with the rows that are not there - three shortening rules - and a second
+   sheet fanned behind it: the list's page, empty. It is drawn from the page's own layers (the
+   panel ground, the border ink, the raised shadow), so it belongs to every palette. */
 .empty-state-mark {
+  position: relative;
+  isolation: isolate;
   display: flex;
   flex-direction: column;
+  justify-content: center;
   align-items: flex-start;
   gap: 4px;
-  width: 28px;
-  margin-bottom: 8px;
+  width: 44px;
+  height: 44px;
+  padding: 0 10px;
+  margin-bottom: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  box-shadow: var(--shadow-raised);
+}
+.empty-state-mark::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  z-index: -1;
+  border: 1px solid var(--border);
+  border-radius: inherit;
+  background: var(--surface);
+  transform: translate(-6px, 2px) rotate(-9deg);
 }
 .empty-state-mark > span { height: 2px; border-radius: 1px; background: var(--border); }
 .empty-state-mark > span:nth-child(1) { width: 100%; }
 .empty-state-mark > span:nth-child(2) { width: 64%; }
 .empty-state-mark > span:nth-child(3) { width: 36%; }
-.empty-state-title { margin: 0; color: var(--fg-2); font-size: var(--text-md); line-height: 1.5; }
-.empty-state.is-compact .empty-state-title { color: var(--muted); }
+.empty-state-title { margin: 0; color: var(--fg); font-size: var(--text-base); font-weight: 500; line-height: 1.5; }
+.empty-state.is-compact .empty-state-title { color: var(--muted); font-size: var(--text-md); font-weight: 400; }
 .empty-state-description {
   max-width: 50ch;
   margin: 0;
   color: var(--muted);
-  font-size: var(--text-sm);
+  font-size: var(--text-md);
   line-height: 1.6;
 }
-.empty-state-action { margin-top: 10px; }
+.empty-state-action { margin-top: 12px; }
 
 /* AppDrawer (components/common/AppDrawer.tsx). The footer is two slots: what stands opposite the
    actions, and the actions at the trailing edge. It wraps rather than squeezes, so a phone gets the
    note above a full row of buttons. */
+/* The gutter is held whether or not the body scrolls: a card folding open past the panel's height
+   would otherwise bring a scrollbar in mid-fold and narrow every card above it, then widen them again
+   when it folds shut. */
+.app-drawer .ant-drawer-body {
+  scrollbar-gutter: stable;
+}
+
 .app-drawer-footer {
   display: flex;
   flex-wrap: wrap;
@@ -648,8 +791,6 @@ a { color: inherit; }
 .section-head.is-label .section-head-title {
   color: var(--muted);
   font-size: var(--text-xs);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
 }
 .section-head-count {
   color: var(--meta);
@@ -713,7 +854,7 @@ a { color: inherit; }
 .selection-bar.is-framed {
   margin-bottom: 16px;
   border: 1px solid var(--accent);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
 }
 .selection-bar.is-inline { border-bottom: 1px solid var(--border); }
 .selection-bar-start,
@@ -723,9 +864,12 @@ a { color: inherit; }
 .selection-bar-note { color: var(--muted); }
 .selection-bar-start .ant-btn-link { padding-inline: 0; }
 
-/* Tag (components/common/Tag.tsx): a short label on a tinted chip. The tone sets one custom
-   property and the ink, edge and tint are mixed from it, so a caller that brings its own colour
-   (a provider family's brand) sets the same three properties and nothing else. */
+/* Tag (components/common/Tag.tsx): a short label on a soft fill with no edge. A row carries
+   several facts, and an outline around each made the row a strip of boxes; a wash keeps each one
+   legible as a unit while the row reads as one line. The tone sets one custom property and the ink
+   and tint are mixed from it, so a caller that brings its own colour (a provider family's brand)
+   sets the same properties and nothing else. The edge is kept, transparent, so a tag's box does not
+   change size against an outlined control beside it. */
 .tag {
   --tag-tone: var(--fg-2);
   display: inline-flex;
@@ -733,9 +877,9 @@ a { color: inherit; }
   gap: 4px;
   height: 22px;
   padding: 0 7px;
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
-  background: var(--bg);
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
   color: var(--tag-tone);
   font-family: inherit;
   font-size: var(--text-sm);
@@ -746,17 +890,16 @@ a { color: inherit; }
 }
 .tag.is-small {
   height: 18px;
-  padding: 0 5px;
-  border-radius: var(--radius-xs);
-  font-size: var(--text-2xs);
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
 }
 .tag.is-success { --tag-tone: var(--success); }
 .tag.is-warn { --tag-tone: var(--warn); }
 .tag.is-danger { --tag-tone: var(--danger); }
 .tag.is-accent { --tag-tone: var(--accent); }
 .tag.is-success, .tag.is-warn, .tag.is-danger, .tag.is-accent {
-  border-color: color-mix(in srgb, var(--tag-tone) 36%, transparent);
-  background: color-mix(in srgb, var(--tag-tone) 10%, transparent);
+  background: color-mix(in srgb, var(--tag-tone) 12%, transparent);
 }
 .tag-icon { display: inline-flex; font-size: var(--text-sm); }
 .tag.is-toggle {
@@ -767,7 +910,8 @@ a { color: inherit; }
   transition: color var(--motion-fast) var(--ease-standard), background-color var(--motion-fast) var(--ease-standard);
 }
 .tag.is-toggle:hover { color: var(--fg); }
-.tag.is-toggle[aria-pressed="true"] { border-color: var(--border); background: var(--hover-inset); color: var(--fg); }
+.tag.is-toggle:hover { background: color-mix(in srgb, var(--fg) 5%, transparent); }
+.tag.is-toggle[aria-pressed="true"] { background: color-mix(in srgb, var(--fg) 8%, transparent); color: var(--fg); }
 
 /* SearchInput (components/common/SearchInput.tsx): the glyph is chrome, so it takes the muted ink
    on every surface the field appears on. */
@@ -803,12 +947,10 @@ a { color: inherit; }
    scroller of one pixel that caught the wheel: over a stack of lists the page would not scroll. */
 .table-scroll { overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; }
 /* The console's one list surface, drawn after the OAuth credential list: a hairline frame, the
-   header strip above, rows on the page background divided by soft rules. A list that is the
-   only thing in its container is the frame itself (`data-table-flush`), so no list sits in a
-   frame inside a frame. */
+   header strip above, rows on the page background divided by soft rules. */
 .data-table {
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-lg);
   background: var(--bg);
 }
 .data-table .ant-table-wrapper .ant-table { background: transparent; }
@@ -818,7 +960,7 @@ a { color: inherit; }
   border-bottom: 1px solid var(--border-soft);
   padding: 12px 16px;
 }
-.data-table .ant-table-wrapper .ant-table-tbody > tr.ant-table-row:hover > td { background: var(--surface); }
+.data-table .ant-table-wrapper .ant-table-tbody > tr.ant-table-row:hover > td { background: color-mix(in srgb, var(--fg) 3%, transparent); }
 .data-table .ant-table-wrapper .ant-table-tbody > tr:last-child > td { border-bottom: 0; }
 /* A header a reader already saw above an identical table: kept for assistive technology,
    which reads each table on its own, and clipped from view. */
@@ -839,35 +981,51 @@ a { color: inherit; }
 }
 
 /* A row's action cluster: square 28px icon buttons, 8px apart so the touch rules' 4px hit insets
-   meet rather than overlap. The glyph stays quiet until hovered, and a destructive action shows
-   its colour only on hover - a column of red bins read as a column of errors. `!important` because
-   antd's variant colours are injected after this sheet at the same specificity. */
+   meet rather than overlap. At rest an action is its glyph alone - a column of framed buttons
+   repeated down every row was the loudest thing in a list - and the pointer brings up a soft
+   fill under it. A destructive action shows its colour only on hover: a column of red bins read
+   as a column of errors. `!important` because antd's variant colours are injected after this
+   sheet at the same specificity. */
 .row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
 .ant-btn.row-action-btn {
   width: 28px;
   min-width: 28px;
   height: 28px;
   padding: 0;
-  border-color: var(--border) !important;
-  background: var(--surface) !important;
+  border-color: transparent !important;
+  background: transparent !important;
   color: var(--muted) !important;
 }
-.ant-btn.row-action-btn:not(:disabled):hover { border-color: var(--accent) !important; color: var(--accent) !important; }
-.ant-btn.row-action-btn.ant-btn-dangerous:not(:disabled):hover { border-color: var(--danger) !important; color: var(--danger) !important; }
+.ant-btn.row-action-btn:not(:disabled):hover { background: color-mix(in srgb, var(--fg) 7%, transparent) !important; color: var(--fg) !important; }
+.ant-btn.row-action-btn.ant-btn-dangerous:not(:disabled):hover { background: color-mix(in srgb, var(--danger) 12%, transparent) !important; color: var(--danger) !important; }
 .ant-btn.row-action-btn:disabled { color: var(--meta) !important; opacity: .6; }
-.terminal-title { margin: 4px 0 0; font-size: var(--text-xl); line-height: 1.25; }
+.terminal-title { margin: 4px 0 0; font-size: var(--text-xl); font-weight: 600; line-height: 1.3; letter-spacing: -0.01em; }
 .terminal-panel {
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-lg);
   background: var(--surface);
 }
 .terminal-muted { color: var(--muted); }
 .terminal-mono { font-variant-numeric: tabular-nums; }
 
-* { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
-*::-webkit-scrollbar { width: 8px; height: 8px; }
-*::-webkit-scrollbar-thumb { background: var(--border); border-radius: var(--radius-sm); }
-*::-webkit-scrollbar-track { background: transparent; }
+/* A scrollbar is a quiet wash of the ink on no track, so an inner list's bar reads as part of the
+   panel rather than as a grey slab beside it. Engines that honour the standard properties use
+   them; the prefixed rules are for the ones that do not, drawn as a slim pill inside its gutter. */
+* { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--fg) 18%, transparent) transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--fg) 18%, transparent);
+  background-clip: padding-box;
+  border: 3px solid transparent;
+  border-radius: 999px;
+}
+*::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--fg) 30%, transparent); }
+*::-webkit-scrollbar-track, *::-webkit-scrollbar-corner { background: transparent; }
+/* A virtual list (the request list, a select's options) draws its own bar from a custom property,
+   at 50% black by default: it takes the same wash, and a slimmer gutter inset from the edge. */
+:root { --rc-virtual-list-scrollbar-bg: color-mix(in srgb, var(--fg) 18%, transparent); }
+.ant-listy-scrollbar-vertical, .rc-virtual-list-scrollbar-vertical { width: 6px !important; right: 2px !important; }
+.ant-listy-scrollbar-thumb:hover, .rc-virtual-list-scrollbar-thumb:hover { --rc-virtual-list-scrollbar-bg: color-mix(in srgb, var(--fg) 30%, transparent); }
 /* The console's one focus ring, for everything a keyboard reaches - except a text field. A text
    field sits inside a control that draws its own focus on the *outer* box (antd's accent border
    and halo on an Input, a Select, a picker or a number field), and a browser matches
@@ -877,9 +1035,22 @@ a { color: inherit; }
 :focus-visible:not(input):not(textarea) { outline: none; box-shadow: 0 0 0 2px var(--accent) !important; border-radius: var(--radius-sm); }
 input:focus-visible, textarea:focus-visible { outline: none; }
 
-.app-shell { height: 100vh; height: 100dvh; overflow: hidden; background: var(--bg); }
-.app-body { height: 100%; min-width: 0; overflow: hidden; }
-.app-sider { display: flex; flex-direction: column; height: 100%; overflow: hidden; background: var(--bg) !important; }
+/* ── shell: a rail on the canvas, the page on one sheet ─────────────────────
+   Two layers and no rules between them. The navigation stands on the canvas, which is chrome;
+   the page is drawn on a single panel inset from the window's edges, which is the work. The
+   panel's rounded edge is what separates the two, so neither the rail nor the header carries a
+   border of its own (design.md §5). */
+.app-shell { height: 100vh; height: 100dvh; overflow: hidden; background: var(--canvas); }
+.app-shell > .app-body {
+  height: calc(100% - 16px);
+  margin: 8px 8px 8px 0;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+.app-sider { display: flex; flex-direction: column; height: 100%; overflow: hidden; background: var(--canvas) !important; }
 /* antd wraps a Sider's children in a plain block, so the flex column above
    never reached brand / nav / foot. The nav box stayed content-sized and the
    footer floated just below it, leaving dead space at the bottom edge. */
@@ -888,7 +1059,7 @@ input:focus-visible, textarea:focus-visible { outline: none; }
    Every other row in this rail starts on that axis, so a centred mark is the only element
    off it and reads as detached from the list below it. 20px puts the artwork's ink (which
    has ~8 units of its own leading margin) on the same axis as the group titles. */
-.app-brand { display: flex; align-items: center; min-height: 56px; height: 56px; padding: 0 20px; cursor: pointer; border-bottom: 1px solid var(--border); }
+.app-brand { display: flex; align-items: center; min-height: 60px; height: 60px; padding: 0 20px; cursor: pointer; }
 /* Sized by height: the wordmark is about 5.9:1 and the O about 1:1, so both take their own
    width and neither is letterboxed by a fixed box. */
 .app-brand-logo { display: block; flex: none; width: auto; }
@@ -896,18 +1067,37 @@ input:focus-visible, textarea:focus-visible { outline: none; }
    out of one side of a 236px rail, so the rows sat off the brand's axis whenever the list
    overflowed and jumped back when it did not. */
 .app-sider-scroll { flex: 1 1 0; }
-.app-sider-viewport { padding: 6px 8px; }
+.app-sider-viewport { padding: 0 10px 12px; }
 .app-menu { background: transparent !important; border-inline-end: 0 !important; }
-.app-menu .ant-menu-item-group-title { color: var(--meta) !important; font-size: var(--text-2xs); letter-spacing: .14em; text-transform: uppercase; padding: 14px 12px 6px; }
-.app-menu .ant-menu-item { color: var(--muted); margin: 2px 8px; width: calc(100% - 16px); padding-inline: 10px; border-radius: var(--radius-sm); }
-.app-menu .ant-menu-item-selected { color: var(--fg) !important; font-weight: 600; background: transparent !important; box-shadow: inset 2px 0 0 var(--fg) !important; border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
-.app-menu .app-menu-plugin-logo { width: 16px; height: 16px; flex: none; border-radius: var(--radius-xs); object-fit: contain; }
-.app-menu .ant-menu-item:hover { color: var(--fg) !important; background: var(--surface) !important; }
+/* A group's name is a quiet caption over its entries, in the reading case: it orients, it does
+   not compete with the entries for the eye. */
+.app-menu .ant-menu-item-group-title { color: var(--meta) !important; font-size: var(--text-sm); font-weight: 500; padding: 16px 10px 4px; }
+.app-menu .ant-menu-item-group:first-child .ant-menu-item-group-title { padding-top: 4px; }
+/* An entry is a soft row. Its fills are foreground washed over whatever it stands on, so the
+   same rule reads on the canvas rail and on the phone sheet's elevated ground alike. The
+   selected entry is the stronger wash in the full text colour - never a coloured bar, because
+   the rail is chrome and colour belongs to the data. */
+.app-menu .ant-menu-item {
+  color: var(--fg-2);
+  margin: 1px 0;
+  width: 100%;
+  padding-inline: 10px;
+  border-radius: var(--radius-md);
+  transition: background-color var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard) !important;
+}
+.app-menu .ant-menu-item .ant-menu-item-icon { font-size: var(--text-lg); color: var(--muted); transition: color var(--motion-fast) var(--ease-standard); }
+.app-menu .ant-menu-item-selected { color: var(--fg) !important; font-weight: 500; background: color-mix(in srgb, var(--fg) 8%, transparent) !important; }
+.app-menu .ant-menu-item-selected .ant-menu-item-icon, .app-menu .ant-menu-item:hover .ant-menu-item-icon { color: var(--fg); }
+/* A plugin page's artwork can have any intrinsic size. The nav model hands the
+   same element to the rail and to the sidebar-visibility dialog, so the glyph box belongs to the
+   logo itself rather than to the rail that first drew it. */
+.app-menu-plugin-logo { width: 16px; height: 16px; flex: none; }
+.app-menu .ant-menu-item:hover { color: var(--fg) !important; background: color-mix(in srgb, var(--fg) 5%, transparent) !important; }
 /* An available update marks the System Information entry: a `--warn` dot just outside the
    icon's corner, where it touches neither the glyph nor the row's hover fill. */
 .app-menu .app-menu-flagged-icon { position: relative; display: inline-flex; align-items: center; flex: none; }
 .app-menu .app-menu-update-dot { position: absolute; top: -3px; inset-inline-end: -4px; width: 6px; height: 6px; border-radius: 50%; background: var(--warn); }
-.app-menu .ant-menu-item-selected:hover { background: var(--surface) !important; }
+.app-menu .ant-menu-item-selected:hover { background: color-mix(in srgb, var(--fg) 8%, transparent) !important; }
 /* Stands in for every page while the gateway is older than CPA v8. The steps read
    left-aligned under the centred result, like instructions rather than a slogan. */
 .cpa-blocked { max-width: 680px; margin: 48px auto; padding: 0 16px; }
@@ -932,13 +1122,13 @@ input:focus-visible, textarea:focus-visible { outline: none; }
    layout; the row's own `title` and antd's tooltip still carry the name. */
 .ant-layout-sider-collapsed .app-menu .ant-menu-title-content { display: none; }
 /* Collapsed there is no room for a wordmark, so the row centres the O instead. */
-.app-brand-collapsed { justify-content: center; padding: 0; border-bottom: 1px solid var(--border); }
+.app-brand-collapsed { justify-content: center; padding: 0; }
 /* With `viewport-fit=cover` the shell owns the whole screen, which in landscape puts the
    notch over its left edge and the home indicator under its right. The insets are applied
    to the chrome that touches an edge rather than to `.app-content`, because a scroll
    container given a bottom inset scrolls its last line out from under itself. Each inset
    is a floor beneath the design system's own padding, never a replacement for it. */
-.app-header { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 16px; height: var(--app-header-height); padding: 0 max(24px, env(safe-area-inset-right)) 0 max(12px, env(safe-area-inset-left)); background: var(--bg) !important; border-bottom: 1px solid var(--border); }
+.app-header { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 16px; height: var(--app-header-height); padding: 0 max(16px, env(safe-area-inset-right)) 0 max(12px, env(safe-area-inset-left)); background: var(--bg) !important; }
 .app-sider { padding-left: env(safe-area-inset-left); }
 .app-header-left, .app-header-actions, .app-breadcrumb { display: flex; align-items: center; }
 .app-header-left { min-width: 0; gap: 8px; }
@@ -960,6 +1150,10 @@ input:focus-visible, textarea:focus-visible { outline: none; }
    reads as one more label in the shell instead of as an alert. */
 .demo-chip { display: inline-flex; align-items: center; height: 20px; padding: 0 6px; border: 1px solid var(--border); border-radius: var(--radius-xs); background: var(--surface); color: var(--accent); font-size: var(--text-2xs); font-weight: 600; letter-spacing: 0.06em; }
 .app-content { flex: 1 1 0; min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; background: var(--bg); }
+/* A phone has no room for a frame around the page: the panel becomes the screen. */
+@media (max-width: 900px) {
+  .app-shell > .app-body { height: 100%; margin: 0; border: 0; border-radius: 0; }
+}
 /* On the phone shell the content column never pans sideways. `overflow-y: auto` alone computes the
    other axis to `auto`, so anything that reaches past the right edge for a moment - a chart
    readout placed by its library, a popper mid-measure - made the whole page draggable toward
@@ -969,15 +1163,13 @@ input:focus-visible, textarea:focus-visible { outline: none; }
 }
 
 /* ── mobile navigation sheet ────────────────────────────────────────────────
-   The sheet is the side rail at a phone width, so it carries the rail's three parts -
-   brand, nav, foot - and its rules are the rail's, not a second set. All this adds is
-   what a full-height overlay needs and a rail does not: the notch inset, and a scroll
-   region that cannot drag the sheet itself. */
+   The sheet is the side rail at a phone width, so it carries the rail's parts - brand
+   and nav - and uses the rail's rules. All this adds is what a full-height overlay
+   needs and a rail does not: the notch inset, and a scroll region that cannot drag the
+   sheet itself. The left-drawer edge rule comes from the shared drawer treatment. */
 .mobile-nav-drawer .ant-drawer-body {
   padding: 0;
   padding-left: env(safe-area-inset-left);
-  /* The mask is transparent, so the sheet's own edge is what separates it from the page. */
-  border-right: 1px solid var(--border);
 }
 .mobile-nav-drawer .app-brand { cursor: default; }
 /* ── sign-in ──────────────────────────────────────────────────────────────
@@ -1053,7 +1245,7 @@ input:focus-visible, textarea:focus-visible { outline: none; }
    the chart tone names and the status names — because a pip that
    matches no rule silently falls back to grey, which is how a failed
    request once ended up reading as healthy. */
-.legend-dot { width: 7px; height: 7px; display: inline-block; border-radius: var(--radius-xs); background: var(--meta); }
+.legend-dot { width: 7px; height: 7px; display: inline-block; border-radius: 999px; background: var(--meta); }
 .legend-dot.success { background: var(--success); }
 .legend-dot.warn, .legend-dot.warning { background: var(--warn); }
 .legend-dot.danger, .legend-dot.failure { background: var(--danger); }
@@ -1074,12 +1266,11 @@ input:focus-visible, textarea:focus-visible { outline: none; }
 }
 .dashboard-tile {
   border: 1px solid var(--border) !important;
-  border-radius: var(--radius-sm) !important;
-  background: var(--surface) !important;
+  border-radius: var(--radius-lg) !important;
+  background: var(--bg) !important;
   box-shadow: none !important;
   min-width: 0;
 }
-.dashboard-tile.is-wide { grid-column: span 2; }
 .ant-btn.tile-link { height: auto; padding: 0; font-size: var(--text-sm); }
 .dashboard-tile .ant-card-body { padding: 20px; height: 100%; display: flex; flex-direction: column; }
 .dashboard-tile .tile-caption { flex: 1; }
@@ -1097,35 +1288,24 @@ input:focus-visible, textarea:focus-visible { outline: none; }
 .tile-caption .tile-caption-link { height: auto; padding: 0; font-size: inherit; color: var(--warn); }
 .chart-slot { position: relative; margin-top: 14px; min-width: 0; }
 .chart-slot > div { width: 100%; height: 100%; }
-.chart-slot canvas { display: block; width: 100% !important; height: 100% !important; }
 .chart-slot svg { display: block; width: 100%; height: 100%; overflow: visible; }
 .chart-placeholder { margin-top: 14px; border-bottom: 1px solid var(--border-soft); }
 
-@media (max-width: 1100px) {
-  .dashboard-tile.is-wide { grid-column: span 2; }
-}
 @media (max-width: 640px) {
-  .dashboard-tile.is-wide { grid-column: span 2; }
   .dashboard-tile .ant-card-body { padding: 16px; }
   .tile-caption { margin-top: 6px; gap: 2px 10px; font-size: var(--text-sm); }
   .dashboard-tile .chart-slot, .dashboard-tile .chart-placeholder { margin-top: 8px; }
 }
 
 /* ── model panels: the window's token trend and usage ring ───────────────────
-   Two peer cards above the activity grid, each spanning half the grid on a wide viewport. They read
-   one response, so they are drawn from one ranking and a model's colour is the same in both - see
-   `ModelUsagePanels` for why that is a correctness requirement rather than an economy.
+   Two peer widgets, each spanning half the board by default. They read one response, so they are
+   drawn from one ranking and a model's colour is the same in both - see `useDashboardModels` for
+   why that is a correctness requirement rather than an economy.
 
    The blocks below are deliberately NOT `.chart-slot`. That class belongs to the six KPI sparklines,
    and it disables pointer events on its canvas and pins the plot to the slot's height; the model
    trend needs the library's own shared tooltip, which requires the pointer. The two chart surfaces
-   are therefore styled separately even though both hold an AntV mark. */
-.dashboard-models {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 16px;
-  margin-bottom: 32px;
-}
+   are therefore styled separately even though both hold an SVG chart. */
 
 /* `min-width: 0` is load-bearing: these are grid children holding a canvas that sizes to its
    container, and without it a long model name in the legend would push the card wider than its
@@ -1137,11 +1317,7 @@ input:focus-visible, textarea:focus-visible { outline: none; }
    where the drawing stops being worth the space it is taking - the query below stacks the panels
    instead once even that is not enough. */
 .model-ring { position: relative; flex: 0 1 220px; min-width: 160px; display: flex; align-items: center; justify-content: center; }
-/* The square frame carries the drawing and the readout. G2 sizes the canvas from the container and
-   keeps the ring inscribed in that element's own box, but the wrapper's height follows the flex row
-   it sits in and can end up taller than the drawing — which is exactly how the total drifted off the
-   ring's centre. Centring the readout on this square frame, the same box the canvas is sized from,
-   keeps it on the ring's true centre at every card width and pixel ratio. */
+/* The SVG and DOM readout share one square, so container resizing cannot separate their centres. */
 .model-ring-frame {
   position: relative;
   flex: none;
@@ -1151,16 +1327,6 @@ input:focus-visible, textarea:focus-visible { outline: none; }
      given, so a frame that kept its 220px height while its width was clamped would leave the ring
      inscribed in a taller box and the readout floating below the arcs' centre. */
   aspect-ratio: 1 / 1;
-}
-/* The chart fills the frame instead of sizing it. The wrapper the chart library injects carries an
-   inline `position: relative` and an inline height, so this rule has to outrank an inline declaration
-   to make the wrapper a layer of the frame rather than a box the frame has to grow around - otherwise
-   the ring's height is decided by the canvas it is about to contain, which is the circular dependency
-   that left the drawing off-centre. */
-.model-ring-frame > [data-chart-source-type] {
-  position: absolute !important;
-  inset: 0;
-  height: 100% !important;
 }
 /* The centre of the ring. Tabular numerals keep the total from shifting as the value changes between
    polls. */
@@ -1194,66 +1360,27 @@ input:focus-visible, textarea:focus-visible { outline: none; }
    below them - which design.md §7 forbids twice over: a poll is not a view change, and nothing
    expensive may ride along with a re-render. The page's own progress bar already reports the fetch
    without occupying layout. */
-/* The chart runtime's own tooltip, painted by us rather than by the library.
-   G2's default is a near-opaque white box with a sans-serif face and a black text colour, which reads
-   as a foreign element on a warm charcoal console - and in the dark theme it was the brightest thing on
-   the page. These rules are scoped to dashboard chart poppers so nothing else inherits them, and they
-   take their surface and text colours from the palette like every other panel in the app. */
-.chart-slot .g2-tooltip,
-.model-trend .g2-tooltip,
-.model-ring .g2-tooltip {
-  font-family: var(--font-mono) !important;
-  font-size: var(--text-xs) !important;
-  border: 1px solid var(--border) !important;
-  border-radius: var(--radius-xs) !important;
-  background: var(--surface) !important;
-  color: var(--fg) !important;
-  /* The surface is ours and is opaque by construction, so the popper is too. The library's dark theme
-     fades its own tooltip to 0.95, which would let the marks under it show through 5% of the panel -
-     and would make the two themes disagree about a surface neither of them owns. */
-  opacity: 1 !important;
-  box-shadow: none !important;
-  padding: 6px 8px !important;
-  /* The library flips a readout that would leave its chart, and can only do so if the readout is
-     narrower than the screen it flips within. */
-  max-width: calc(100vw - 32px) !important;
-  box-sizing: border-box !important;
-}
-/* The library's own title/name/value rules each set their own colour, so each is overridden rather
-   than left to inherit - an inherited colour is what a later library rule would win against. */
-.model-trend .g2-tooltip .g2-tooltip-title,
-.model-ring .g2-tooltip .g2-tooltip-title,
-.model-trend .g2-tooltip .g2-tooltip-list-item-name-label,
-.model-ring .g2-tooltip .g2-tooltip-list-item-name-label,
-.model-trend .g2-tooltip .g2-tooltip-list-item-value,
-.model-ring .g2-tooltip .g2-tooltip-list-item-value {
-  color: var(--fg) !important;
-  font-family: var(--font-mono) !important;
-}
-
 /* The heading must not stretch the data tracks: a timestamp is often wider than a KPI value.
    Shared content-sized tracks keep markers beside names and align numeric edges across model rows. */
 .omc-tip { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; max-width: 100%; }
 .omc-tip-time { color: var(--muted); margin-bottom: 2px; }
 .omc-tip-rows { display: grid; grid-template-columns: max-content max-content; gap: 2px 6px; max-width: 100%; }
 .omc-tip-rows.has-names { grid-template-columns: max-content minmax(0, max-content) max-content; }
-.omc-tip-rows.has-shares { grid-template-columns: max-content max-content max-content; }
-.omc-tip-rows.has-names.has-shares { grid-template-columns: max-content minmax(0, max-content) max-content max-content; }
+.omc-tip-rows.has-shares,
+.omc-tip-rows.has-notes { grid-template-columns: max-content max-content max-content; }
+.omc-tip-rows.has-names.has-shares,
+.omc-tip-rows.has-names.has-notes { grid-template-columns: max-content minmax(0, max-content) max-content max-content; }
 .omc-tip-row { display: grid; grid-template-columns: subgrid; grid-column: 1 / -1; align-items: center; font-variant-numeric: tabular-nums; }
-.omc-tip-swatch { grid-column: 1; width: 8px; height: 8px; border-radius: var(--radius-xs); }
+.omc-tip-swatch { grid-column: 1; width: 8px; height: 8px; border-radius: 999px; }
 .omc-tip-name { grid-column: 2; color: var(--fg); max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .omc-tip-value { grid-column: 2; color: var(--fg-2); white-space: nowrap; text-align: right; }
 .omc-tip-rows.has-names .omc-tip-value { grid-column: 3; }
-/* Reserve a share track only for readouts that report it. */
-.omc-tip-share { grid-column: 3; color: var(--muted); white-space: nowrap; text-align: right; }
-.omc-tip-rows.has-names .omc-tip-share { grid-column: 4; }
+/* Reserve a metadata track only for readouts that report it. */
+.omc-tip-share,
+.omc-tip-note { grid-column: 3; color: var(--muted); white-space: nowrap; text-align: right; }
+.omc-tip-rows.has-names .omc-tip-share,
+.omc-tip-rows.has-names .omc-tip-note { grid-column: 4; }
 
-@media (max-width: 1100px) {
-  .dashboard-models { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-@media (max-width: 640px) {
-  .dashboard-models { grid-template-columns: minmax(0, 1fr); }
-}
 /* A glyph in the header's own muted ink rather than a framed button: the panel is a reading, and
    its one control should not outweigh the title it sits beside. */
 .quota-refresh.ant-btn { border-color: transparent; background: transparent; box-shadow: none; color: var(--muted); }
@@ -1271,6 +1398,27 @@ input:focus-visible, textarea:focus-visible { outline: none; }
      number - which is how reading this as `fast` stayed invisible until the fast token was
      corrected. */
   animation: route-enter var(--motion-base) var(--ease-standard) both;
+}
+/* Held for the two frames a palette change takes to paint (ThemeContext): the console lands in
+   the new palette at once instead of every surface easing its colours in a frame-dropping burst. */
+:root[data-theme-switching] *,
+:root[data-theme-switching] *::before,
+:root[data-theme-switching] *::after {
+  transition: none !important;
+}
+/* A side sheet decelerates into place and accelerates away, rather than antd's symmetric `ease`:
+   it arrives under the reader's attention and leaves out of it. */
+.ant-drawer-content-wrapper[class*="-enter-active"],
+.ant-drawer-content-wrapper[class*="-appear-active"],
+.ant-drawer-mask[class*="-enter-active"],
+.ant-drawer-mask[class*="-appear-active"] { transition-timing-function: var(--ease-out) !important; }
+.ant-drawer-content-wrapper[class*="-leave-active"],
+.ant-drawer-mask[class*="-leave-active"] { transition-timing-function: cubic-bezier(0.4, 0, 1, 1) !important; }
+/* A palette change cross-fades the whole page (ThemeContext's `withCrossFade`). */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: var(--motion-slow);
+  animation-timing-function: var(--ease-standard);
 }
 @keyframes route-enter {
   from { opacity: 0; transform: translateY(3px); }
@@ -1448,33 +1596,34 @@ input:focus-visible, textarea:focus-visible { outline: none; }
 @keyframes omc-icon-spin {
   to { transform: rotate(360deg); }
 }
-@media (prefers-reduced-motion: reduce) {
-  .ant-drawer .ant-drawer-content-wrapper {
-    transition: none !important;
+:root[data-reduced-motion='true'] {
+  /* Library lifecycles use MotionProvider; CSS-owned effects settle in place. */
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0s !important;
+    transition-delay: 0s !important;
+    animation-duration: 0s !important;
+    animation-delay: 0s !important;
+    animation-iteration-count: 1 !important;
   }
-  /* antd animates a floating panel in with a zoom (`antZoomBigIn`) and does so under reduced motion
-     as well - measured, not assumed. Killing the animation alone is not enough: rc-motion sets the
-     enter state inline and waits for the animation to remove it, so `animation: none` left the panel
-     at scale 0 and opacity 0, i.e. never visible at all (also measured). The settled state is
-     therefore pinned alongside it - which is exactly the state the animation would have reached, so
-     no positioning is changed - and the panel appears in the frame the click happened. */
   .ant-popover,
   .ant-dropdown,
   .ant-select-dropdown,
-  .ant-picker-dropdown {
+  .ant-picker-dropdown,
+  .ant-tooltip,
+  .ant-zoom-big-enter.ant-zoom-big-enter-active, .ant-zoom-big-appear.ant-zoom-big-appear-active,
+  .ant-zoom-big-fast-enter.ant-zoom-big-fast-enter-active, .ant-zoom-big-fast-appear.ant-zoom-big-fast-appear-active,
+  .ant-slide-up-enter.ant-slide-up-enter-active, .ant-slide-up-appear.ant-slide-up-appear-active,
+  .ant-slide-down-enter.ant-slide-down-enter-active, .ant-slide-down-appear.ant-slide-down-appear-active,
+  .ant-zoom-big-leave.ant-zoom-big-leave-active, .ant-zoom-big-fast-leave.ant-zoom-big-fast-leave-active,
+  .ant-slide-up-leave.ant-slide-up-leave-active, .ant-slide-down-leave.ant-slide-down-leave-active,
+  .ant-modal.ant-zoom-enter.ant-zoom-enter-active, .ant-modal.ant-zoom-appear.ant-zoom-appear-active,
+  .ant-modal.ant-zoom-leave.ant-zoom-leave-active {
     animation: none !important;
-    opacity: 1 !important;
-    transform: none !important;
-  }
-  /* rc-motion can retain its leaving node when animation is disabled. A closed
-     popup must disappear rather than remain painted in its pinned entering state. */
-  .ant-popover[class*="-leave"],
-  .ant-dropdown[class*="-leave"],
-  .ant-select-dropdown[class*="-leave"],
-  .ant-picker-dropdown[class*="-leave"] {
-    visibility: hidden !important;
   }
   .route-transition { animation: none; }
+  &::view-transition-old(root),
+  &::view-transition-new(root) { animation: none; }
   /* Rough progress updates on task events only; waiting activity and the completion fade are removed. */
   .progress-bar { transition: none; }
   .progress-bar-activity-mark { animation: none; opacity: 0; }
@@ -1491,7 +1640,8 @@ input:focus-visible, textarea:focus-visible { outline: none; }
 .config-page {
   max-width: none !important;
   margin: 0 !important;
-  padding: 20px 32px 48px;
+  /* With the toolbar's own 14px, the title lands on the 32px line every other page's does. */
+  padding: 18px 32px 48px;
   width: 100%;
   box-sizing: border-box;
 }
@@ -1522,14 +1672,18 @@ input:focus-visible, textarea:focus-visible { outline: none; }
 .config-toolbar-left .terminal-title {
   margin: 0;
   font-size: var(--text-xl);
-  font-weight: 700;
-  letter-spacing: -.02em;
+  font-weight: 600;
+  line-height: 32px;
+  letter-spacing: -0.01em;
 }
 
+/* A settings group is one enclosure on the panel's own ground: the hairline and the large corner
+   group its rows, and the rows inside it are divided by a dashed rule inset from the edge, which
+   reads as "the same group, the next setting" rather than as a new box. */
 .settings-group {
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
+  border-radius: var(--radius-lg);
+  background: var(--bg);
   overflow: hidden;
 }
 
@@ -1570,33 +1724,45 @@ input:focus-visible, textarea:focus-visible { outline: none; }
 }
 
 .settings-toggle-row {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 24px;
-  padding: 14px 20px;
-  border-bottom: 1px solid var(--border-soft);
+  padding: 16px 20px;
 }
 
-.settings-toggle-row:last-child {
-  border-bottom: none;
+.settings-toggle-row + .settings-toggle-row::before,
+.settings-inline-notice + .settings-toggle-row::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  inset-inline: 20px;
+  border-top: 1px dashed var(--border);
 }
+
+/* A notice belongs to the row above it rather than becoming a second setting. */
+.settings-inline-notice { padding: 0 20px 16px; }
 
 .settings-toggle-info {
   min-width: 0;
 }
 
+.settings-toggle-row.is-stacked { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+.settings-toggle-row.is-stacked .settings-toggle-control { width: 100%; justify-content: flex-start; }
+.settings-toggle-row.is-stacked .theme-preset-grid { width: 100%; }
+
 .settings-toggle-title {
   font-size: var(--text-base);
-  font-weight: 500;
+  font-weight: 400;
   color: var(--fg);
   cursor: pointer;
 }
 
 .settings-toggle-desc {
-  font-size: var(--text-sm);
+  font-size: var(--text-md);
   color: var(--muted);
-  margin-top: 2px;
+  margin-top: 4px;
   line-height: 1.5;
 }
 
@@ -1866,12 +2032,29 @@ input:focus-visible, textarea:focus-visible { outline: none; }
 }
 
 /* ── OMC settings page ─────────────────────────────────────────────────────
-   The page reuses the config panel's own settings-group list rather than
-   inventing a second settings idiom: it is the same shape - a titled, bordered
-   group of label/control rows - and docs/design.md's checklist prefers open
-   section lists over card wrappers for settings. All this adds is the spacing
-   between the page's two groups. */
-.omc-settings-group { margin-bottom: 20px; }
+   A page of one-line preferences is read top to bottom like a form, so it takes a reading
+   column rather than the console's full 1440px: at full width a label and its control sat a
+   screen apart. The groups are the config panel's own, with the group's name lifted out of the
+   enclosure into a caption above it - the caption names the section, the enclosure holds its
+   settings, and nothing inside the card competes with the rows. */
+.omc-settings-page { max-width: 920px; }
+.omc-settings-group { margin-bottom: 28px; border: 0; border-radius: 0; background: transparent; overflow: visible; }
+.omc-settings-group > .settings-group-head { padding: 0 2px 8px; border: 0; }
+.omc-settings-group > .settings-group-head .section-head-title { color: var(--fg-2); font-size: var(--text-md); font-weight: 500; }
+.omc-settings-group > :not(.settings-group-head) {
+  background: var(--bg);
+  border-inline: 1px solid var(--border);
+}
+.omc-settings-group > .settings-group-head + * {
+  border-top: 1px solid var(--border);
+  border-start-start-radius: var(--radius-lg);
+  border-start-end-radius: var(--radius-lg);
+}
+.omc-settings-group > :last-child {
+  border-bottom: 1px solid var(--border);
+  border-end-start-radius: var(--radius-lg);
+  border-end-end-radius: var(--radius-lg);
+}
 .theme-preset-grid {
   display: grid;
   /* Four columns: three registered palettes for the mode plus the operator's own. `minmax(0, 1fr)`
@@ -1896,7 +2079,7 @@ input:focus-visible, textarea:focus-visible { outline: none; }
   gap: 6px;
   padding: 10px;
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   background: var(--bg);
   color: var(--fg);
   text-align: left;
@@ -2006,7 +2189,7 @@ input:focus-visible, textarea:focus-visible { outline: none; }
   margin: 0 20px 14px;
   padding: 14px 16px;
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-lg);
   background: var(--surface);
 }
 
@@ -2031,8 +2214,6 @@ input:focus-visible, textarea:focus-visible { outline: none; }
 .palette-editor-field-label {
   color: var(--muted);
   font-size: var(--text-xs);
-  letter-spacing: .06em;
-  text-transform: uppercase;
 }
 
 .palette-editor-actions {
@@ -2270,6 +2451,7 @@ input:focus-visible, textarea:focus-visible { outline: none; }
   .settings-group-head, .settings-group-body { padding: 12px; }
   .settings-group-head { gap: 8px; }
   .settings-toggle-row { gap: 8px; padding-block: 12px; }
+  .settings-inline-notice { padding: 0 20px 12px; }
   .config-page.has-dirty-bar { padding-bottom: calc(var(--config-dirty-height, 0px) + max(12px, env(safe-area-inset-bottom)) + 24px) !important; }
   .ant-modal .ant-modal-title { overflow-wrap: anywhere; }
   .ant-modal .ant-modal-footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }

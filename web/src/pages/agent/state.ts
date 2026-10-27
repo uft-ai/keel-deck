@@ -1,5 +1,6 @@
-import { ASK_QUESTION, isKnownTurnStatus } from '../../components/workspace/conversationLabels';
-export { ASK_QUESTION, callStatusKey, failureKey, formatDuration, isKnownTurnStatus } from '../../components/workspace/conversationLabels';
+import { isKnownTurnStatus } from '../../components/workspace/conversationLabels';
+import { messageKey, type MessageKey } from '../../i18n/catalog';
+export { callStatusKey, failureKey, formatDuration, isKnownTurnStatus } from '../../components/workspace/conversationLabels';
 export { argumentSummary, callDuration, statusTone } from '../../agent/callFacts';
 import { getTimeZone } from '../../utils/time';
 import { getDateTimeFormatter } from '../../utils/dateTimeFormat';
@@ -9,9 +10,9 @@ import { DEFAULT_INFERENCE_ENDPOINT, parseInferenceEndpoint } from '../../types/
 import type { InferenceEndpoint } from '../../types/inferenceEndpoints';
 
 export type {
-  AgentInterrupt, CapabilityReceipt, Conversation, DisplayView, InterruptReason, Trace, Turn, TurnPart, TurnUsage,
+  AgentInterrupt, CapabilityReceipt, Conversation, InterruptReason, Trace, Turn, TurnPart, TurnUsage,
 } from '../../agent/types';
-import { isDisplayTool } from '../../agent/types';
+import { isPresentationTool, PROMPT_OPENUI } from '../../agent/types';
 import type { CapabilityReceipt, Conversation, Turn, TurnPart } from '../../agent/types';
 
 export interface Operation {
@@ -53,9 +54,9 @@ export function operationQuestions(operation: Operation | undefined): AgentQuest
 /**
  * What the operator has chosen for one question while the panel is open.
  *
- * "Something else" is a choice in its own right, as in the coding agents this follows: in a
- * single-choice question it replaces the options rather than adding to one, so a reply never says
- * two things at once. Its text is kept while unchosen, so switching back does not lose typing.
+ * "Something else" is a choice in its own right: in a single-choice question it replaces the
+ * options rather than adding to one, so a reply never says two things at once. Its text is kept
+ * while unchosen, so switching back does not lose typing.
  */
 export interface QuestionDraft {
   selected: string[];
@@ -139,6 +140,8 @@ export interface Capability {
   permission: string;
   risk: string;
   version: number;
+  /** Private operator input the capability waits on: `secret`, `oauth` or `answer`. */
+  human_input?: string;
 }
 
 /**
@@ -148,19 +151,20 @@ export interface Capability {
  * as a failure would be the console mislabelling their own action. Nothing rewrites the stored
  * turn - the label is derived at render time from the code that is already on the wire.
  */
-export function turnLabelKey(turn: Pick<Turn, 'status' | 'code'>): string {
+export function turnLabelKey(turn: Pick<Turn, 'status' | 'code'>): MessageKey {
   if (turn.status === 'error' && turn.code === 'cancelled') return 'agent.status.stopped';
-  return isKnownTurnStatus(turn.status) ? `agent.status.${turn.status}` : 'agent.status.unknown';
+  // A status the console has no sentence for reads as unknown, not as an id.
+  return (isKnownTurnStatus(turn.status) ? messageKey(`agent.status.${turn.status}`) : undefined) ?? 'agent.status.unknown';
 }
 
 /**
- * A turn stopped on the agent's question rather than on a change to approve. Both are stored as
- * `pending`; the footer says which, because "awaiting approval" under a question sends the
- * operator looking for a dialog that is not there.
+ * A turn stopped on a `prompt_openui` form rather than on a change to approve. Both are stored as
+ * `pending`; the footer says which, because "awaiting approval" under a form sends the operator
+ * looking for a dialog that is not there.
  */
 export function isAwaitingAnswer(turn: Pick<Turn, 'status' | 'traces'>): boolean {
   return turn.status === 'pending'
-    && (turn.traces ?? []).some(trace => trace.name === ASK_QUESTION && trace.result.status === 'pending');
+    && (turn.traces ?? []).some(trace => trace.name === PROMPT_OPENUI && trace.result.status === 'pending');
 }
 
 const PREVIEW_FIELDS_MAX = 8;
@@ -215,13 +219,13 @@ export function turnDuration(turn: Turn): number | undefined {
 
 /**
  * The newest turn's id when a retry or an edit may take its place: it is settled, and everything
- * it called only read or drew. The server applies the same rule (`isReplaceable`), so this decides
+ * it called only read or presented. The server applies the same rule (`isReplaceable`), so this decides
  * only whether the actions are offered. A call the directory does not list counts as a change.
  */
 export function replaceableTurnID(conversation: Conversation | undefined, capabilities: readonly { name: string; permission: string }[]): string {
   const last = conversation?.turns.at(-1);
   if (!last || last.status === 'running' || last.status === 'pending') return '';
-  const isHarmless = (name: string) => isDisplayTool(name) || capabilities.some(item => item.name === name && item.permission === 'read');
+  const isHarmless = (name: string) => isPresentationTool(name) || capabilities.some(item => item.name === name && item.permission === 'read');
   return last.traces.every(trace => isHarmless(trace.name)) ? last.id : '';
 }
 

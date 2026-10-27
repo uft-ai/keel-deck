@@ -104,15 +104,17 @@ type TokenStats struct {
 
 // Payload is one CPA usage record as published to the queue.
 type Payload struct {
-	Timestamp     time.Time  `json:"timestamp"`
-	LatencyMS     int64      `json:"latency_ms"`
-	TTFTMS        *int64     `json:"ttft_ms"`
-	Source        string     `json:"source"`
-	AuthIndex     string     `json:"auth_index"`
-	ClientIP      *string    `json:"client_ip"`
-	XForwardedFor *string    `json:"x_forwarded_for"`
-	UserAgent     *string    `json:"user_agent"`
-	Tokens        TokenStats `json:"tokens"`
+	AccountingVersion json.RawMessage `json:"accounting_version"`
+	TokenBreakdown    json.RawMessage `json:"token_breakdown"`
+	Timestamp         time.Time       `json:"timestamp"`
+	LatencyMS         int64           `json:"latency_ms"`
+	TTFTMS            *int64          `json:"ttft_ms"`
+	Source            string          `json:"source"`
+	AuthIndex         string          `json:"auth_index"`
+	ClientIP          *string         `json:"client_ip"`
+	XForwardedFor     *string         `json:"x_forwarded_for"`
+	UserAgent         *string         `json:"user_agent"`
+	Tokens            TokenStats      `json:"tokens"`
 	// TokensReported is tri-state. Nil is a legacy record that omitted the
 	// field. False means the provider explicitly reported no usable counters.
 	// True means the counters were reported, including genuine zeros.
@@ -134,15 +136,15 @@ type Payload struct {
 	// authentication, never the upstream credential that executed the
 	// request. Older gateways omit both; empty and false then mean unknown,
 	// never a negative answer.
-	AccessProvider      string          `json:"access_provider,omitempty"`
-	IsNativeKey         bool            `json:"is_native_key,omitempty"`
-	RequestID           string          `json:"request_id"`
-	ReasoningEffort     string          `json:"reasoning_effort"`
-	ServiceTier         string          `json:"service_tier"`
-	ResponseServiceTier string          `json:"response_service_tier,omitempty"`
-	ResponseModel       string          `json:"response_model,omitempty"`
-	AccountingVersion   int             `json:"accounting_version"`
-	ResponseHeaders     json.RawMessage `json:"response_headers,omitempty"`
+	AccessProvider       string          `json:"access_provider,omitempty"`
+	IsNativeKey          bool            `json:"is_native_key,omitempty"`
+	RequestID            string          `json:"request_id"`
+	ReasoningEffort      string          `json:"reasoning_effort"`
+	ServiceTier          string          `json:"service_tier"`
+	EffectiveServiceTier string          `json:"effective_service_tier"`
+	ResponseServiceTier  string          `json:"response_service_tier,omitempty"`
+	ResponseModel        string          `json:"response_model,omitempty"`
+	ResponseHeaders      json.RawMessage `json:"response_headers,omitempty"`
 }
 
 // FailDetail is how CPA reports why a request failed. A successful record
@@ -159,6 +161,7 @@ const MaxFailBodyRunes = 4096
 
 // Event is the decoded row for usage_events.
 type Event struct {
+	Accounting    *TokenAccounting
 	InstanceID    string
 	EventKey      string
 	APIGroupKey   string
@@ -173,16 +176,17 @@ type Event struct {
 	RequestID  string
 	// AccessProvider and IsNativeKey mirror the payload fields above; empty
 	// and false mean the publishing gateway predates them.
-	AccessProvider      string
-	IsNativeKey         bool
-	ClientIP            *string
-	XForwardedFor       *string
-	UserAgent           *string
-	Model               string
-	ModelAlias          *string
-	ReasoningEffort     string
-	ServiceTier         string
-	ResponseServiceTier string
+	AccessProvider       string
+	IsNativeKey          bool
+	ClientIP             *string
+	XForwardedFor        *string
+	UserAgent            *string
+	Model                string
+	ModelAlias           *string
+	ReasoningEffort      string
+	ServiceTier          string
+	EffectiveServiceTier string
+	ResponseServiceTier  string
 	// ResponseModel is the model the upstream reported having served. Empty
 	// means unknown, never "same as requested": not every upstream declares one.
 	ResponseModel string
@@ -251,26 +255,27 @@ func DecodeEventWithFingerprinter(raw string, instanceID string, observedAt time
 		// Display-only: the recognisable mask of the client key CPA published.
 		// Identity stays the keyed fingerprint in APIGroupKey; the mask never
 		// reaches the fingerprint or the binding logic.
-		APIKeyMask:          security.MaskSecret(payload.APIKey),
-		Provider:            boundedSafe(payload.Provider, 256),
-		Endpoint:            security.PublicEndpoint(payload.Endpoint),
-		AuthType:            normalizeAuthType(payload.AuthType),
-		RequestID:           requestID,
-		AccessProvider:      boundedSafe(payload.AccessProvider, 256),
-		IsNativeKey:         payload.IsNativeKey,
-		ClientIP:            normalizePointer(payload.ClientIP, security.NormalizeClientIP),
-		XForwardedFor:       normalizePointer(payload.XForwardedFor, security.NormalizeForwardedFor),
-		UserAgent:           security.MinimizeUserAgent(valueOf(payload.UserAgent)),
-		Model:               orUnknown(boundedSafe(payload.Model, 256)),
-		ModelAlias:          cleanBoundedString(payload.Alias, 256),
-		ReasoningEffort:     boundedSafe(payload.ReasoningEffort, 128),
-		ServiceTier:         boundedSafe(payload.ServiceTier, 128),
-		ResponseServiceTier: boundedSafe(payload.ResponseServiceTier, 128),
-		ExecutorType:        boundedSafe(payload.ExecutorType, 128),
-		TimestampMS:         timestamp.UnixMilli(),
-		Source:              security.FingerprintOrRedacted(fingerprinter, "usage-source", payload.Source),
-		AuthIndex:           boundedSafe(payload.AuthIndex, 256),
-		Failed:              payload.Failed,
+		APIKeyMask:           security.MaskSecret(payload.APIKey),
+		Provider:             boundedSafe(payload.Provider, 256),
+		Endpoint:             security.PublicEndpoint(payload.Endpoint),
+		AuthType:             normalizeAuthType(payload.AuthType),
+		RequestID:            requestID,
+		AccessProvider:       boundedSafe(payload.AccessProvider, 256),
+		IsNativeKey:          payload.IsNativeKey,
+		ClientIP:             normalizePointer(payload.ClientIP, security.NormalizeClientIP),
+		XForwardedFor:        normalizePointer(payload.XForwardedFor, security.NormalizeForwardedFor),
+		UserAgent:            security.MinimizeUserAgent(valueOf(payload.UserAgent)),
+		Model:                orUnknown(boundedSafe(payload.Model, 256)),
+		ModelAlias:           cleanBoundedString(payload.Alias, 256),
+		ReasoningEffort:      boundedSafe(payload.ReasoningEffort, 128),
+		ServiceTier:          boundedSafe(payload.ServiceTier, 128),
+		EffectiveServiceTier: boundedSafe(payload.EffectiveServiceTier, 128),
+		ResponseServiceTier:  boundedSafe(payload.ResponseServiceTier, 128),
+		ExecutorType:         boundedSafe(payload.ExecutorType, 128),
+		TimestampMS:          timestamp.UnixMilli(),
+		Source:               security.FingerprintOrRedacted(fingerprinter, "usage-source", payload.Source),
+		AuthIndex:            boundedSafe(payload.AuthIndex, 256),
+		Failed:               payload.Failed,
 		// Older CPA builds have no generate flag. Only a successful websocket
 		// executor call with no tokens at all counts as a warm-up.
 		Generate:            generate(payload.Generate, payload.Failed, payload.ExecutorType, payload.Tokens),
@@ -285,6 +290,14 @@ func DecodeEventWithFingerprinter(raw string, instanceID string, observedAt time
 		CacheCreationTokens: nonNegative(payload.Tokens.CacheCreationTokens),
 		TotalTokens:         totalTokens(payload.Tokens),
 		TokensReported:      payload.TokensReported,
+	}
+	event.Accounting = decodeTokenAccounting(payload.AccountingVersion, payload.TokenBreakdown, payload.Tokens)
+	if accounting := event.Accounting; accounting != nil && accounting.Status == "complete" {
+		breakdown := accounting.Breakdown
+		event.InputTokens, event.OutputTokens = breakdown.Input.TotalTokens, breakdown.Output.TotalTokens
+		event.CacheReadTokens, event.CacheCreationTokens = breakdown.Input.CacheReadTokens, breakdown.Input.CacheWriteTokens
+		event.CachedTokens = breakdown.Input.CacheReadTokens
+		event.ReasoningTokens, event.TotalTokens = breakdown.Output.ReasoningTokens, breakdown.TotalTokens
 	}
 	event.ResponseModel = boundedSafe(payload.ResponseModel, 256)
 	event.ModelSubstituted = isServedModelSubstituted(event.Model, event.ModelAlias, event.ResponseModel)

@@ -12,6 +12,7 @@ import { isSafeExternalURL } from '../../utils/externalUrl';
 import { providerStatusPayload } from '../../types/providerId';
 import { lookupProviderFamily } from '../../types/providerFamilies';
 import { modelsToAdd } from '../../utils/modelOptions';
+import { isMotionReduced } from '../../utils/motionPreference';
 import type {
   ProviderItem,
   ProviderModelItem,
@@ -143,7 +144,7 @@ export function useProviderManagement({
     setIsModelPickerOpen(false);
     try {
       const res = await api.pullProviderModels(modelPullPayload({
-        providerId: editingProvider?.id,
+        providerId: editingProvider?.family === formFamily ? editingProvider.id : undefined,
         family: formFamily,
         baseURL: rawUrl,
         storedBaseURL: editingProvider?.base_url,
@@ -295,7 +296,7 @@ export function useProviderManagement({
         setTimeout(() => {
           const el = document.getElementById(`model-card-${id}`);
           if (el) {
-            el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            el.scrollIntoView({ behavior: isMotionReduced() ? 'instant' : 'smooth', block: 'nearest' });
           }
         }, 80);
       } else {
@@ -321,7 +322,7 @@ export function useProviderManagement({
     setTimeout(() => {
       const el = document.getElementById(`model-card-${newId}`);
       if (el) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        el.scrollIntoView({ behavior: isMotionReduced() ? 'instant' : 'smooth', block: 'end' });
       }
     }, 80);
   };
@@ -366,6 +367,12 @@ export function useProviderManagement({
           thinking: { levels: nextLevels },
         };
       })
+    );
+  };
+
+  const setThinkingLevels = (modelId: string, levels: string[]) => {
+    setFormModels((prev) =>
+      prev.map((item) => (item.id === modelId ? { ...item, thinking: { levels } } : item))
     );
   };
 
@@ -439,7 +446,7 @@ export function useProviderManagement({
     }
     try {
       const probed = await api.probeProvider({
-        provider_id: editingProvider ? editingProvider.id : undefined,
+        provider_id: editingProvider?.family === formFamily ? editingProvider.id : undefined,
         family: formFamily,
         base_url: formBaseURL.trim(),
         api_key: apiKey,
@@ -544,6 +551,21 @@ export function useProviderManagement({
    * then the console does need to know what the gateway actually holds.
    */
 
+  // Provider write refusals carry stable codes, so the toast names the problem
+  // in the console's language instead of showing the facade's English prose.
+  // Every code names one thing the operator has to change.
+  const providerWriteMessage = (err: unknown): string => {
+    switch (apiErrorCode(err)) {
+      case 'provider_key_required': return t('pro.error_key_required');
+      case 'provider_duplicate_key': return t('pro.error_duplicate_key');
+      case 'provider_credential_exists': return t('pro.error_credential_exists');
+      case 'provider_stale_identity': return t('pro.error_stale_identity');
+      case 'write_busy': return t('pro.status_update_busy');
+      case 'provider_commit_partial': return t('pro.error_partial_commit');
+      default: return describeError(err);
+    }
+  };
+
   const statusQueue = useLastIntentQueue<boolean>({
     // The queued value is the enabled state the switch shows, not the field the
     // endpoint takes. Inverting it once here, through the named helper, is what
@@ -580,16 +602,10 @@ export function useProviderManagement({
       // A timeout is reported differently from a refusal on purpose: abandoning a
       // request proves only that this console stopped waiting, not that the
       // gateway did not commit, so claiming the update failed would be as
-      // misleading as claiming it succeeded. The busy refusal is named too: its
-      // message arrives from the server in English, and a user-visible string must
-      // come from the dictionary like every other one.
+      // misleading as claiming it succeeded.
       const msg = err instanceof LastIntentTimeoutError
         ? t('pro.status_update_timeout')
-        : apiErrorCode(err) === 'write_busy'
-          ? t('pro.status_update_busy')
-          : err instanceof ApiError
-            ? err.message
-            : String(err);
+        : providerWriteMessage(err);
       toast.error(t('pro.status_update_failed', { msg }));
       // The write did not confirm, so the row's displayed state is unknown rather
       // than merely stale: the list is re-read so the switch shows what the
@@ -608,15 +624,19 @@ export function useProviderManagement({
     // could be shadowed by whatever id the new row landed on. A derived mark is
     // not stored at all, so it keeps following the row's endpoint and name.
     onSuccess: async (data, variables) => {
-      const result = variables.icon === null ? { ok: true } : await writeProviderIcon(data.id, variables.icon);
-      if (!result.ok) { handleCloseProviderDrawer(); void queryClient.invalidateQueries({ queryKey: ['management-providers'] }); return; }
+      const icon = variables.icon;
+      if (icon !== null) {
+        for (const id of data.ids ?? [data.id]) {
+          const result = await writeProviderIcon(id, icon);
+          if (!result.ok) { handleCloseProviderDrawer(); void queryClient.invalidateQueries({ queryKey: ['management-providers'] }); return; }
+        }
+      }
       toast.success(t('pro.provider_created'));
       handleCloseProviderDrawer();
       void queryClient.invalidateQueries({ queryKey: ['management-providers'] });
     },
     onError: (err: unknown) => {
-      const msg = describeError(err);
-      toast.error(msg);
+      toast.error(providerWriteMessage(err));
     },
   });
 
@@ -626,23 +646,35 @@ export function useProviderManagement({
     // Without a chosen mark, the save removes any stored override so the row
     // goes back to the mark its endpoint and name derive.
     onSuccess: async (data, variables) => {
-      const result =
-        variables.icon === null
-          ? await clearProviderIcon(data.id, variables.legacyName)
-          : await writeProviderIcon(data.id, variables.icon);
-      if (!result.ok) { handleCloseProviderDrawer(); void queryClient.invalidateQueries({ queryKey: ['management-providers'] }); return; }
+      if (data.id !== variables.id) {
+        // Refresh the overlays moved by the server before merging an icon pick,
+        // or the cached source ids would be written back over the new positions.
+        handleCloseProviderDrawer();
+        void queryClient.invalidateQueries({ queryKey: ['management-providers'] });
+        await queryClient.fetchQuery({ queryKey: ['preferences'], queryFn: api.getPreferences, staleTime: 0 });
+      }
+      for (const id of data.ids ?? [data.id]) {
+        const result =
+          variables.icon === null
+            ? await clearProviderIcon(id, variables.legacyName)
+            : await writeProviderIcon(id, variables.icon);
+        if (!result.ok) { handleCloseProviderDrawer(); void queryClient.invalidateQueries({ queryKey: ['management-providers'] }); return; }
+      }
       toast.success(t('pro.provider_updated'));
       handleCloseProviderDrawer();
       void queryClient.invalidateQueries({ queryKey: ['management-providers'] });
     },
     onError: (err: unknown) => {
-      const msg = describeError(err);
-      toast.error(msg);
+      if (apiErrorCode(err) === 'provider_commit_partial') {
+        handleCloseProviderDrawer();
+        void queryClient.invalidateQueries({ queryKey: ['management-providers'] });
+        void queryClient.invalidateQueries({ queryKey: ['preferences'] });
+      }
+      toast.error(providerWriteMessage(err));
     },
   });
 
-  const deleteProviderMutation = useMutation({
-    mutationFn: (id: string) => api.deleteManagementProvider(id),
+  const deleteProviderMutation = useMutation({    mutationFn: (id: string) => api.deleteManagementProvider(id),
     onSuccess: (_data, id) => {
       toast.success(t('pro.provider_deleted'));
       shiftCachedProviderIcons(id);
@@ -650,8 +682,7 @@ export function useProviderManagement({
       void queryClient.invalidateQueries({ queryKey: ['management-providers'] });
     },
     onError: (err: unknown) => {
-      const msg = describeError(err);
-      toast.error(msg);
+      toast.error(providerWriteMessage(err));
     },
   });
 
@@ -888,6 +919,8 @@ export function useProviderManagement({
 
     const payload: SaveProviderPayload = {
       family: formFamily,
+      expected_auth_index: editingProvider?.auth_index,
+      expected_name: editingProvider?.upstream_name || editingProvider?.name,
       name: formName.trim() || 'Custom Provider',
       base_url: formBaseURL.trim(),
       website: formWebsite.trim(),
@@ -989,6 +1022,7 @@ export function useProviderManagement({
     handleAddModel,
     updateModelImage,
     toggleThinkingLevel,
+    setThinkingLevels,
     handleSelectIcon,
     toggleKeyExpanded,
     handleKeyAdd,

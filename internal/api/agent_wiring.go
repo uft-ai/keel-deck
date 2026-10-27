@@ -142,6 +142,19 @@ func (h *Handler) operationsService() *operations.Service {
 				models = []string{}
 			}
 			provider := operations.Provider{ID: item.ID, Family: item.Family, Index: index, Name: item.Name, UpstreamName: item.UpstreamName, AuthIndex: item.AuthIndex, IsDisabled: item.Disabled, Models: models}
+			if item.Family == "vertex" {
+				if item.Behavior != nil {
+					provider.OpenAPI = item.Behavior.OpenAPI
+					provider.OpenAPILocation = item.Behavior.OpenAPILocation
+				}
+				for _, model := range item.ModelEntries {
+					override := providerOverrideInherit
+					if model.Options != nil {
+						override = openAPIOverrideState(model.Options.OpenAPI)
+					}
+					provider.ModelEntries = append(provider.ModelEntries, operations.ProviderModel{Name: model.Name, Alias: model.Alias, OpenAPI: override})
+				}
+			}
 			raw, _ := json.Marshal(item)
 			provider.Revision, _ = h.cipher.Fingerprint("provider-operation", string(raw))
 			result = append(result, provider)
@@ -215,14 +228,12 @@ func (h *Handler) operationsService() *operations.Service {
 			h.agent.lastRefresh[authIndex] = time.Now()
 			h.agent.refreshMu.Unlock()
 
-			value, err := quota.NewService(client).RefreshCredentialQuotaModels(ctx, file, h.loadPriorNormalizedQuota(ctx, authIndex), subject.Models)
+			value, err := h.refreshQuotaReading(ctx, quota.NewService(client), file, h.loadPriorNormalizedQuota(ctx, authIndex), subject.Models)
 			if err != nil {
 				return operations.Quota{}, err
 			}
-			if value.Status != "error" && value.Status != "stale" {
-				if err = h.persistNormalizedQuotaSnapshot(ctx, value); err != nil {
-					return operations.Quota{}, err
-				}
+			if err = h.persistNormalizedQuotaSnapshot(ctx, value); err != nil {
+				return operations.Quota{}, err
 			}
 			h.attachWindowCapacity(ctx, value, h.now().UnixMilli())
 			return operations.SafeQuota(value), nil
@@ -266,7 +277,7 @@ func (h *Handler) operationsService() *operations.Service {
 		for provider, entries := range projected {
 			converted := make([]operations.OAuthModelAlias, 0, len(entries))
 			for _, entry := range entries {
-				converted = append(converted, operations.OAuthModelAlias{Name: entry.Name, Alias: entry.Alias, Fork: entry.Fork, DisplayName: entry.DisplayName, ForceMapping: entry.ForceMapping})
+				converted = append(converted, operations.OAuthModelAlias{Name: entry.Name, Alias: entry.Alias, Fork: entry.Fork, DisplayName: entry.DisplayName, ForceMapping: entry.ForceMapping, OpenAPI: entry.OpenAPI})
 			}
 			result[provider] = converted
 		}
@@ -287,7 +298,10 @@ func (h *Handler) operationsService() *operations.Service {
 		}
 		converted := make([]managementOAuthModelAlias, 0, len(aliases))
 		for _, entry := range aliases {
-			converted = append(converted, managementOAuthModelAlias{Name: entry.Name, Alias: entry.Alias, Fork: entry.Fork, DisplayName: entry.DisplayName, ForceMapping: entry.ForceMapping})
+			converted = append(converted, managementOAuthModelAlias{Name: entry.Name, Alias: entry.Alias, Fork: entry.Fork, DisplayName: entry.DisplayName, ForceMapping: entry.ForceMapping, OpenAPI: entry.OpenAPI})
+		}
+		if err := validateOAuthAliasFamily(normalizedProvider, converted); err != nil {
+			return "", nil, err
 		}
 		normalized, err := normalizeManagementOAuthModelAliases(converted)
 		if err != nil {
@@ -295,7 +309,7 @@ func (h *Handler) operationsService() *operations.Service {
 		}
 		result := make([]operations.OAuthModelAlias, 0, len(normalized))
 		for _, entry := range normalized {
-			result = append(result, operations.OAuthModelAlias{Name: entry.Name, Alias: entry.Alias, Fork: entry.Fork, DisplayName: entry.DisplayName, ForceMapping: entry.ForceMapping})
+			result = append(result, operations.OAuthModelAlias{Name: entry.Name, Alias: entry.Alias, Fork: entry.Fork, DisplayName: entry.DisplayName, ForceMapping: entry.ForceMapping, OpenAPI: entry.OpenAPI})
 		}
 		return normalizedProvider, result, nil
 	}
@@ -306,7 +320,7 @@ func (h *Handler) operationsService() *operations.Service {
 		}
 		converted := make([]managementOAuthModelAlias, 0, len(aliases))
 		for _, entry := range aliases {
-			converted = append(converted, managementOAuthModelAlias{Name: entry.Name, Alias: entry.Alias, Fork: entry.Fork, DisplayName: entry.DisplayName, ForceMapping: entry.ForceMapping})
+			converted = append(converted, managementOAuthModelAlias{Name: entry.Name, Alias: entry.Alias, Fork: entry.Fork, DisplayName: entry.DisplayName, ForceMapping: entry.ForceMapping, OpenAPI: entry.OpenAPI})
 		}
 		_, err = h.applyManagementOAuthModelAliases(ctx, client, provider, converted, func(ctx context.Context) error {
 			_, current, err := service.OAuthModelAliases(ctx)
@@ -399,6 +413,9 @@ func (h *Handler) operationsService() *operations.Service {
 			return err
 		}
 		_, err = h.applyManagementAuthFileFields(ctx, client, target.Name, target.AuthIndex, fields)
+		if errors.Is(err, errAuthFileFieldNotApplicable) {
+			return errors.New("invalid_parameters")
+		}
 		return mapAgentProviderError(err)
 	}
 	h.bindProviderOperations(service)
@@ -409,6 +426,9 @@ func (h *Handler) ensureAgent() error {
 	h.agent.once.Do(func() {
 		registry := capability.NewRegistry()
 		h.agent.err = h.operationsService().Register(registry)
+		if h.agent.err == nil {
+			h.agent.err = agent.RegisterPromptOpenUI(registry)
+		}
 		if h.agent.err == nil {
 			h.agent.err = agent.RegisterAskQuestion(registry)
 		}

@@ -1,9 +1,8 @@
 import { ActionMenu } from '../../components/common/ActionMenu';
 import { useTimeZone } from '../../utils/TimeZoneProvider';
 import React from 'react';
-import { Button, Popover, Segmented, Select, Tooltip } from 'antd';
+import { Button, Popover, Segmented, Select } from 'antd';
 import dayjs from '../../utils/time';
-import { useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { EditOutlined, LinkOutlined, SyncOutlined } from '../../components/icons';
 import { api, ApiError, describeError } from '../../api/client';
@@ -11,6 +10,7 @@ import { useT, type TFunc } from '../../i18n';
 import { isDemoMode } from '../../types/demoMode';
 import { formatTimeAgo } from '../../utils/format';
 import { useIsPhoneViewport } from '../../hooks/useIsPhoneViewport';
+import { useViewSearchParams } from '../../hooks/useViewSearchParams';
 import { PageHeader } from '../../components/common/PageHeader';
 import { RefreshButton } from '../../components/common/RefreshButton';
 import { ResponsiveList } from '../../components/common/ResponsiveList';
@@ -34,6 +34,7 @@ import { SearchInput } from '../../components/common/SearchInput';
 import { Toolbar } from '../../components/common/Toolbar';
 import { Pager } from '../../components/common/Pager';
 import { Count } from '../../components/common/Count';
+import { Tooltip } from '../../components/common/Tooltip';
 
 /** One page of the price list, shared by both renderings so a page means the same thing at either width. */
 const PAGE_SIZE = 20;
@@ -42,12 +43,15 @@ type PricingTab = 'models' | 'channels';
 /** `candidates` narrows to custom and linked models OpenRouter has a new price for. */
 type ModelFilter = 'all' | PricingMode | 'unpriced' | 'candidates';
 
-/** A row of the book: a priced model, or a current model with no price yet. */
-type BookRow =
-  | (PricedModel & { rowKind: 'priced' })
-  | { rowKind: 'unpriced'; model: string; usage_30d: PricingUsage; suggestions: UpstreamModel[] };
+/** What a row's price state is, in the four words the book names: the pricing modes, plus unpriced. */
+type RowMode = PricingMode | 'unpriced';
 
-function rowMode(row: BookRow): ModelFilter {
+/** A row of the book: a priced model, or a current model with no price yet. */
+type BookRow = { channel?: string; channelLabel?: string; targetChannel?: string } & (
+  | (PricedModel & { rowKind: 'priced' })
+  | { rowKind: 'unpriced'; model: string; usage_30d: PricingUsage; suggestions: UpstreamModel[] });
+
+function rowMode(row: BookRow): RowMode {
   return row.rowKind === 'unpriced' ? 'unpriced' : modeOf(row);
 }
 
@@ -134,7 +138,7 @@ export const PricingPage: React.FC = () => {
   const toast = useToast();
   const queryClient = useQueryClient();
   const openEditor = useOpenPriceEditor();
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useViewSearchParams();
   const tab: PricingTab = searchParams.get('tab') === 'channels' ? 'channels' : 'models';
   const [search, setSearch] = React.useState('');
   const [filter, setFilter] = React.useState<ModelFilter>('all');
@@ -224,29 +228,38 @@ export const PricingPage: React.FC = () => {
     return [...priced, ...unpriced];
   }, [data]);
 
+  const allGroups = React.useMemo(() => groupPricingModels(rows, data?.providers ?? []).map(group => ({
+    ...group,
+    rows: group.rows.map((row): BookRow => {
+      const channel = group.provider?.channel;
+      const override = data?.channel_models?.find(price => price.channel === channel && price.model === row.model);
+      return override
+        ? { ...override, rowKind: 'priced', usage_30d: row.usage_30d, channelLabel: group.provider?.name }
+        : { ...row, targetChannel: channel, channelLabel: group.provider?.name };
+    }),
+  })), [rows, data?.providers, data?.channel_models]);
+
   const counts = React.useMemo(() => {
-    const result: Record<ModelFilter, number> = { all: rows.length, auto: 0, linked: 0, custom: 0, unpriced: 0, candidates: 0 };
-    rows.forEach((row) => {
+    const scopedRows = allGroups.flatMap(group => group.rows);
+    const result: Record<ModelFilter, number> = { all: scopedRows.length, auto: 0, linked: 0, custom: 0, unpriced: 0, candidates: 0 };
+    scopedRows.forEach((row) => {
       result[rowMode(row)] += 1;
       if (row.rowKind === 'priced' && row.candidate) result.candidates += 1;
     });
     return result;
-  }, [rows]);
+  }, [allGroups]);
 
-  const visibleRows = React.useMemo(() => {
+  const groups = React.useMemo(() => {
     const query = search.trim().toLowerCase();
-    return rows.filter((row) => {
+    return allGroups.map(group => ({ ...group, rows: group.rows.filter((row) => {
       if (filter === 'candidates') {
         if (row.rowKind !== 'priced' || !row.candidate) return false;
       } else if (filter !== 'all' && rowMode(row) !== filter) return false;
       if (!query) return true;
       const upstream = row.rowKind === 'priced' ? row.upstream_id : '';
       return matchesModelSearch(query, row.model, upstream);
-    });
-  }, [rows, search, filter]);
-
-  const allGroups = React.useMemo(() => groupPricingModels(rows, data?.providers ?? []), [rows, data?.providers]);
-  const groups = React.useMemo(() => groupPricingModels(visibleRows, data?.providers ?? []), [visibleRows, data?.providers]);
+    }) })).filter(group => group.rows.length > 0);
+  }, [allGroups, search, filter]);
   const filteredGroups = groups.filter((group) => providerFilter === 'all' || group.id === providerFilter);
   const totalRows = filteredGroups.reduce((total, group) => total + group.rows.length, 0);
   const safePage = Math.min(page, Math.max(1, Math.ceil(totalRows / PAGE_SIZE)));
@@ -262,7 +275,7 @@ export const PricingPage: React.FC = () => {
     if (next === 'models') params.delete('tab');
     else params.set('tab', next);
     return params;
-  }, { replace: true });
+  });
 
   const priceColumns = [
     {
@@ -271,6 +284,8 @@ export const PricingPage: React.FC = () => {
       render: (_: unknown, row: BookRow) => (
         <div className={styles['model-cell']}>
           <div className={styles['model-text']}>
+            {row.channel && <span className={styles['model-sub']}>{t('pricing.scope.channel')} · {row.channelLabel || row.channel}</span>}
+            {row.targetChannel && row.rowKind === 'priced' && <span className={styles['model-sub']}>{t('pricing.scope.inherited')}</span>}
             <span className={styles['model-name']} title={row.model}>{pricingModelIdentity(row.model).label}</span>
             {row.rowKind === 'priced' ? (
               <span className={styles['model-sub']}>
@@ -373,7 +388,7 @@ export const PricingPage: React.FC = () => {
     {
       title: t('common.actions'),
       key: 'actions',
-      width: 64,
+      width: 150,
       align: 'right' as const,
       render: (_: unknown, row: BookRow) => (
         <div className="row-actions">
@@ -382,18 +397,24 @@ export const PricingPage: React.FC = () => {
               size="small"
               className="row-action-btn"
               icon={<EditOutlined />}
-              onClick={() => openEditor?.(row.model)}
+              onClick={() => openEditor?.(row.model, { channel: row.channel, channelLabel: row.channelLabel })}
               aria-label={`${row.rowKind === 'priced' ? t('pricing.edit') : t('pricing.set_price')}: ${row.model}`}
               data-testid="pricing-row-edit"
             />
           </Tooltip>
+          {row.targetChannel && <Button size="small" onClick={() => openEditor?.(row.model, { channel: row.targetChannel, channelLabel: row.channelLabel })} data-testid="pricing-channel-model-edit">
+            {t('pricing.scope.channel')}
+          </Button>}
+          {row.channel && <Button size="small" onClick={() => openEditor?.(row.model)} data-testid="pricing-shared-model-edit">
+            {t('pricing.scope.shared')}
+          </Button>}
         </div>
       ),
     },
   ];
 
-  const modelTotal = rows.length;
-  const pricedTotal = data?.models.length ?? 0;
+  const modelTotal = counts.all;
+  const pricedTotal = counts.all - counts.unpriced;
   const subtitle = data
     ? t('pricing.coverage', { priced: pricedTotal, total: modelTotal })
     : undefined;
@@ -548,7 +569,7 @@ export const PricingPage: React.FC = () => {
                     beside every one-model group and doubled the page's height. Later groups
                     keep their header row for assistive technology, visually hidden. */}
                 <ResponsiveList<BookRow>
-                  columns={priceColumns} dataSource={group.rows} rowKey="model"
+                  columns={priceColumns} dataSource={group.rows} rowKey={row => JSON.stringify([row.channel, row.model])}
                   isLoading={result.isLoading} isBlocked={result.isError && !data}
                   emptyText={t('pricing.table.empty_filter')}
                   phone={{ identity: 'model', actions: ['actions'] }} tableProps={{ size: 'small', className: groupIndex === 0 ? undefined : 'data-table-head-hidden' }}

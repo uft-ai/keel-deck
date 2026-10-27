@@ -3,6 +3,7 @@ package quota
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -32,17 +33,22 @@ type RawAntigravityPayload struct {
 	Groups []RawAntigravityGroup `json:"groups"`
 }
 
+func normalizeAntigravityWindow(window string) string {
+	window = strings.ReplaceAll(strings.ReplaceAll(window, "_", " "), "-", " ")
+	return strings.ToLower(strings.Join(strings.Fields(window), " "))
+}
+
 func parseAntigravityWindowHours(window string) float64 {
 	// A substring such as "week" also matches "biweekly"; guessing a shorter
 	// period would mix unrelated traffic into the new capacity numerator.
-	switch strings.ToLower(strings.TrimSpace(window)) {
-	case "5h", "5 hour", "5 hours", "five_hour", "five-hour":
+	switch normalizeAntigravityWindow(window) {
+	case "5h", "5hour", "5hours", "5 hour", "5 hours", "five hour", "five hours":
 		return 5
-	case "24h", "24 hours", "1d", "day", "daily":
+	case "24h", "24hour", "24hours", "24 hour", "24 hours", "1d", "day", "daily":
 		return 24
-	case "7d", "7 days", "1w", "week", "weekly":
+	case "7d", "7day", "7days", "7 day", "7 days", "1w", "week", "weekly":
 		return 168
-	case "30d", "30 days":
+	case "30d", "30day", "30days", "30 day", "30 days":
 		return 720
 	default:
 		// A calendar month is not a fixed 30-day duration.
@@ -50,17 +56,39 @@ func parseAntigravityWindowHours(window string) float64 {
 	}
 }
 
-func translateAntigravityBucketLabel(groupName, bucketName string) string {
-	b := strings.ToLower(strings.TrimSpace(bucketName))
-	windowLabel := bucketName
-	if strings.Contains(b, "5") && strings.Contains(b, "hour") {
-		windowLabel = "5小时限制 (5-Hour)"
-	} else if strings.Contains(b, "daily") || strings.Contains(b, "day") {
-		windowLabel = "每日限制 (Daily)"
-	} else if strings.Contains(b, "week") {
-		windowLabel = "每周限制 (Weekly)"
-	} else if strings.Contains(b, "month") {
+var antigravityRemainingSuffix = regexp.MustCompile(`(?i)\s*[-:]?\s*remaining$`)
+
+// translateAntigravityBucketLabel names a bucket by its period. Upstream's
+// display names drift ("Five Hour Limit Remaining"), so the name is matched
+// after dropping the "Remaining" suffix, and the structured window field
+// decides when the name matches nothing.
+func translateAntigravityBucketLabel(groupName, bucketName, window string) string {
+	b := strings.ToLower(strings.TrimSpace(antigravityRemainingSuffix.ReplaceAllString(bucketName, "")))
+	windowLabel := strings.TrimSpace(antigravityRemainingSuffix.ReplaceAllString(bucketName, ""))
+	switch {
+	case (strings.Contains(b, "5") || strings.Contains(b, "five")) && strings.Contains(b, "hour"):
+		window = "5h"
+	case strings.Contains(b, "daily") || strings.Contains(b, "day"):
+		window = "daily"
+	case strings.Contains(b, "week"):
+		window = "weekly"
+	case strings.Contains(b, "month"):
+		window = "monthly"
+	}
+	switch normalizeAntigravityWindow(window) {
+	case "month", "monthly", "1mo", "1month", "1 month", "calendar month":
 		windowLabel = "每月限制 (Monthly)"
+	default:
+		switch parseAntigravityWindowHours(window) {
+		case 5:
+			windowLabel = "5小时限制 (5-Hour)"
+		case 24:
+			windowLabel = "每日限制 (Daily)"
+		case 168:
+			windowLabel = "每周限制 (Weekly)"
+		case 720:
+			windowLabel = "每月限制 (Monthly)"
+		}
 	}
 
 	if groupName != "" {
@@ -77,6 +105,20 @@ func antigravityBucketWindowOrder(bucket RawAntigravityBucket) int {
 	case 5:
 		return 0
 	case 168:
+		return 1
+	default:
+		return 2
+	}
+}
+
+// Snapshot IDs were allocated after the original five-hour/weekly sort. Its
+// exact identifiers are fixed: expanding display aliases must not assign an
+// existing snapshot ID to a different source bucket.
+func antigravityBucketIdentityOrder(window string) int {
+	switch strings.ToLower(strings.TrimSpace(window)) {
+	case "5h", "5 hour", "5 hours", "five_hour", "five-hour":
+		return 0
+	case "7d", "7 days", "1w", "week", "weekly":
 		return 1
 	default:
 		return 2
@@ -104,18 +146,29 @@ func ParseAntigravityUsage(raw []byte, nowMS int64, serverOffsetMS int64) ([]Quo
 		// Keep each group's windows contiguous while ordering 5h before weekly.
 		buckets := make([]RawAntigravityBucket, len(group.Buckets))
 		copy(buckets, group.Buckets)
+		var identityCounts [3]int
+		for _, bucket := range buckets {
+			identityCounts[antigravityBucketIdentityOrder(bucket.Window)]++
+		}
+		identityPositions := [3]int{0, identityCounts[0], identityCounts[0] + identityCounts[1]}
+		for bucketIndex := range buckets {
+			bucket := &buckets[bucketIndex]
+			identityOrder := antigravityBucketIdentityOrder(bucket.Window)
+			identityIndex := identityPositions[identityOrder]
+			identityPositions[identityOrder]++
+			if bucket.BucketID == "" {
+				bucket.BucketID = bucket.BucketIDAlt
+			}
+			if bucket.BucketID == "" {
+				bucket.BucketID = fmt.Sprintf("bucket_%d_%d", groupIndex, identityIndex)
+			}
+		}
 		sort.SliceStable(buckets, func(i, j int) bool {
 			return antigravityBucketWindowOrder(buckets[i]) < antigravityBucketWindowOrder(buckets[j])
 		})
 
-		for bucketIndex, bucket := range buckets {
+		for _, bucket := range buckets {
 			bucketID := bucket.BucketID
-			if bucketID == "" {
-				bucketID = bucket.BucketIDAlt
-			}
-			if bucketID == "" {
-				bucketID = fmt.Sprintf("bucket_%d_%d", groupIndex, bucketIndex)
-			}
 
 			bName := bucket.DisplayName
 			if bName == "" {
@@ -125,7 +178,7 @@ func ParseAntigravityUsage(raw []byte, nowMS int64, serverOffsetMS int64) ([]Quo
 				bName = bucketID
 			}
 
-			fullLabel := translateAntigravityBucketLabel(gName, bName)
+			fullLabel := translateAntigravityBucketLabel(gName, bName, bucket.Window)
 
 			rawFrac := bucket.RemainingFraction
 			if rawFrac == nil {

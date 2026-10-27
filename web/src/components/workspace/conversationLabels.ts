@@ -1,3 +1,4 @@
+import { messageKey, type MessageKey } from '../../i18n/catalog';
 /**
  * The statuses a turn can legitimately carry.
  *
@@ -28,7 +29,7 @@ export function isKnownTurnStatus(status: string): boolean {
  * The operator reads a localized sentence; the raw identifier remains below it for support.
  * Codes absent from this table fall back to `agent.error.gateway`.
  */
-const FAILURE_KEYS: Record<string, string> = {
+const FAILURE_KEYS: Record<string, MessageKey> = {
   agent_busy: 'agent.error.busy',
   agent_revision_conflict: 'agent.error.conflict',
   confirmation_pending: 'agent.error.pending',
@@ -38,6 +39,8 @@ const FAILURE_KEYS: Record<string, string> = {
   invalid_answer: 'agent.error.answer',
   capability_forbidden: 'agent.error.forbidden',
   capability_unavailable: 'agent.error.unavailable',
+  openui_change_needs_action: 'agent.error.openui_action',
+  openui_change_needs_review: 'agent.error.openui_review',
   invalid_parameters: 'agent.error.parameters',
   invalid_timezone: 'omc.timezone_invalid',
   invalid_tool_arguments: 'agent.error.arguments',
@@ -87,7 +90,7 @@ const FAILURE_KEYS: Record<string, string> = {
   demo_replay_only: 'demo.replay_only',
 };
 
-export function failureKey(code: string): string {
+export function failureKey(code: string): MessageKey {
   return FAILURE_KEYS[code] ?? 'agent.error.gateway';
 }
 
@@ -97,7 +100,7 @@ export function failureKey(code: string): string {
  * The code itself is still printed beneath the sentence, because a support conversation needs the
  * identifier; it is just not the message. Codes absent from this table read as a gateway failure.
  */
-const ERROR_KEYS: Record<string, string> = {
+const ERROR_KEYS: Record<string, MessageKey> = {
   demo_replay_only: 'demo.replay_only',
   client_key_required: 'pg.error.key',
   client_key_missing: 'pg.error.key_missing',
@@ -130,7 +133,7 @@ const ERROR_KEYS: Record<string, string> = {
   demo_operation_refused: 'demo.blocked',
 };
 
-export function playgroundErrorKey(code: string): string {
+export function playgroundErrorKey(code: string): MessageKey {
   return ERROR_KEYS[code] ?? 'pg.error.gateway';
 }
 
@@ -144,23 +147,29 @@ export function formatDuration(milliseconds: number): string {
   return `${minutes}m ${Math.round(seconds - minutes * 60)}s`;
 }
 
-/** The capability the agent asks the operator through; registered by the server's agent runtime. */
-export const ASK_QUESTION = 'ask_question';
+/**
+ * The two tools a turn waits on an answer for: a form the model composed, and the console's own
+ * question panel. Both read as a question, never as a decision to allow or deny.
+ */
+const PROMPT_OPENUI = 'prompt_openui';
+const ASK_QUESTION = 'ask_question';
 
 /**
  * The label a call row states: running, done, needs you, uncertain, failed. A call waiting on the
- * agent's question says so rather than "awaiting confirmation", which would send the operator
+ * agent's form says so rather than "awaiting confirmation", which would send the operator
  * looking for an approval that is not there.
  */
-export function callStatusKey(trace: { name: string; result: { status: string } }): string {
+export function callStatusKey(trace: { name: string; result: { status: string } }): MessageKey {
   switch (trace.result.status) {
     case 'running':
       return 'agent.call.running';
     case 'pending':
-      return trace.name === ASK_QUESTION ? 'agent.status.question' : 'agent.call.needs_you';
+      return trace.name === PROMPT_OPENUI || trace.name === ASK_QUESTION ? 'agent.status.question' : 'agent.call.needs_you';
     case 'success':
       return 'agent.call.done';
     default:
-      return isKnownTurnStatus(trace.result.status) ? `agent.status.${trace.result.status}` : 'agent.status.unknown';
+      // The status is the Agent's own, read from its stream: a status the console has no sentence
+      // for reads as unknown rather than as an id.
+      return (isKnownTurnStatus(trace.result.status) ? messageKey(`agent.status.${trace.result.status}`) : undefined) ?? 'agent.status.unknown';
   }
 }

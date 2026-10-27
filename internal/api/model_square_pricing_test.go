@@ -26,7 +26,7 @@ func (lister scopedAliasLister) ListConfiguredModelSnapshot(ctx context.Context)
 	snapshot, err := lister.client.ListConfiguredModelSnapshot(ctx)
 	providers := make([]pricing.CatalogProvider, 0, len(snapshot.Providers))
 	for _, provider := range snapshot.Providers {
-		providers = append(providers, pricing.CatalogProvider{ID: provider.ID, Family: provider.Family, Name: provider.Name, Prefix: provider.Prefix, EndpointHost: provider.EndpointHost, IsOAuth: provider.IsOAuth, Models: provider.ListPricingModelIDs()})
+		providers = append(providers, pricing.CatalogProvider{ID: provider.ID, Family: provider.Family, Name: provider.Name, Prefix: provider.Prefix, EndpointHost: provider.EndpointHost, Channel: provider.Channel, Priority: provider.Priority, IsOAuth: provider.IsOAuth, Models: provider.ListPricingModelIDs()})
 	}
 	return pricing.ModelCatalogSnapshot{Models: snapshot.Models, Providers: providers}, err
 }
@@ -86,19 +86,33 @@ func TestModelSquareScopedAliasPriceSavesThroughPricingAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	put := func(model string) {
+	putScoped := func(model, scope string) {
 		t.Helper()
-		response, body := doJSON(t, client, http.MethodPut, baseURL+"/omc/api/v1/pricing/models/"+strings.ReplaceAll(model, "/", "%2F"), `{"mode":"custom","prompt_price_per_1m":2,"completion_price_per_1m":8,"price_multiplier":1}`)
+		response, body := doJSON(t, client, http.MethodPut, baseURL+"/omc/api/v1/pricing/models/"+strings.ReplaceAll(model, "/", "%2F")+scope, `{"mode":"custom","prompt_price_per_1m":2,"completion_price_per_1m":8,"price_multiplier":1}`)
 		if response.StatusCode != http.StatusOK {
-			t.Fatalf("save %s: %d %s", model, response.StatusCode, body)
+			t.Fatalf("save %s%s: %d %s", model, scope, response.StatusCode, body)
 		}
+	}
+	put := func(model string) { t.Helper(); putScoped(model, "") }
+	// Model Square prices the routed upstream on its connection's channel, the identity
+	// requests are billed under; a disabled row's upstream stays priceable there too.
+	const channel = "?channel=" + management.OpenAICompatibilityLabelPrefix + "work"
+	for _, model := range []string{"scoped-model", "retired-model"} {
+		putScoped(model, channel)
+	}
+	response, body := getJSON(t, client, baseURL+"/omc/api/v1/pricing/models/scoped-model"+channel)
+	var channelDetail struct {
+		Price *pricing.ModelPrice `json:"price"`
+	}
+	if err := json.Unmarshal(body, &channelDetail); err != nil || response.StatusCode != http.StatusOK || channelDetail.Price == nil || channelDetail.Price.PromptPricePer1M != 2 {
+		t.Fatalf("channel reload: %d %s %v", response.StatusCode, body, err)
 	}
 	// The exact provider-scoped name, a disabled row's scoped name and a name that
 	// later becomes ambiguous are all saved through the real price API.
 	for _, model := range []string{"team/fast", "team/retired-model", "team/shared-model"} {
 		put(model)
 	}
-	response, body := getJSON(t, client, baseURL+"/omc/api/v1/pricing/models/team%2Ffast")
+	response, body = getJSON(t, client, baseURL+"/omc/api/v1/pricing/models/team%2Ffast")
 	var detail struct {
 		Price *pricing.ModelPrice `json:"price"`
 	}
@@ -144,5 +158,14 @@ func TestModelSquareScopedAliasPriceSavesThroughPricingAPI(t *testing.T) {
 	event, err := repo.GetUsageEvent(ctx, eventID)
 	if err != nil || event.CostUSD != nil || event.PricingStatus != "unpriced" {
 		t.Fatalf("historical request was repriced: %+v %v", event, err)
+	}
+	// A later request on that connection is billed at the channel price.
+	laterID, err := repo.InsertUsageEvents(ctx, []usage.Event{{InstanceID: "default", EventKey: "after-channel-price", Provider: management.OpenAICompatibilityLabelPrefix + "work", Model: "scoped-model", ModelAlias: &alias, TimestampMS: time.Now().UnixMilli(), InputTokens: 1_000_000, OutputTokens: 1, TotalTokens: 1_000_001, Generate: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	later, err := repo.GetUsageEvent(ctx, laterID)
+	if err != nil || later.CostUSD == nil || later.PricingStatus != "priced" || *later.CostUSD < 2 || *later.CostUSD > 2.0001 {
+		t.Fatalf("channel price was not applied: %+v %v", later, err)
 	}
 }

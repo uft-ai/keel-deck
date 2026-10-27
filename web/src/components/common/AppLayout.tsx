@@ -1,30 +1,13 @@
 import React from 'react';
-import { Layout, Menu, Drawer, Tooltip, Button, Breadcrumb } from 'antd';
+import { Layout, Menu, Drawer, Button, Breadcrumb } from 'antd';
 import {
-  PuzzleOutlined,
-  ShopOutlined,
-  AuditOutlined,
-  CloudServerOutlined,
-  CodeSandboxOutlined,
-  ControlOutlined,
-  DashboardOutlined,
-  DollarOutlined,
-  HistoryOutlined,
-  InfoCircleOutlined,
-  KeyOutlined,
-  LoginOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
-  ProfileOutlined,
-  RobotOutlined,
-  SettingOutlined,
-  BlockOutlined,
 } from '../icons';
 import type { MenuProps } from 'antd';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { HeaderNav } from './HeaderNav';
 import { NARROW_VIEWPORT_QUERY } from '../../hooks/useIsNarrowViewport';
-import { useOverlayHistory } from '../../hooks/useOverlayHistory';
 import { useDocumentTitle } from '../../hooks/useDocumentTitle';
 import { DataProgress } from './DataProgress';
 import { RouteLoading } from './PageLoading';
@@ -38,30 +21,18 @@ import { useT, type TFunc } from '../../i18n';
 import { PricingEditorProvider } from '../pricing/PricingEditorContext';
 import { useToast } from '../feedback';
 import { preloadRoute } from '../../routePreload';
-import { collectPluginPages, PLUGIN_PAGE_ROUTE_PREFIX, type PluginPageEntry } from '../plugins/pluginPages';
-import { isRenderableLogoURL } from '../../types/pluginOAuthProviders';
+import { collectPluginPages, PLUGIN_PAGE_ROUTE_PREFIX } from '../plugins/pluginPages';
+import { buildNavGroups } from './navigation';
+import { navEntryLabel, type NavEntry, type NavGroup } from '../../types/sidebarNav';
+import { usePreference } from '../../hooks/usePreference';
+import { useNavLayout } from '../../hooks/useNavLayout';
 import { usePendingUpdates } from '../../hooks/useUpdateNotice';
+import { Tooltip } from './Tooltip';
 
 const { Sider, Content } = Layout;
 
 type NavItem = Required<MenuProps>['items'][number];
 
-interface NavEntry {
-  key: string;
-  /** A translation key, or for a plugin's own page the label the plugin registered. */
-  labelKey: string;
-  isLiteralLabel?: boolean;
-  icon: React.ReactNode;
-}
-
-interface NavGroup {
-  key: string;
-  labelKey: string;
-  items: NavEntry[];
-}
-
-// Groups mirror the navigation model: Operate / Gateway / Observe / Control,
-// plus the Oh My CPA layer.
 /**
  * Routes that own their scroll columns rather than scrolling the content area.
  *
@@ -83,81 +54,6 @@ function isWorkspaceRoute(pathname: string): boolean {
  */
 function routeViewKey(pathname: string): string {
   return pathname === '/plugins' || pathname.startsWith('/plugins/') ? '/plugins' : pathname;
-}
-
-const staticNavGroups: NavGroup[] = [
-  {
-    key: 'operate',
-    labelKey: 'nav.group.operate',
-    items: [
-      { key: '/dashboard', labelKey: 'nav.dashboard', icon: <DashboardOutlined /> },
-      { key: '/agent', labelKey: 'nav.agent', icon: <RobotOutlined /> },
-      { key: '/playground', labelKey: 'nav.playground', icon: <CodeSandboxOutlined /> },
-      { key: '/model-square', labelKey: 'nav.model_square', icon: <BlockOutlined /> },
-    ],
-  },
-  {
-    key: 'gateway',
-    labelKey: 'nav.group.gateway',
-    items: [
-      // Upstream credentials first (provider keys, then OAuth accounts), then the keys
-      // clients use to reach this gateway: the group reads in the direction a request
-      // is authorised, rather than interleaving the two sides.
-      { key: '/ai-providers', labelKey: 'nav.providers', icon: <CloudServerOutlined /> },
-      // Authentication, credential management and quota are one credential-centred workspace.
-      { key: '/oauth-management', labelKey: 'nav.auth_files', icon: <LoginOutlined /> },
-      { key: '/api-keys', labelKey: 'nav.api_keys', icon: <KeyOutlined /> },
-    ],
-  },
-  {
-    key: 'observe',
-    labelKey: 'nav.group.observe',
-    items: [
-      { key: '/usage/events', labelKey: 'nav.usage_events', icon: <HistoryOutlined /> },
-      { key: '/pricing', labelKey: 'nav.pricing', icon: <DollarOutlined /> },
-      { key: '/logs', labelKey: 'nav.logs', icon: <ProfileOutlined /> },
-      { key: '/audit', labelKey: 'nav.audit', icon: <AuditOutlined /> },
-    ],
-  },
-  {
-    key: 'control',
-    labelKey: 'nav.group.control',
-    items: [
-      { key: '/config', labelKey: 'nav.config', icon: <ControlOutlined /> },
-      { key: '/omc-settings', labelKey: 'nav.omc_settings', icon: <SettingOutlined /> },
-      { key: '/system', labelKey: 'nav.system', icon: <InfoCircleOutlined /> },
-    ],
-  },
-];
-
-/**
- * Plugins are a group of their own: what is installed, the store, and then every page a
- * running plugin registered. A plugin's page is a destination in its own right, so it sits
- * in the navigation beside the console's pages rather than behind the plugin's row.
- */
-function buildNavGroups(pluginPages: readonly PluginPageEntry[]): NavGroup[] {
-  const pluginGroup: NavGroup = {
-    key: 'plugins',
-    labelKey: 'nav.group.plugins',
-    items: [
-      { key: '/plugins', labelKey: 'nav.plugins', icon: <PuzzleOutlined /> },
-      { key: '/plugins/store', labelKey: 'nav.plugin_store', icon: <ShopOutlined /> },
-      ...pluginPages.map((page): NavEntry => ({
-        key: page.route,
-        labelKey: page.navLabel,
-        isLiteralLabel: true,
-        icon: isRenderableLogoURL(page.logo)
-          ? <img className="app-menu-plugin-logo" src={page.logo} alt="" />
-          : <PuzzleOutlined />,
-      })),
-    ],
-  };
-  const controlIndex = staticNavGroups.findIndex((group) => group.key === 'control');
-  return [...staticNavGroups.slice(0, controlIndex), pluginGroup, ...staticNavGroups.slice(controlIndex)];
-}
-
-function navLabel(entry: NavEntry, t: TFunc): string {
-  return entry.isLiteralLabel ? entry.labelKey : t(entry.labelKey);
 }
 
 /** The page that answers "is there a newer version", and so the entry an available update marks. */
@@ -184,8 +80,8 @@ function buildMenuItems(navGroups: readonly NavGroup[], t: TFunc, isCollapsed: b
   if (isCollapsed) {
     return navGroups.flatMap((group) => group.items).map((entry) => {
       // The collapsed row's name is its `title`, so the notice is spoken from there.
-      const title = isFlagged(entry) ? `${navLabel(entry, t)} · ${t('nav.update_available')}` : navLabel(entry, t);
-      return { key: entry.key, icon: iconFor(entry), label: navLabel(entry, t), title, 'data-route-path': entry.key };
+      const title = isFlagged(entry) ? `${navEntryLabel(entry, t)} · ${t('nav.update_available')}` : navEntryLabel(entry, t);
+      return { key: entry.key, icon: iconFor(entry), label: navEntryLabel(entry, t), title, 'data-route-path': entry.key };
     });
   }
   return navGroups.map((group) => ({
@@ -196,8 +92,8 @@ function buildMenuItems(navGroups: readonly NavGroup[], t: TFunc, isCollapsed: b
       key: entry.key,
       icon: iconFor(entry),
       label: isFlagged(entry)
-        ? <>{navLabel(entry, t)}<span className="sr-only"> · {t('nav.update_available')}</span></>
-        : navLabel(entry, t),
+        ? <>{navEntryLabel(entry, t)}<span className="sr-only"> · {t('nav.update_available')}</span></>
+        : navEntryLabel(entry, t),
       title: entry.isLiteralLabel ? entry.labelKey : undefined,
       'data-route-path': entry.key,
     })),
@@ -208,21 +104,24 @@ function isNarrowViewport(): boolean {
   return typeof window !== 'undefined' && window.matchMedia(NARROW_VIEWPORT_QUERY).matches;
 }
 
+function parseSidebarCollapsed(raw: unknown): boolean | undefined {
+  return typeof raw === 'boolean' ? raw : undefined;
+}
+
 export const AppLayout: React.FC = () => {
   const t = useT();
   const toast = useToast();
   const navigate = useNavigate();
   const location = useLocation();
   const queryClient = useQueryClient();
-  const [isCollapsed, setIsCollapsed] = React.useState(false);
+  const sidebarPreference = usePreference('omc_sidebar_collapsed', false, parseSidebarCollapsed);
+  const isCollapsed = sidebarPreference.value;
+  const setIsCollapsed = (next: boolean) => {
+    // A toggle derived from the fallback must not overwrite a stored choice still being read.
+    if (sidebarPreference.loaded) void sidebarPreference.set(next);
+  };
   const [isMobile, setIsMobile] = React.useState(isNarrowViewport);
   const [isMobileNavOpen, setIsMobileNavOpen] = React.useState(false);
-
-  // The sheet is an overlay like any other: Back puts it away rather than leaving the route,
-  // which on a phone is what the hardware button is expected to do. Gated on `isMobile`
-  // because the sheet only exists there, so a rotation that closes it must not leave a
-  // sentinel behind.
-  useOverlayHistory({ isOpen: isMobile && isMobileNavOpen, onClose: () => setIsMobileNavOpen(false) });
 
   React.useEffect(() => {
     const onResize = () => {
@@ -272,20 +171,29 @@ export const AppLayout: React.FC = () => {
   });
   const navGroups = React.useMemo(() => buildNavGroups(collectPluginPages(pluginList?.plugins)), [pluginList]);
   const navEntries = React.useMemo(() => navGroups.flatMap((group) => group.items), [navGroups]);
+  // The rail draws the entries the operator has not hidden, in the order they arranged them.
+  // Everything else on this shell reads the full model, so a page reached by a URL - or by a link
+  // into it - still names itself in the breadcrumb, the document title and the group it belongs to.
+  const { visibleGroups: visibleNavGroups } = useNavLayout(navGroups);
 
   const currentEntry = navEntries
     .filter((entry) => location.pathname === entry.key || location.pathname.startsWith(`${entry.key}/`))
     .sort((a, b) => b.key.length - a.key.length)[0];
   const selectedKey = currentEntry?.key ?? '/dashboard';
   const currentGroup = navGroups.find((group) => group.items.some((entry) => entry.key === selectedKey));
-  const currentLabel = currentEntry ? navLabel(currentEntry, t) : t('common.management');
+  const currentLabel = currentEntry ? navEntryLabel(currentEntry, t) : t('common.management');
   useDocumentTitle(currentLabel);
   const hasPendingUpdate = usePendingUpdates().length > 0;
-  const menuItems = React.useMemo(() => buildMenuItems(navGroups, t, isCollapsed, hasPendingUpdate), [navGroups, t, isCollapsed, hasPendingUpdate]);
+  const menuItems = React.useMemo(() => buildMenuItems(visibleNavGroups, t, !isMobile && isCollapsed, hasPendingUpdate), [visibleNavGroups, t, isMobile, isCollapsed, hasPendingUpdate]);
 
   const selectPage = ({ key }: { key: string }) => {
     navigate(key);
     setIsMobileNavOpen(false);
+  };
+
+  const goToDashboard = () => {
+    setIsMobileNavOpen(false);
+    navigate('/dashboard');
   };
 
   const preloadMenuTarget = (event: React.SyntheticEvent) => {
@@ -312,14 +220,14 @@ export const AppLayout: React.FC = () => {
   const handleBrandKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
-      navigate('/dashboard');
+      goToDashboard();
     }
   };
 
   const brand = (
     <div
       className="app-brand"
-      onClick={() => navigate('/dashboard')}
+      onClick={goToDashboard}
       onKeyDown={handleBrandKeyDown}
       role="button"
       tabIndex={0}
@@ -383,7 +291,7 @@ export const AppLayout: React.FC = () => {
               <Button type="text" icon={<MenuUnfoldOutlined />} onClick={() => setIsMobileNavOpen(true)} aria-label={t('header.open_nav')} />
             ) : (
               <Tooltip title={isCollapsed ? t('header.expand_sidebar') : t('header.collapse_sidebar')}>
-                <Button type="text" icon={isCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />} onClick={() => setIsCollapsed(!isCollapsed)} aria-label={t('header.collapse_sidebar')} />
+                <Button type="text" icon={isCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />} onClick={() => setIsCollapsed(!isCollapsed)} disabled={!sidebarPreference.loaded} aria-label={t(isCollapsed ? 'header.expand_sidebar' : 'header.collapse_sidebar')} />
               </Tooltip>
             )}
             <Breadcrumb
@@ -430,10 +338,10 @@ export const AppLayout: React.FC = () => {
       </Layout>
       {isMobile && (
         /* The sheet carries the same parts as the rail - brand and nav - because it is the
-           rail at a phone width, not a menu of links. Its width is bounded in `vw` as well as `px:`
-           at a 320px viewport a fixed 320px sheet leaves no page visible behind the mask, and the
-           reader loses the sense that this is a layer over where they were. The safe-area inset
-           keeps the rail's labels clear of a landscape notch. */
+           rail at a phone width, not a menu of links. The width is bounded in both `px` and
+           `vw`: at a 320px viewport a fixed 320px sheet leaves no page visible behind the mask,
+           and the reader loses the sense that this is a layer over where they were. The
+           safe-area inset keeps the rail's labels clear of a landscape notch. */
         <Drawer
           placement="left"
           open={isMobileNavOpen}
@@ -441,7 +349,8 @@ export const AppLayout: React.FC = () => {
           size="min(320px, 86vw)"
           closable={false}
           className="mobile-nav-drawer"
-          styles={{ body: { padding: 0, display: 'flex', flexDirection: 'column' } }}
+          aria-label={t('header.nav_sheet')}
+          styles={{ body: { display: 'flex', flexDirection: 'column' } }}
         >
           {brand}
           <OverlayScrollArea className="app-sider-scroll" viewportClassName="app-sider-viewport">{menu}</OverlayScrollArea>

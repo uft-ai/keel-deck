@@ -12,13 +12,14 @@
  * `internal/api/management_providers.go`).
  */
 
+import type { MessageKey } from '../i18n/catalog';
 import type { ProviderBehaviorSwitch, ProviderModelOptionField } from './providers';
 
 export interface ProviderFamilyMeta {
   /** CPA's family key, as sent to and received from the management API. */
   id: string;
   /** i18n key for the family's protocol label. */
-  labelKey: string;
+  labelKey: MessageKey;
   /**
    * Brand colour for the family tag, as a 6-digit hex value.
    *
@@ -98,7 +99,7 @@ export const PROVIDER_FAMILIES: ProviderFamilyMeta[] = [
     iconId: 'Anthropic',
     protocolMatchers: ['claude', 'anthropic', 'messages'],
     supportsErrorRules: true,
-    behaviorSwitches: ['rebuild_mid_system_message'],
+    behaviorSwitches: ['rebuild_mid_system_message', 'native_tool_search'],
   },
   {
     id: 'gemini',
@@ -134,7 +135,8 @@ export const PROVIDER_FAMILIES: ProviderFamilyMeta[] = [
     color: '#4285F4',
     iconId: 'Google',
     protocolMatchers: ['vertex'],
-    behaviorSwitches: ['interactions'],
+    behaviorSwitches: ['interactions', 'openapi', 'openapi_location'],
+ modelOptionFields: ['openapi'],
   },
   {
     id: 'interactions',

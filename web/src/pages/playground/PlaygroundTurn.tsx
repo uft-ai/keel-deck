@@ -1,7 +1,6 @@
 import { LiveElapsed } from '../../components/workspace/LiveElapsed';
 import React from 'react';
-import { Button, Tooltip } from 'antd';
-import { LabelTip } from '../../components/common/LabelTip';
+import { Button } from 'antd';
 import { ActionBarPrimitive, ComposerPrimitive, MessagePrimitive, useAuiState } from '@assistant-ui/react';
 import { clsx } from 'clsx';
 import { BugOutlined, ClockCircleOutlined, DatabaseOutlined, EditOutlined, FieldTimeOutlined, HistoryOutlined, ReloadOutlined, ThunderboltOutlined } from '../../components/icons';
@@ -12,12 +11,13 @@ import workspace from '../../components/workspace/Workspace.module.css';
 import { useI18n } from '../../i18n';
 import { formatTokens } from '../../types/tokenDisplay';
 import { useTokenDisplayStyle } from '../../types/tokenDisplayContext';
-import { eventTokensPerSecond, tpsCalculationHintKey } from '../../types/usageEventMetrics';
-import { effectiveModel, extractThinking, turnTone } from './state';
+import { calculateTokensPerSecond, outputTotalWithReasoning, tpsCalculationHintKey } from '../../types/tpsCalculation';
+import { effectiveModel, extractThinking, playgroundTpsEvidence, turnTone } from './state';
 import type { Turn } from './state';
 import { playgroundErrorKey } from './errors';
 import type { PlaygroundMessageCustom } from './runtime';
 import styles from './PlaygroundPage.module.css';
+import { Tooltip } from '../../components/common/Tooltip';
 
 /** The operator's message: its text and the images that went with it. */
 const UserContent = React.memo(function UserContent({ turn }: { turn: Turn }) {
@@ -73,11 +73,11 @@ export function UserMessage({ canEdit }: { canEdit: boolean }) {
       </div>
       {canEdit && isLast && (
         <ActionBarPrimitive.Root className={workspace['foot-actions']}>
-          <LabelTip title={t('pg.edit_message')}>
+          <Tooltip title={t('pg.edit_message')}>
             <ActionBarPrimitive.Edit asChild>
               <Button type="text" size="small" aria-label={t('pg.edit_message')} icon={<EditOutlined />} />
             </ActionBarPrimitive.Edit>
-          </LabelTip>
+          </Tooltip>
         </ActionBarPrimitive.Root>
       )}
     </MessagePrimitive.Root>
@@ -178,20 +178,21 @@ const AssistantContent = React.memo(function AssistantContent({ turn, isLast, ca
 function TurnFooter({ turn, isLast, canRetry, isReplayable, onInspect, onOpenRequests }: AssistantContentProps) {
   const { t } = useI18n();
   const { style: tokenStyle, tpsMode } = useTokenDisplayStyle();
-  const rate = eventTokensPerSecond({
-    generate: true,
-    latency_ms: turn.durationMS,
-    ttft_ms: turn.firstContentMS,
-    tokens: {
-      output: turn.usage?.completion_tokens ?? 0,
-      total: turn.usage?.total_tokens ?? 0,
-      input: turn.usage?.prompt_tokens ?? 0,
-      reasoning: 0,
-      cached: 0,
-      cache_read: 0,
-      cache_creation: 0,
-    },
-    stream: true,
+  const evidence = playgroundTpsEvidence(turn);
+  const output = outputTotalWithReasoning({
+    inputTokens: turn.usage?.prompt_tokens,
+    outputTokens: turn.usage?.completion_tokens,
+    reasoningTokens: evidence.reasoningTokens,
+    totalTokens: turn.usage?.total_tokens,
+  });
+  const rate = calculateTokensPerSecond({
+    isGeneration: true,
+    outputTokens: output.outputTokens,
+    reasoningTokens: evidence.reasoningTokens,
+    isAccountingValid: output.isAccountingValid,
+    durationMS: turn.durationMS,
+    firstTokenMS: turn.firstContentMS,
+    firstTokenKind: evidence.firstTokenKind,
   }, tpsMode);
   const milliseconds = (value: number) => `${Math.max(0, value).toLocaleString()} ms`;
 
@@ -224,17 +225,17 @@ function TurnFooter({ turn, isLast, canRetry, isReplayable, onInspect, onOpenReq
           <Button type="text" size="small" aria-label={t('pg.view_requests')} disabled={!turn.requestID} icon={<HistoryOutlined />} onClick={() => onOpenRequests(turn)} />
         </Tooltip>
         {isLast && (
-          <LabelTip title={t('pg.regenerate')}>
+          <Tooltip title={t('pg.regenerate')}>
             {/* The framework's reload routes to the same replay the retry always was. A turn whose
                 image was dropped from storage cannot be replayed, and says so instead. */}
             <ActionBarPrimitive.Reload asChild disabled={!canRetry}>
               <Button type="text" size="small" aria-label={t('pg.regenerate')} icon={<ReloadOutlined />} onClick={event => { if (!isReplayable(turn)) event.preventDefault(); }} />
             </ActionBarPrimitive.Reload>
-          </LabelTip>
+          </Tooltip>
         )}
-        <LabelTip title={t('pg.inspect')}>
+        <Tooltip title={t('pg.inspect')}>
           <Button type="text" size="small" aria-label={t('pg.inspect')} icon={<BugOutlined />} onClick={() => onInspect(turn)} />
-        </LabelTip>
+        </Tooltip>
       </span>
     </div>
   );

@@ -1,3 +1,4 @@
+import type { MessageKey } from '../i18n/catalog';
 import { useTimeZone } from '../utils/TimeZoneProvider';
 import React from 'react';
 import {
@@ -6,6 +7,7 @@ import {
   Listy,
   Popover,
 } from 'antd';
+import clsx from 'clsx';
 import { Switch } from '../components/common/Switch';
 import { TablePlaceholder } from '../components/common/ContentPlaceholder';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
@@ -71,12 +73,11 @@ import { RefreshButton } from '../components/common/RefreshButton';
 import { LoadFailure, Notice } from '../components/feedback';
 import { EmptyState } from '../components/common/EmptyState';
 import { FactList } from '../components/common/FactList';
-import { useIsPhoneViewport } from '../hooks/useIsPhoneViewport';
+import { Tooltip } from '../components/common/Tooltip';
 
 export const UsageEventsPage: React.FC = () => {
   useTimeZone();
   const t = useT();
-  const isPhone = useIsPhoneViewport();
   const {
     signature,
     query,
@@ -125,8 +126,14 @@ export const UsageEventsPage: React.FC = () => {
     facetWindow,
     facetRevision,
     refresh,
+    liveRevision,
+    liveState,
+    notifySettled,
     handleManualRefresh,
   } = useUsageEventSync({ query, isAutoRefresh, isFetchingRef });
+  // Pushed or polled is told by the dot's colour and tooltip, so the dot also names it for
+  // a reader who has neither: a keyboard, a screen reader, or a finger with no hover.
+  const liveLabel = t(liveState === 'live' ? 'events.live_pushed' : 'events.live_polling');
   // The header's estimate of the window, re-read on every poll. It is display only:
   // the reads below send the window unresolved, so the server decides what "now" is.
   const displayWindow = React.useMemo(() => eventWindow(query, Date.now()), [query, refresh]);
@@ -149,6 +156,7 @@ export const UsageEventsPage: React.FC = () => {
   const {
     pageRef,
     listRef,
+    isNativeScroll,
     collapse,
     scrolledDown,
     observeLatest,
@@ -211,16 +219,38 @@ export const UsageEventsPage: React.FC = () => {
     cursor,
     since: liveEdge.heldBoundaryID,
   });
+  // A live signal moves the list to a new key, so its read has no data yet and would count as a
+  // load. Only the read the signal alone caused is silent: the same key change that also carries a
+  // new filter, page or manual sync is one the operator asked for.
+  const readCauseRef = React.useRef({ queryString, refresh, liveRevision, isLiveRead: false });
+  if (readCauseRef.current.queryString !== queryString || readCauseRef.current.refresh !== refresh) {
+    const previous = readCauseRef.current;
+    readCauseRef.current = {
+      queryString,
+      refresh,
+      liveRevision,
+      isLiveRead: previous.queryString === queryString && refresh - previous.refresh === liveRevision - previous.liveRevision,
+    };
+  }
   const result = useQuery({
     queryKey: ['usage-events', queryString, refresh],
     queryFn: () => api.getUsageEvents(queryString),
     enabled: isQueryEnabled,
     placeholderData: keepPreviousData,
     staleTime: 5_000,
+    // Every live signal is a new key and a superseded page is never read again, so
+    // keeping it would hold a page per signal for the default five minutes.
+    // keepPreviousData works from the observer's last result, not the old entry.
+    gcTime: 0,
+    meta: { silent: readCauseRef.current.isLiveRead },
   });
   // Assigned after the read it describes, so the poll's interval always observes
   // the latest value without naming it in its dependency list.
   isFetchingRef.current = result.isFetching;
+  // A record that landed while this read was in flight was held for it; it is read now.
+  React.useEffect(() => {
+    if (!result.isFetching) notifySettled();
+  }, [result.isFetching, notifySettled]);
 
   const handlePrevPage = React.useCallback(() => {
     if (!cursors.length || result.isFetching) return;
@@ -333,7 +363,7 @@ export const UsageEventsPage: React.FC = () => {
    * nobody recognises - but the chip must still remove the value it was given,
    * not the label it displayed.
    */
-  const chipLabels: Record<EventFilterKey, string> = {
+  const chipLabels: Record<EventFilterKey, MessageKey> = {
     model: 'events.filter_chip_model',
     model_alias: 'events.filter_chip_model_alias',
     provider: 'events.filter_chip_provider',
@@ -341,6 +371,7 @@ export const UsageEventsPage: React.FC = () => {
     auth_type: 'events.filter_chip_auth_type',
     reasoning: 'events.filter_chip_reasoning',
     service_tier: 'events.filter_chip_service_tier',
+    resolved_service_tier: 'events.filter_chip_resolved_service_tier',
     source: 'events.filter_chip_source',
     api_key: 'events.filter_chip_caller',
     executor: 'events.filter_chip_executor',
@@ -487,7 +518,7 @@ export const UsageEventsPage: React.FC = () => {
       <RequestCollapsibleHeader collapse={collapse}>
         <div className="request-header-content">
           <header className="terminal-page-head">
-            <div>
+            <div className="terminal-page-heading">
               <h1 className="terminal-title">{t('events.title')}</h1>
               <p className="request-window">
                 {dayjs(displayWindow.from).format('MM-DD HH:mm')} — {dayjs(displayWindow.to).format('MM-DD HH:mm')}
@@ -498,7 +529,11 @@ export const UsageEventsPage: React.FC = () => {
                 {/* The pulse only appears while the poll is actually running, so it
                     means "this list is moving" rather than "this page has a
                     setting". */}
-                {isAutoRefresh && <span className="req-live-pulse-dot" aria-hidden="true" />}
+                {isAutoRefresh && (
+                  <Tooltip title={liveLabel}>
+                    <span role="img" aria-label={liveLabel} className={clsx('req-live-pulse-dot', liveState !== 'live' && 'is-polling')} />
+                  </Tooltip>
+                )}
                 <span className="req-auto-refresh-label">{t('events.auto_refresh')}</span>
                 <Switch
                   id="req-auto-refresh"
@@ -545,7 +580,6 @@ export const UsageEventsPage: React.FC = () => {
               <RefreshButton
                 isRefreshing={isSyncing || result.isFetching}
                 disabled={isSyncing}
-                isIconOnly={isPhone}
                 onRefresh={handleManualRefresh}
               />
             </div>
@@ -654,13 +688,13 @@ export const UsageEventsPage: React.FC = () => {
               <Listy<UsageEvent>
                 ref={listRef}
                 key={`${viewScope}:${grouping}`}
-                virtual
+                virtual={!isNativeScroll}
                 height={height}
                 items={events}
                 rowKey="id"
                 group={group}
                 sticky
-                className="request-list"
+                className={clsx('request-list', isNativeScroll && 'is-native-scroll')}
                 onScroll={handleScroll}
                 itemRender={(event) => (
                   <RequestRow

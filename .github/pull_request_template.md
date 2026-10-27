@@ -13,10 +13,12 @@ Leave the PR number out; the squash merge appends it.
 
 ## Validation
 
-<!-- Tick what was run and add the result. Delete the rows the change cannot reach. -->
+<!-- Tick what was run and add the result. Delete the rows the change cannot reach.
+For test changes: name the failure mode, its primary layer, existing coverage consolidated,
+and net execution/maintenance cost. No new behaviour or risk means no new test is needed. -->
 
-- [ ] `pnpm verify`
-- [ ] `pnpm check:ui`
+- [ ] `pnpm test:fast`
+- [ ] `pnpm check:ui` — the change touches UI interactions, layout or browser lifecycle
 - [ ] `pnpm verify:full` — build, embedded distribution, browser harness or workflow changes
 - [ ] `pnpm demo:generate` — console data, a route's response shape or a console read changed, and the dataset diff is committed
 - [ ] `pnpm readme:screenshots` — a pictured page changed how it looks
@@ -24,6 +26,6 @@ Leave the PR number out; the squash merge appends it.
 ## Checklist
 
 - [ ] No API key, token, auth file or production data in the diff, the description or the screenshots.
-- [ ] New user-visible copy is in `web/src/i18n/index.tsx` and every catalog under `web/src/i18n/locales/`.
+- [ ] New user-visible copy is in the appropriate file under `web/src/i18n/locales/` for every supported locale.
 - [ ] Schema changes arrive as a new migration; a consequential, hard-to-reverse decision arrives as an ADR (AGENTS.md §4).
 - [ ] New API responses go through the `internal/api` DTO allowlists.

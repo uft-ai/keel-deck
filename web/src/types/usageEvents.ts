@@ -1,3 +1,5 @@
+import type { MessageKey } from '../i18n/catalog';
+import type { TokenAccounting, TokenAccountingStatus } from './tokenAccounting';
 import type { RequestCostBreakdown, UnpricedReason } from './pricing';
 
 /**
@@ -22,6 +24,8 @@ export interface UsageEventTokens {
 }
 
 export interface UsageEvent {
+  accounting_status?: TokenAccountingStatus;
+  token_accounting?: TokenAccounting | null;
   id: number;
   event_key: string;
   request_id?: string;
@@ -61,7 +65,11 @@ export interface UsageEvent {
   model_alias?: string;
   reasoning_effort?: string;
   service_tier?: string;
+  effective_service_tier?: string;
   response_service_tier?: string;
+  /** Provider-aware mode evidence, not a claim about the final outbound request. */
+  resolved_service_tier?: string;
+  resolved_service_tier_source?: 'request' | 'response' | 'outbound';
   /** The model the upstream reported having served. Absent when it reported
    *  none or the record predates the field, which is "unknown" and never a claim
    *  that the requested model ran. */
@@ -218,6 +226,7 @@ export interface UsageFacets {
   auth_types: UsageFacetValue[];
   reasoning_efforts: UsageFacetValue[];
   service_tiers: UsageFacetValue[];
+  resolved_service_tiers: UsageFacetValue[];
 }
 
 export const USAGE_FACET_KEYS = [
@@ -231,6 +240,7 @@ export const USAGE_FACET_KEYS = [
   'auth_types',
   'reasoning_efforts',
   'service_tiers',
+  'resolved_service_tiers',
 ] as const;
 
 /**
@@ -335,6 +345,7 @@ export const USAGE_MULTI_FILTER_KEYS = [
   'auth_type',
   'reasoning',
   'service_tier',
+  'resolved_service_tier',
 ] as const;
 export type UsageMultiFilterKey = (typeof USAGE_MULTI_FILTER_KEYS)[number];
 
@@ -388,7 +399,7 @@ export function formatUsageRegex(field: UsageRegexField, pattern: string): strin
  * what is certain is reported here - the length, and the two constructs RE2 has
  * no form of - and the server stays the authority on everything else.
  */
-export function usageRegexProblem(pattern: string): string | undefined {
+export function usageRegexProblem(pattern: string): MessageKey | undefined {
   if (pattern.length > USAGE_REGEX_MAX_LENGTH) return 'events.regex_too_long';
   if (/\(\?<?[=!]|\\[1-9]/.test(pattern)) return 'events.regex_unsupported';
   return undefined;

@@ -1,3 +1,4 @@
+import type { MessageKey } from '../i18n/catalog';
 import { FilterDisclosure } from '../components/common/FilterDisclosure';
 import { ActionMenu } from '../components/common/ActionMenu';
 import React, { useRef } from 'react';
@@ -46,7 +47,7 @@ import { Count } from '../components/common/Count';
  */
 const TRAFFIC_WINDOW_QUERY = 'preset=24h';
 
-const STATUS_TILES: readonly { key: ProviderStatusFilter; tone: StatusTone; labelKey: string }[] = [
+const STATUS_TILES: readonly { key: ProviderStatusFilter; tone: StatusTone; labelKey: MessageKey }[] = [
   { key: 'all', tone: 'neutral', labelKey: 'pro.stat_all' },
   { key: 'active', tone: 'success', labelKey: 'pro.status_active' },
   { key: 'disabled', tone: 'warn', labelKey: 'pro.status_disabled' },
@@ -141,6 +142,7 @@ export const ProvidersPage: React.FC = () => {
     handleAddModel,
     updateModelImage,
     toggleThinkingLevel,
+    setThinkingLevels,
     handleSelectIcon,
     toggleKeyExpanded,
     handleKeyAdd,
@@ -431,6 +433,7 @@ export const ProvidersPage: React.FC = () => {
         handleAddModel={handleAddModel}
         updateModelImage={updateModelImage}
         toggleThinkingLevel={toggleThinkingLevel}
+        setThinkingLevels={setThinkingLevels}
         toggleKeyExpanded={toggleKeyExpanded}
         handleKeyAdd={handleKeyAdd}
         handleTestKey={handleTestKey}

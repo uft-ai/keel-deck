@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/oh-my-cpa/oh-my-cpa/internal/cpa/management"
+	"github.com/oh-my-cpa/oh-my-cpa/internal/pluginregistry"
+	"github.com/oh-my-cpa/oh-my-cpa/internal/pricing"
 )
 
 // fixtureInstanceName is the CPA instance the fixture impersonates. The console
@@ -233,17 +235,21 @@ type gatewayKey struct {
 	alias string
 	// usageWeight decides how much of the fabricated traffic this key carries.
 	usageWeight int
+	// userAgent is the client product that uses this key, as CPA reports it after
+	// minimisation: the first token of the header. It is what names the caller on
+	// the routing page, so each key is one recognisable agent.
+	userAgent string
 }
 
 func gatewayKeyCatalog() []gatewayKey {
 	return []gatewayKey{
-		{value: "omc-demo-key-platform", alias: "platform-services", usageWeight: 5},
-		{value: "omc-demo-key-ci", alias: "ci-pipelines", usageWeight: 3},
+		{value: "omc-demo-key-platform", alias: "platform-services", usageWeight: 5, userAgent: "opencode/0.15.8"},
+		{value: "omc-demo-key-ci", alias: "ci-pipelines", usageWeight: 3, userAgent: "codex_cli_rs/0.47.0"},
 		// The alias is rendered in the request list, and the demonstration is public, so
 		// it names a role rather than a person: an operator's own device name here would
 		// put their identity on a page anyone can open.
-		{value: "omc-demo-key-laptop", alias: "personal-laptop", usageWeight: 2},
-		{value: "omc-demo-key-eval", alias: "eval-harness", usageWeight: 1},
+		{value: "omc-demo-key-laptop", alias: "personal-laptop", usageWeight: 2, userAgent: "claude-cli/2.0.14"},
+		{value: "omc-demo-key-eval", alias: "eval-harness", usageWeight: 1, userAgent: "python-httpx/0.27.2"},
 	}
 }
 
@@ -373,6 +379,7 @@ type priceRow struct {
 	completion float64
 	cacheRead  float64
 	cacheWrite float64
+	tiers      []pricing.PriceTier
 }
 
 // customPriceCatalog is the rates an operator set by hand: the relay and
@@ -381,10 +388,17 @@ type priceRow struct {
 func customPriceCatalog() []priceRow {
 	return []priceRow{
 		{model: "mimo-v2.5", prompt: 0.14, completion: 0.28, cacheRead: 0.0028, cacheWrite: 0.14},
-		{model: "minimax-m3", prompt: 0.3, completion: 1.2, cacheRead: 0.06, cacheWrite: 0.3},
+		// A priority lane, so the demo shows a request billed on the upstream's fast
+		// lane at its own rates beside the same model's standard requests.
+		{model: "minimax-m3", prompt: 0.3, completion: 1.2, cacheRead: 0.06, cacheWrite: 0.3, tiers: []pricing.PriceTier{{
+			ServiceTiers: []string{"priority"}, PromptPricePer1M: demoRate(0.6), CompletionPer1M: demoRate(2.4),
+			CacheReadPer1M: demoRate(0.12), CacheWritePer1M: demoRate(0.6),
+		}}},
 		{model: "qwen3.8-omni-flash", prompt: 0.15, completion: 0.47, cacheRead: 0.016, cacheWrite: 0.15},
 	}
 }
+
+func demoRate(value float64) *float64 { return &value }
 
 // channelCatalog is the channel multipliers the fixture configures: the Qwen
 // endpoint is billed under a coding-plan discount, so every request it answers
@@ -523,6 +537,14 @@ func pluginStoreCatalog() []storePluginEntry {
 			description: "Flags a model whose spend leaves its trailing baseline.",
 			repository:  "router-for-me/cpa-plugin-cost-anomaly", license: "MIT",
 			tags: []string{"cost", "alerting"}, sourceID: "official"},
+		// The official registry is a catalogue: it also lists plugins whose code stays in
+		// the author's own repository, which the console marks differently from the
+		// vendor's own plugins.
+		{id: "deepseek-search", name: "DeepSeek Search", version: "0.1.0", author: "karuboniru",
+			description: "Adds DeepSeek-powered web search to Responses-compatible models, with streaming, multi-round search, and client-carried search context.",
+			repository:  "karuboniru/deepseek-search", license: "MIT",
+			tags: []string{"Search", "DeepSeek", "Responses", "Streaming"}, logo: fixtureLogo("DS", "#4D6BFE"),
+			sourceID: "official"},
 		{id: "quota-notifier", name: "Quota notifier", version: "2.1.0", author: "community",
 			description: "Posts a webhook when a credential's quota window crosses a threshold.",
 			repository:  "cpa-community/quota-notifier", license: "MIT",
@@ -532,6 +554,13 @@ func pluginStoreCatalog() []storePluginEntry {
 			description: "Routes a caller key to a credential pool by team.",
 			repository:  "cpa-community/team-router", license: "BSD-3-Clause",
 			tags: []string{"routing"}, logo: fixtureLogo("TR", "#BE185D"), sourceID: "community"},
+		// Oh My CPA's own registry: the source the console manages itself, and the one
+		// whose entries it pins above every other registry's.
+		{id: "usage-digest", name: "Usage digest", version: "0.3.0", author: "oh-my-cpa",
+			description: "Posts a daily spend and request summary for this console to a webhook.",
+			repository:  "WizisCool/omc-plugin-usage-digest", license: "MIT",
+			tags: []string{"observability", "digest"}, logo: fixtureLogo("UD", "#0369A1"),
+			sourceID: pluginregistry.SourceID(pluginregistry.OMCSourceURL)},
 	}
 }
 
@@ -540,6 +569,8 @@ func pluginStoreSources() []map[string]any {
 	return []map[string]any{
 		{"id": "official", "name": "official", "url": "https://plugins.router-for-me.example/registry.json"},
 		{"id": "community", "name": "plugins.cpa-community.example", "url": "https://plugins.cpa-community.example/registry.json"},
+		// CPA names a custom source after its URL host; the console renames this one.
+		{"id": pluginregistry.SourceID(pluginregistry.OMCSourceURL), "name": "raw.githubusercontent.com", "url": pluginregistry.OMCSourceURL},
 	}
 }
 
@@ -552,9 +583,14 @@ func pluginsSection() map[string]any {
 		}
 	}
 	return map[string]any{
-		"enabled":       true,
-		"dir":           "plugins",
-		"store-sources": []string{"https://plugins.cpa-community.example/registry.json"},
+		"enabled": true,
+		"dir":     "plugins",
+		"store-sources": []string{
+			"https://plugins.cpa-community.example/registry.json",
+			// The console appends its own registry when it reconciles the list; the
+			// fixture starts from the state a running installation is in.
+			pluginregistry.OMCSourceURL,
+		},
 		"store-auth": []map[string]any{{
 			"match": "https://plugins.cpa-community.example/", "apply-to": []string{"registry", "artifact"},
 			"type": "bearer", "token-env": "CPA_COMMUNITY_PLUGIN_TOKEN",
@@ -748,38 +784,6 @@ func oauthExcludedModels() map[string]any {
 	}
 }
 
-// usageBucketsPerProvider feeds the overview panel: a rolling history of
-// successes and failures per credential pool.
-func usageBucketsPerProvider(now time.Time) map[string]map[string]map[string]any {
-	series := func(successPerHour, failedPerHour int64) map[string]any {
-		buckets := make([]map[string]any, 0, 12)
-		var success, failed int64
-		for hour := 11; hour >= 0; hour-- {
-			bucket := map[string]any{
-				"time":    now.Add(-time.Duration(hour) * time.Hour).UTC().Format("2006-01-02T15:04:05Z"),
-				"success": successPerHour,
-				"failed":  failedPerHour,
-			}
-			buckets = append(buckets, bucket)
-			success += successPerHour
-			failed += failedPerHour
-		}
-		return map[string]any{"success": success, "failed": failed, "recent_requests": buckets}
-	}
-	return map[string]map[string]map[string]any{
-		"codex":  {"auth-codex-01": series(38, 1), "auth-codex-02": series(14, 1)},
-		"claude": {"auth-claude-01": series(26, 1)},
-		"gemini": {"auth-gemini-01": series(11, 0)},
-		"kimi":   {"auth-kimi-01": series(5, 0)},
-		"xai":    {"auth-xai-01": series(3, 0)},
-		"deepseek": {
-			"auth-key-deepseek-01": series(9, 0),
-			"auth-key-deepseek-02": series(4, 0),
-		},
-		"qwen": {"auth-key-dashscope-01": series(2, 0)},
-	}
-}
-
 // quotaPayloads answers the quota page's upstream reads. The quota service calls
 // these provider URLs through CPA's api-call proxy; the fixture answers them
 // locally, which is what keeps a deployed demo from reaching chatgpt.com or
@@ -827,7 +831,10 @@ func quotaPayloads(now time.Time) map[string]any {
 			"seven_day_opus":   map[string]any{"utilization": 22.9, "resets_at": weeklyReset},
 			"seven_day_sonnet": map[string]any{"utilization": 64.7, "resets_at": weeklyReset},
 			"extra_usage":      map[string]any{"is_enabled": false, "monthly_limit": 0, "used_credits": 0},
-			"limits":           []map[string]any{{"kind": "session", "group": "five_hour", "percent": 36.4, "resets_at": resetAt, "is_active": true}},
+			// The cloud session credit pool shares the legacy Fable key; its dollar
+			// amounts make it a balance rather than a window.
+			"iguana_necktie": map[string]any{"utilization": 30, "limit_dollars": 50, "used_dollars": 15, "remaining_dollars": 35, "resets_at": weeklyReset},
+			"limits":         []map[string]any{{"kind": "session", "group": "five_hour", "percent": 36.4, "resets_at": resetAt, "is_active": true}},
 		},
 		claudeProfileURL: map[string]any{
 			"account":        map[string]any{"email": "ops@acme-labs.example"},
@@ -885,13 +892,31 @@ func quotaPayloads(now time.Time) map[string]any {
 		antigravitySubscriptionURL: map[string]any{"currentTier": map[string]any{"id": "free-tier"}, "paidTier": map[string]any{"id": "g1-pro-tier"}},
 		metaUsageURL:               map[string]any{"subs_tier_name": "Muse Pro", "is_subs_active": true, "subs_usage": map[string]any{"window": map[string]any{"used_percent": 28, "window_duration_mins": 300, "resets_at": now.Add(3 * time.Hour).Unix()}, "weekly": map[string]any{"used_percent": 46, "resets_at": now.Add(4 * 24 * time.Hour).Unix()}}},
 		antigravityUsageURL: map[string]any{
-			"groups": []map[string]any{{
-				"displayName": "Gemini models",
-				"buckets": []map[string]any{{
-					"bucketId": "gemini-shared", "displayName": "Five Hour Limit",
-					"window": "5h", "resetTime": resetAt, "remainingFraction": 0.71,
-				}},
-			}},
+			// The three families a subscription reports, in the provider's own order: two that publish
+			// a five-hour and a weekly bucket, and Gemini 4 Argon, which publishes weekly only. The
+			// weekly-only family is what leaves one group's five-hour column empty in a row.
+			"groups": []map[string]any{
+				{
+					"displayName": "Gemini Models",
+					"buckets": []map[string]any{
+						{"bucketId": "gemini-shared-week", "displayName": "Weekly Limit", "window": "weekly", "resetTime": weeklyReset, "remainingFraction": 0.71},
+						{"bucketId": "gemini-shared-5h", "displayName": "Five Hour Limit", "window": "5h", "resetTime": resetAt, "remainingFraction": 0.86},
+					},
+				},
+				{
+					"displayName": "Claude and GPT models",
+					"buckets": []map[string]any{
+						{"bucketId": "aerolith-week", "displayName": "Weekly Limit", "window": "weekly", "resetTime": weeklyReset, "remainingFraction": 0.94},
+						{"bucketId": "aerolith-5h", "displayName": "Five Hour Limit", "window": "5h", "resetTime": resetAt, "remainingFraction": 1.0},
+					},
+				},
+				{
+					"displayName": "Gemini 4 Argon",
+					"buckets": []map[string]any{
+						{"bucketId": "gemini-4-argon-week", "displayName": "Weekly Limit", "window": "weekly", "resetTime": weeklyReset, "remainingFraction": 0.5},
+					},
+				},
+			},
 		},
 		devinUsageURL: map[string]any{
 			"planStatus": map[string]any{

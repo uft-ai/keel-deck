@@ -26,7 +26,8 @@ import { useTheme } from '../theme/ThemeContext';
 import { ConfigDirtyBar } from '../components/config/ConfigDirtyBar';
 import { useConfigDraft } from '../components/config/useConfigDraft';
 import { ConfigBackupsButton } from '../components/config/ConfigBackupsButton';
-import { useOverlayHistory } from '../hooks/useOverlayHistory';
+import { ConfigOutline, type ConfigOutlineEntry } from '../components/config/ConfigOutline';
+import { areValuesSemanticallyEqual, getFieldSemanticValue } from '../components/config/configDirty';
 import { useIsPhoneViewport } from '../hooks/useIsPhoneViewport';
 import { useVisibleViewport } from '../hooks/useVisibleViewport';
 import { useFocusedRegion } from '../hooks/useFocusedRegion';
@@ -54,6 +55,7 @@ import { Tag } from '../components/common/Tag';
 import { ConfirmAction } from '../components/common/ConfirmAction';
 import { Panel } from '../components/common/Panel';
 import { CopyButton } from '../components/common/CopyButton';
+import { ToolButton } from '../components/common/ToolButton';
 import '../components/config/config.css';
 
 const { Text } = Typography;
@@ -76,7 +78,6 @@ export const ConfigPage: React.FC = () => {
   const sourceFocusTriggerRef = React.useRef<HTMLButtonElement>(null);
   const visibleViewport = useVisibleViewport(isPhone || isSourceFocused);
   useFocusedRegion(isSourceFocused, sourceRef);
-  useOverlayHistory({ isOpen: isSourceFocused, onClose: () => setIsSourceFocused(false) });
 
   const {
     editorRef,
@@ -91,6 +92,7 @@ export const ConfigPage: React.FC = () => {
     conflictState,
     setConflictState,
     docRef,
+    serverDocRef,
     isDirty,
     getFieldValue,
     storedLayout,
@@ -140,11 +142,6 @@ export const ConfigPage: React.FC = () => {
     else if (wasSourceFocused.current) sourceFocusTriggerRef.current?.focus({ preventScroll: true });
     wasSourceFocused.current = isSourceFocused;
   }, [isSourceFocused, editorRef]);
-
-  // The revision-conflict dialog is a decision the operator must make before the draft can be
-  // saved, so Back dismissing it is the same as its own Cancel: the draft is untouched and the
-  // conflict stays reported by the save flow.
-  useOverlayHistory({ isOpen: Boolean(conflictState), onClose: () => setConflictState(null) });
 
   // ── API Keys ────────────────────────────────────────────
   // The key list is edited on its own page (/api-keys), which is the only editor
@@ -204,6 +201,38 @@ export const ConfigPage: React.FC = () => {
     return searchMatchedGroups.reduce((acc, g) => acc + g.matchedFieldIds.length, 0);
   }, [searchMatchedGroups]);
 
+  // Which settings differ from the server, so both rails can point at the edits a save would send.
+  const changedFieldIds = React.useMemo(() => {
+    const changed = new Set<string>();
+    if (!isDirty) return changed;
+    for (const field of ALL_CONFIG_FIELDS) {
+      const current = getFieldSemanticValue(docRef.current, field);
+      const baseline = getFieldSemanticValue(serverDocRef.current, field);
+      if (!areValuesSemanticallyEqual(current, baseline)) changed.add(field.id);
+    }
+    return changed;
+    // rawYaml is the draft's revision: the refs are rewritten before it changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isDirty, rawYaml, docRef, serverDocRef]);
+  const changedSectionIds = React.useMemo(
+    () => new Set(ALL_CONFIG_FIELDS.filter((field) => changedFieldIds.has(field.id)).map((field) => field.sectionId)),
+    [changedFieldIds],
+  );
+
+  const sectionGroups = React.useMemo(() => getGroupsForSection(activeSection), [activeSection]);
+  const outlineEntries = React.useMemo<ConfigOutlineEntry[]>(() => {
+    const toEntry = (grp: ConfigGroupDefinition, fieldIds: string[]) => ({
+      id: grp.id,
+      label: t(grp.labelKey),
+      count: fieldIds.length,
+      isDirty: grp.fieldIds.some((fid) => changedFieldIds.has(fid)),
+    });
+    if (searchQuery) return searchMatchedGroups.map((sg) => toEntry(sg.group, sg.matchedFieldIds));
+    return sectionGroups
+      .map((grp) => toEntry(grp, grp.fieldIds.filter((fid) => ALL_CONFIG_FIELDS.some((f) => f.id === fid))))
+      .filter((entry) => entry.count > 0);
+  }, [searchQuery, searchMatchedGroups, sectionGroups, changedFieldIds, t]);
+
   // Render individual input/select/switch control
   const sectionContext: ConfigSectionContext = {
     ...draft,
@@ -257,9 +286,7 @@ export const ConfigPage: React.FC = () => {
             />
             <ActionMenu label={t('cfg.tools')}>
               <ConfigBackupsButton isDirty={isDirty} onRestored={reloadBaseline} />
-              <Button size="small" icon={<ReloadOutlined />} disabled={isDirty || configQuery.isFetching} onClick={() => void configQuery.refetch()}>
-                {t('cfg.reload')}
-              </Button>
+              <ToolButton icon={<ReloadOutlined />} label={t('cfg.reload')} disabled={isDirty || configQuery.isFetching} onClick={() => void configQuery.refetch()} />
               <span className="action-menu-label">{t('cfg.items_count', { n: ALL_CONFIG_FIELDS.length, status: isDirty ? t('cfg.source_dirty') : t('cfg.source_clean') })}</span>
             </ActionMenu>
           </div>
@@ -285,7 +312,6 @@ export const ConfigPage: React.FC = () => {
               <Tag tone="success" className="config-sync-badge">{t('cfg.items_count', { n: ALL_CONFIG_FIELDS.length, status: t('cfg.source_clean') })}</Tag>
             )}
             <Segmented
-              size="small"
               value={viewMode}
               onChange={(val) => void handleViewModeChange(val as 'visual' | 'source')}
               options={[
@@ -298,7 +324,6 @@ export const ConfigPage: React.FC = () => {
           <div className="config-toolbar-actions">
             {viewMode === 'visual' && (
               <SearchInput
-                size="small"
                 className="config-search-input"
                 label={t('cfg.search_placeholder')}
                 value={searchQuery}
@@ -308,20 +333,17 @@ export const ConfigPage: React.FC = () => {
 
             <ConfigBackupsButton isDirty={isDirty} onRestored={reloadBaseline} />
 
-            <Button
-              size="small"
+            <ToolButton
               icon={<ReloadOutlined />}
+              label={t('cfg.reload')}
               onClick={() => void configQuery.refetch()}
               loading={configQuery.isFetching}
               disabled={isDirty}
-            >
-              {t('cfg.reload')}
-            </Button>
+            />
 
             {/* Discard needs no confirmation: it is the non-destructive direction. */}
             {isDirty && (
               <Button
-                size="small"
                 icon={<UndoOutlined />}
                 disabled={saveMutation.isPending}
                 onClick={handleDiscardChanges}
@@ -338,7 +360,6 @@ export const ConfigPage: React.FC = () => {
                 global modal the keyboard path uses. */}
             {hasConfigErrors ? (
               <Button
-                size="small"
                 type="primary"
                 icon={<SaveOutlined />}
                 loading={saveMutation.isPending}
@@ -356,7 +377,6 @@ export const ConfigPage: React.FC = () => {
                 disabled={!isDirty || saveMutation.isPending || isDemo}
               >
                 <Button
-                  size="small"
                   type="primary"
                   icon={<SaveOutlined />}
                   loading={saveMutation.isPending}
@@ -398,8 +418,8 @@ export const ConfigPage: React.FC = () => {
           onRetry={() => void configQuery.refetch()}
         />
       ) : viewMode === 'visual' ? (
-        /* Visual mode: sticky section nav, settings canvas, and a balancing
-           right gutter — a three-track grid, not two columns. */
+        /* Visual mode: sticky section nav beside the settings column, which on a
+           wide viewport carries the section's card nav as its own second track. */
         <div className="config-workbench">
           {/* Left: sticky section navigation in the 216px track */}
           <aside className="config-section-nav" aria-label={t('cfg.nav_aria')}>
@@ -420,12 +440,15 @@ export const ConfigPage: React.FC = () => {
                     {sectionIcon(sectionContext, sec.id)}
                     <span>{t(sec.labelKey)}</span>
                   </span>
+                  {changedSectionIds.has(sec.id) && (
+                    <span className="config-change-dot" role="img" aria-label={t('cfg.source_dirty')} />
+                  )}
                 </button>
               );
             })}
           </aside>
 
-          {/* Right: Focused Settings Group Canvas (max-width: 920px) */}
+          {/* Right: Focused Settings Group Canvas (a 920px reading column) */}
           <main className="config-main">
             <SectionHeading
               level="section"
@@ -439,15 +462,20 @@ export const ConfigPage: React.FC = () => {
 
             {searchQuery ? (
               /* Search Results: Grouped by semantic Setting Group Panels */
-              <div className="settings-stack">
+              <div className="settings-stack route-transition" key="search">
                 {searchMatchedGroups.map((sg) => renderGroupPanel(sectionContext, sg.group, sg.matchedFieldIds, 'search'))}
               </div>
             ) : (
-              /* Standard Section Group Panels */
-              <div className="settings-stack">
-                {getGroupsForSection(activeSection).map((grp) => renderGroupPanel(sectionContext, grp))}
+              /* Standard Section Group Panels. Keyed by section, so a switch draws the new
+                 section's cards in with the route's own entrance instead of swapping them. */
+              <div className="settings-stack route-transition" key={activeSection}>
+                {sectionGroups.map((grp) => renderGroupPanel(sectionContext, grp))}
               </div>
             )}
+
+            {/* Beside the cards: the section's cards, the navigation's second level, in the
+                column's own grid and level with the section rail and the heading. */}
+            <ConfigOutline entries={outlineEntries} />
           </main>
         </div>
       ) : (

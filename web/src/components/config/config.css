@@ -13,10 +13,11 @@
 .config-search-input {
   width: 240px;
 }
-/* Balanced three-track workbench */
+/* Balanced three-track workbench: the section rail, then the settings column, which carries the
+   card nav as its own second track so the nav belongs to the cards rather than to the page margin. */
 .config-workbench {
   display: grid;
-  grid-template-columns: 216px minmax(0, 920px) 216px;
+  grid-template-columns: 216px minmax(0, 1fr);
   align-items: start;
   gap: 32px;
   width: min(100%, 1416px);
@@ -39,28 +40,25 @@
   width: 100%;
   padding: 9px 12px;
   border: 0;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--muted);
   font: inherit;
   font-size: var(--text-md);
   text-align: left;
   cursor: pointer;
-  transition: none;
+  transition: background-color var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard);
 }
+/* The section nav is a rail like the console's own: hover and the current section are washes of
+   the ink, and the current one takes the text colour at weight 500. */
 .config-nav-btn:hover {
   color: var(--fg);
-  background: var(--surface);
+  background: color-mix(in srgb, var(--fg) 5%, transparent);
 }
 .config-nav-btn.is-active {
   color: var(--fg);
-  font-weight: 600;
-  background: transparent;
-  box-shadow: inset 2px 0 0 var(--fg);
-  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-}
-.config-nav-btn.is-active:hover {
-  background: var(--surface);
+  font-weight: 500;
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
 }
 .config-nav-btn-left {
   display: flex;
@@ -70,12 +68,121 @@
 }
 .config-main {
   grid-column: 2;
-  width: 100%;
-  max-width: 920px;
+  display: grid;
+  grid-template-columns: minmax(0, 920px) 216px;
+  column-gap: 32px;
+  align-items: start;
   min-width: 0;
+}
+.config-main > :not(.config-outline) {
+  grid-column: 1;
 }
 .config-section-header {
   margin-bottom: 20px;
+}
+/* A card the nav jumps to lands this far below the scroller's top, clear of the sticky toolbar. A
+   card its row points at takes the stronger hairline a focused field's enclosure does. */
+.config-main .settings-group {
+  scroll-margin-top: 96px;
+  transition: border-color var(--motion-fast) var(--ease-standard);
+}
+.config-main .settings-group[data-outline-target] {
+  border-color: var(--muted);
+}
+/* The card nav mirrors the section rail - the same row height, type and ink washes - so the two
+   frame the column as one instrument, first level and second. The trailing count is what sets it
+   apart: a row states its card. The current card's wash slides between rows rather than jumping, and
+   the rows whose cards are on screen read a step brighter than those scrolled away - awareness
+   carried by ink, since a drawn gauge beside the page's own scrollbar reads as a second one. */
+/* Both rails and the section heading share one top line, at rest and stuck under the toolbar. */
+.config-outline {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  position: sticky;
+  top: 68px;
+  max-height: calc(100dvh - 200px);
+  overflow-y: auto;
+  padding: 2px 0;
+  scrollbar-width: none;
+}
+.config-outline-track {
+  --outline-row: 38px;
+  --outline-gap: 3px;
+  position: relative;
+}
+.config-outline-wash {
+  position: absolute;
+  inset-inline: 0;
+  top: 0;
+  height: var(--outline-row);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+  transform: translateY(calc(var(--outline-current, 0) * (var(--outline-row) + var(--outline-gap))));
+  transition: transform var(--motion-base) var(--ease-standard);
+  pointer-events: none;
+}
+.config-outline-list {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--outline-gap);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.config-outline-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: var(--outline-row);
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--text-md);
+  text-align: start;
+  cursor: pointer;
+  transition: background-color var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard);
+}
+.config-outline-link.is-on-screen {
+  color: var(--fg-2);
+}
+.config-outline-link:hover {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 5%, transparent);
+}
+.config-outline-link.is-current {
+  color: var(--fg);
+  font-weight: 500;
+  background: transparent;
+}
+.config-outline-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.config-outline-count {
+  flex: none;
+  min-width: 2ch;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+}
+/* An unsaved edit, marked where it lives: on its section in the rail and on its card in the outline.
+   The same warn hue as the dirty bar's dot, at row scale. */
+.config-change-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warn);
 }
 /* Settings Group Panels Stack */
 .settings-stack {
@@ -151,7 +258,7 @@
   padding: 20px;
   border-top: 1px solid var(--border-soft);
 }
-@media (prefers-reduced-motion: reduce) {
+:root[data-reduced-motion='true'] {
   .settings-tls-body { transition: none; }
 }
 .config-mono-textarea {
@@ -160,10 +267,16 @@
   font-size: var(--text-md);
   border-radius: var(--radius-sm);
 }
-@media (max-width: 1719px) {
+@media (max-width: 1599px) {
   .config-workbench {
-    grid-template-columns: 216px minmax(0, 920px);
     width: min(100%, 1168px);
+  }
+  .config-main {
+    display: block;
+    max-width: 920px;
+  }
+  .config-outline {
+    display: none;
   }
 }
 @media (max-width: 1100px) {
@@ -196,10 +309,6 @@
     width: auto;
     white-space: nowrap;
   }
-  .config-nav-btn.is-active {
-    box-shadow: inset 0 -2px 0 var(--fg);
-    border-radius: var(--radius-sm);
-  }
   .settings-form-grid {
     grid-template-columns: 1fr;
     gap: 16px;
@@ -229,7 +338,7 @@
   padding: 8px 14px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   flex-wrap: wrap;
   gap: 10px;
   position: relative;
@@ -237,7 +346,7 @@
 }
 .config-editor-wrap {
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-lg);
   background: var(--bg);
   position: relative;
   overflow: visible;
@@ -307,7 +416,7 @@
   width: min(100%, 720px);
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-lg);
   padding: 10px 18px;
   display: flex;
   align-items: center;
@@ -375,7 +484,7 @@
 .payload-collapse > .ant-collapse-item {
   background: var(--surface) !important;
   border: 1px solid var(--border) !important;
-  border-radius: var(--radius-sm) !important;
+  border-radius: var(--radius-lg) !important;
   overflow: hidden;
 }
 .payload-collapse > .ant-collapse-item > .ant-collapse-header {
@@ -421,7 +530,7 @@
   gap: 14px;
   padding: 32px 20px;
   border: 1px dashed var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-lg);
   background: var(--surface);
   text-align: center;
 }
@@ -432,7 +541,7 @@
 }
 .payload-rule-card {
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-lg);
   background: var(--surface);
   padding: 14px 16px;
   display: flex;
@@ -465,8 +574,6 @@
 .payload-sub-title {
   font-size: var(--text-sm);
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
   color: var(--meta);
 }
 .payload-models-list,

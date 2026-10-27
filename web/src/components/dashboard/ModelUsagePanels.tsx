@@ -1,13 +1,13 @@
 import React from 'react';
-import { Segmented, Tooltip } from 'antd';
+import { Segmented } from 'antd';
+import { clsx } from 'clsx';
 import { ParagraphPlaceholder } from '../common/ContentPlaceholder';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { api, ApiError } from '../../api/client';
 import { useT } from '../../i18n';
 import { useOpenPriceEditor } from '../pricing/PricingEditorContext';
-import { seriesColor, seriesDomainKey } from '../../charts/chartTheme';
+import { seriesColor, seriesDomainKey, seriesGroupLabel as groupLabel } from '../../charts/chartTheme';
 import { useTheme } from '../../theme/ThemeContext';
-import type { ThemePalette } from '../../theme/palette';
 import { useTokenDisplayStyle } from '../../types/tokenDisplayContext';
 import {
   DASHBOARD_MODELS_QUERY_KEY,
@@ -23,7 +23,11 @@ import { formatCost } from '../../types/tokenDisplay';
 import { isSlidingRange, type DashboardRange } from '../../types/dashboard';
 import { LoadFailure } from '../feedback';
 import { Panel } from '../common/Panel';
+import { ChartLegend } from '../common/ChartLegend';
+import { ModelMark } from '../ModelMark';
+import selectionStyles from '../common/selection.module.css';
 import './dashboard.css';
+import { Tooltip } from '../common/Tooltip';
 
 const LazyModelTokenTrend = React.lazy(() =>
   import('../../charts/ModelTokenTrend').then((module) => ({ default: module.ModelTokenTrend }))
@@ -42,13 +46,14 @@ export interface ModelUsagePanelsProps {
 }
 
 /**
- * ModelUsagePanels hosts the two model-level cards above the token activity grid.
+ * The two model-level cards: the window's token trend and its usage ring.
  *
- * One query feeds both, and that is a correctness requirement rather than an economy. The two panels
- * are two views of one ranking: the trend's line colours and the ring's slice colours are assigned
- * from the order the endpoint returned, so reading twice would let the two disagree about which
- * models exist and in what order they rank - and a model would then be blue in one panel and green in
- * the other.
+ * They are two widgets the operator places independently, and one read feeds both - a correctness
+ * requirement rather than an economy. The two panels are two views of one ranking: the trend's line
+ * colours and the ring's slice colours are assigned from the order the endpoint returned, so reading
+ * twice would let the two disagree about which models exist and in what order they rank - and a
+ * model would then be blue in one panel and green in the other. Both call `useDashboardModels` with
+ * the same key, so react-query serves them one cache entry and one request.
  *
  * **Its own cadence, and its own failure.** The page's KPI tiles poll as often as every five seconds
  * through the tail endpoint, which is a cheap read of pre-aggregated buckets. This read walks the
@@ -65,15 +70,11 @@ export interface ModelUsagePanelsProps {
  * answer for exactly the grouping on screen. Switching views re-reads the window's ranking, and each
  * view keeps its own cache entry so the two never patch into each other.
  */
-export const ModelUsagePanels: React.FC<ModelUsagePanelsProps> = ({ query, range, enabled }) => {
-  const t = useT();
-  const { theme } = useTheme();
-  const { modelView, setModelView, style: tokenStyle } = useTokenDisplayStyle();
-  const openPriceEditor = useOpenPriceEditor();
+function useDashboardModels({ query, range, enabled }: ModelUsagePanelsProps) {
+  const { modelView } = useTokenDisplayStyle();
   const sliding = isSlidingRange(range);
-
   const modelsQuery = React.useMemo(() => withGroupBy(query, modelView), [query, modelView]);
-  const { data, isError, error, refetch } = useQuery<DashboardModelsResponse>({
+  return useQuery<DashboardModelsResponse>({
     queryKey: [DASHBOARD_MODELS_QUERY_KEY, modelsQuery],
     queryFn: () => api.getDashboardModels(modelsQuery),
     enabled,
@@ -85,17 +86,54 @@ export const ModelUsagePanels: React.FC<ModelUsagePanelsProps> = ({ query, range
     placeholderData: keepPreviousData,
     meta: { silent: true },
   });
+}
 
-  const foldedLabel = t('dash.models.folded');
-  const unnamedLabel = t('dash.models.unnamed');
-  const groups = data?.models ?? [];
-  const total = data?.total_tokens ?? 0;
+// A shared loading boundary keeps the ranking readable while the chart module arrives; its
+// chart initialization then yields through the common mount queue.
+const chartFallback = <div className="model-chart-skeleton" aria-hidden="true" />;
 
-  // A shared loading boundary keeps the ranking readable while both chart modules arrive;
-  // their expensive canvas creation then yields through the common mount queue.
-  const chartFallback = <div className="model-chart-skeleton" aria-hidden="true" />;
+/**
+ * The body both cards share for the states before a ranking exists: a skeleton on the first read,
+ * the failure when that read failed, and the stale warning above a ranking a later poll could not
+ * refresh.
+ */
+const ModelPanelBody: React.FC<{ models: ReturnType<typeof useDashboardModels>; children: React.ReactNode }> = ({ models, children }) => {
+  const t = useT();
+  const { data, isError, error, refetch } = models;
+  if (!data && !isError) return <ParagraphPlaceholder rows={4} />;
+  if (isError && !data) {
+    return (
+      <ModelPanelsError
+        message={error instanceof ApiError ? error.message : t('dash.error_desc')}
+        onRetry={() => void refetch()}
+      />
+    );
+  }
+  return (
+    <>
+      {isError && (
+        <LoadFailure
+          className="model-stale-alert"
+          tone="warning"
+          title={t('dash.models.stale')}
+          onRetry={() => void refetch()}
+        />
+      )}
+      {children}
+    </>
+  );
+};
 
-  const viewToggle = (
+/**
+ * The grouping toggle. It governs both cards and normally sits on the usage card, where the
+ * difference between a call point and an upstream model is read; the trend card carries it instead
+ * when the usage card is hidden, so the trend's grouping never becomes unreachable. Both copies write
+ * the one stored preference, so they cannot disagree.
+ */
+const ModelViewToggle: React.FC = () => {
+  const t = useT();
+  const { modelView, setModelView } = useTokenDisplayStyle();
+  return (
     <Segmented
       className="model-view-toggle"
       size="small"
@@ -108,113 +146,164 @@ export const ModelUsagePanels: React.FC<ModelUsagePanelsProps> = ({ query, range
       aria-label={t('dash.models.view_toggle_label')}
     />
   );
+};
+
+export interface ModelTrendPanelProps extends ModelUsagePanelsProps {
+  /** True when the usage card, which normally carries the grouping toggle, is not on the board. */
+  hasViewToggle?: boolean;
+}
+
+/**
+ * Click focus shared by the two cards. Focus is a reading aid, never a filter: the other groups stay
+ * on screen and in the tooltip, because the selected model's shape only means something beside them.
+ */
+function useSeriesFocus(groups: DashboardModelUsage[]) {
+  const [focusedKey, setFocusedKey] = React.useState<string | null>(null);
+  const availableKeys = React.useMemo(() => new Set(groups.map(seriesDomainKey)), [groups]);
+  React.useEffect(() => {
+    setFocusedKey((current) => (current !== null && !availableKeys.has(current) ? null : current));
+  }, [availableKeys]);
+  const toggleSeries = React.useCallback((key: string) => {
+    setFocusedKey((current) => (current === key ? null : key));
+  }, []);
+  const clearFocus = React.useCallback(() => setFocusedKey(null), []);
+  return { focusedKey, toggleSeries, clearFocus };
+}
+
+const ModelSeriesName: React.FC<{
+  group: DashboardModelUsage;
+  foldedLabel: string;
+  unnamedLabel: string;
+}> = ({ group, foldedLabel, unnamedLabel }) => {
+  const label = groupLabel(group, foldedLabel, unnamedLabel);
+  return (
+    <span className="model-series-name" title={label}>
+      {!group.folded && <ModelMark model={group.model} size={16} className="model-series-mark" />}
+      <span className="model-series-text">{label}</span>
+    </span>
+  );
+};
+
+export const ModelTrendPanel: React.FC<ModelTrendPanelProps> = ({ hasViewToggle = false, ...props }) => {
+  const t = useT();
+  const { theme } = useTheme();
+  const models = useDashboardModels(props);
+  const foldedLabel = t('dash.models.folded');
+  const unnamedLabel = t('dash.models.unnamed');
+  const groups = React.useMemo(() => models.data?.models ?? [], [models.data]);
+  const { focusedKey, toggleSeries, clearFocus } = useSeriesFocus(groups);
 
   return (
-    <div className="dashboard-models">
-      <Panel
-        className="dashboard-tile is-wide model-trend-card"
-        title={<span className="tile-label">{t('dash.models.trend_title')}</span>}
-      >
-        {!data && !isError ? (
-          <ParagraphPlaceholder rows={4} />
-        ) : isError && !data ? (
-          <ModelPanelsError
-            message={error instanceof ApiError ? error.message : t('dash.error_desc')}
-            onRetry={() => void refetch()}
-          />
+    <Panel
+      className="dashboard-tile model-trend-card"
+      title={<span className="tile-label">{t('dash.models.trend_title')}</span>}
+      extra={hasViewToggle ? <ModelViewToggle /> : undefined}
+    >
+      <ModelPanelBody models={models}>
+        <ChartLegend
+          className="model-trend-legend"
+          label={t('dash.models.trend_title')}
+          testId="model-trend-legend"
+          items={groups.map((group, index) => {
+            const key = seriesDomainKey(group);
+            return {
+              id: key,
+              color: seriesColor(theme.palette, index),
+              content: <ModelSeriesName group={group} foldedLabel={foldedLabel} unnamedLabel={unnamedLabel} />,
+              title: t(focusedKey === key ? 'dash.models.clear_series_focus' : 'dash.models.focus_series'),
+              isPressed: focusedKey === key,
+              isDimmed: focusedKey !== null && focusedKey !== key,
+              onToggle: () => toggleSeries(key),
+            };
+          })}
+        />
+        {groups.length === 0 ? (
+          <p className="empty-copy model-empty">{t('dash.models.empty')}</p>
         ) : (
-          <>
-            {isError && (
-              <LoadFailure
-                className="model-stale-alert"
-                tone="warning"
-                title={t('dash.models.stale')}
-                onRetry={() => void refetch()}
-              />
-            )}
-            <ModelLegend groups={groups} foldedLabel={foldedLabel} unnamedLabel={unnamedLabel} palette={theme.palette} />
-            {groups.length === 0 ? (
-              <p className="empty-copy model-empty">{t('dash.models.empty')}</p>
-            ) : (
-              <React.Suspense fallback={chartFallback}>
-                <LazyModelTokenTrend groups={groups} foldedLabel={foldedLabel} tokenUnitLabel={t('dash.unit_tokens')} height={240} />
-              </React.Suspense>
-            )}
-          </>
+          <React.Suspense fallback={chartFallback}>
+            <LazyModelTokenTrend groups={groups} focusedKey={focusedKey} foldedLabel={foldedLabel} unnamedLabel={unnamedLabel} tokenUnitLabel={t('dash.unit_tokens')} height={240} onFocusGroup={toggleSeries} onClearFocus={clearFocus} />
+          </React.Suspense>
         )}
-      </Panel>
+      </ModelPanelBody>
+    </Panel>
+  );
+};
 
-      <Panel
-        className="dashboard-tile is-wide model-usage-card"
-        title={<span className="tile-label">{t('dash.models.usage_title')}</span>}
-        extra={viewToggle}
-      >
-        {!data && !isError ? (
-          <ParagraphPlaceholder rows={4} />
-        ) : isError && !data ? (
-          <ModelPanelsError
-            message={error instanceof ApiError ? error.message : t('dash.error_desc')}
-            onRetry={() => void refetch()}
-          />
+export const ModelUsagePanel: React.FC<ModelUsagePanelsProps> = (props) => {
+  const t = useT();
+  const { theme } = useTheme();
+  const { modelView, style: tokenStyle } = useTokenDisplayStyle();
+  const openPriceEditor = useOpenPriceEditor();
+  const models = useDashboardModels(props);
+  const foldedLabel = t('dash.models.folded');
+  const unnamedLabel = t('dash.models.unnamed');
+  const groups = React.useMemo(() => models.data?.models ?? [], [models.data]);
+  const total = models.data?.total_tokens ?? 0;
+  const { focusedKey, toggleSeries, clearFocus } = useSeriesFocus(groups);
+
+  return (
+    <Panel
+      className="dashboard-tile model-usage-card"
+      title={<span className="tile-label">{t('dash.models.usage_title')}</span>}
+      extra={<ModelViewToggle />}
+    >
+      <ModelPanelBody models={models}>
+        {groups.length === 0 ? (
+          <p className="empty-copy model-empty">{t('dash.models.empty')}</p>
         ) : (
-          <>
-            {isError && (
-              <LoadFailure
-                className="model-stale-alert"
-                tone="warning"
-                title={t('dash.models.stale')}
-                onRetry={() => void refetch()}
-              />
-            )}
-            {groups.length === 0 ? (
-              <p className="empty-copy model-empty">{t('dash.models.empty')}</p>
-            ) : (
-              <div className="model-usage-body">
-                <React.Suspense fallback={chartFallback}>
-                  <LazyModelUsageDonut groups={groups} totalTokens={total} foldedLabel={foldedLabel} tokenUnitLabel={t('dash.unit_tokens')} />
-                </React.Suspense>
-                {/*
-                  The ranked list is the ring's legend, its label column and its values in one. A separate
-                  library legend would print the same ranking a second time with no numbers, and a reader
-                  comparing two models needs the numbers - a slice's angle is a poor way to compare 5.9%
-                  against 4.6%.
-                */}
-                <ol className="model-usage-list">
-                  {groups.map((group, index) => (
-                    // Reading order is name, cost, volume, share - widest to narrowest claim: what
-                    // the group is, what it cost, how much it moved, and its slice of the window.
-                    // The cost sits beside the name rather than at the far edge because it is the
-                    // second thing an operator reads a spend table for, and the share stays last
-                    // where it continues the percentage column of the ring beside it.
-                    <li className="model-usage-row" key={seriesDomainKey(group)}>
-                      <span className="model-usage-swatch" style={{ background: seriesColor(theme.palette, index) }} aria-hidden="true" />
-                      <span className="model-usage-name" title={groupLabel(group, foldedLabel, unnamedLabel)}>
-                        {groupLabel(group, foldedLabel, unnamedLabel)}
-                      </span>
-                      <ModelCost
-                        group={group}
-                        // Only the model view names what a price is keyed on: a call point may be an alias
-                        // whose requests are priced under the upstream model it resolved to.
-                        onPrice={openPriceEditor && modelView === 'model' && !group.folded && group.model ? () => openPriceEditor(group.model) : undefined}
-                      />
-                      <span
-                        className="model-usage-tokens"
-                        // The exact count lives in the accessible name: the compact cell is for scanning,
-                        // and the rounding it applies must never be mistaken for the number itself.
-                        title={`${formatTokensFull(group.tokens)} ${t('dash.unit_tokens')}`}
-                      >
-                        {formatModelTokens(group.tokens, tokenStyle)}
-                      </span>
-                      <span className="model-usage-share">{formatModelShare(group.tokens, total)}</span>
-                    </li>
-                  ))}
-                </ol>
-              </div>
-            )}
-          </>
+          <div className="model-usage-body">
+            <React.Suspense fallback={chartFallback}>
+              <LazyModelUsageDonut groups={groups} totalTokens={total} focusedKey={focusedKey} foldedLabel={foldedLabel} unnamedLabel={unnamedLabel} tokenUnitLabel={t('dash.unit_tokens')} onFocusGroup={toggleSeries} onClearFocus={clearFocus} />
+            </React.Suspense>
+            {/*
+              The ranked list is the ring's legend, its label column and its values in one. A separate
+              library legend would print the same ranking a second time with no numbers, and a reader
+              comparing two models needs the numbers - a slice's angle is a poor way to compare 5.9%
+              against 4.6%.
+            */}
+            <ol className="model-usage-list" aria-label={t('dash.models.usage_title')}>
+              {groups.map((group, index) => (
+                // Reading order is name, cost, volume, share - widest to narrowest claim: what
+                // the group is, what it cost, how much it moved, and its slice of the window.
+                // The cost sits beside the name rather than at the far edge because it is the
+                // second thing an operator reads a spend table for, and the share stays last
+                // where it continues the percentage column of the ring beside it.
+                <li className="model-usage-row" key={seriesDomainKey(group)}>
+                  <span className="model-usage-swatch" style={{ background: seriesColor(theme.palette, index) }} aria-hidden="true" />
+                  <span className="model-usage-name">
+                    <button
+                      type="button"
+                      className={clsx('model-usage-name-button', selectionStyles['selection-control'])}
+                      aria-pressed={focusedKey === seriesDomainKey(group)}
+                      data-dimmed={focusedKey !== null && focusedKey !== seriesDomainKey(group)}
+                      title={t(focusedKey === seriesDomainKey(group) ? 'dash.models.clear_series_focus' : 'dash.models.focus_series')}
+                      onClick={() => toggleSeries(seriesDomainKey(group))}
+                    >
+                      <ModelSeriesName group={group} foldedLabel={foldedLabel} unnamedLabel={unnamedLabel} />
+                    </button>
+                  </span>
+                  <ModelCost
+                    group={group}
+                    // Only the model view names what a price is keyed on: a call point may be an alias
+                    // whose requests are priced under the upstream model it resolved to.
+                    onPrice={openPriceEditor && modelView === 'model' && !group.folded && group.model ? () => openPriceEditor(group.model) : undefined}
+                  />
+                  <span
+                    className="model-usage-tokens"
+                    // The exact count lives in the accessible name: the compact cell is for scanning,
+                    // and the rounding it applies must never be mistaken for the number itself.
+                    title={`${formatTokensFull(group.tokens)} ${t('dash.unit_tokens')}`}
+                  >
+                    {formatModelTokens(group.tokens, tokenStyle)}
+                  </span>
+                  <span className="model-usage-share">{formatModelShare(group.tokens, total)}</span>
+                </li>
+              ))}
+            </ol>
+          </div>
         )}
-      </Panel>
-    </div>
+      </ModelPanelBody>
+    </Panel>
   );
 };
 
@@ -254,50 +343,6 @@ const ModelCost: React.FC<{ group: DashboardModelUsage; onPrice?: () => void }> 
     </Tooltip>
   );
 };
-
-/**
- * groupLabel is what a group is called on screen.
- *
- * The folded remainder carries no model name by design - its label is the client's to translate, which
- * is why the API marks it with a flag instead of reserving a string. A named group with an empty name is
- * a different case: the API would not normally emit one, but an empty string in a legend cell reads as
- * missing data rather than as an unnamed group, so it gets the shared "unnamed" copy the rest of the
- * console uses. The label never becomes the group's identity: colour and React keys both come from
- * `seriesDomainKey`, so a group that is renamed here keeps its colour and its row.
- */
-function groupLabel(group: DashboardModelUsage, foldedLabel: string, unnamedLabel: string): string {
-  if (group.folded) return foldedLabel;
-  return group.model.trim() === '' ? unnamedLabel : group.model;
-}
-
-/**
- * ModelLegend is the trend's key.
- *
- * It exists because the trend draws up to six lines and a line with no label is unreadable. It is the
- * app's own DOM rather than the chart library's legend so it is set in the console's type scale, and
- * it numbers the swatches so the colour identity is legible without relying on the hue alone.
- *
- * The colour alone is never the only encoding: each entry prints the model's name, and the usage list
- * beside the ring prints the name, the volume and the share. A reader who cannot separate two hues
- * reads the label instead - which is the rule `docs/design.md` sets for every state colour in the app.
- */
-const ModelLegend: React.FC<{
-  groups: DashboardModelUsage[];
-  foldedLabel: string;
-  unnamedLabel: string;
-  palette: ThemePalette;
-}> = ({ groups, foldedLabel, unnamedLabel, palette }) => (
-  <ul className="model-legend">
-    {groups.map((group, index) => (
-      <li className="model-legend-item" key={seriesDomainKey(group)}>
-        <span className="model-legend-swatch" style={{ background: seriesColor(palette, index) }} aria-hidden="true" />
-        <span className="model-legend-label" title={groupLabel(group, foldedLabel, unnamedLabel)}>
-          {groupLabel(group, foldedLabel, unnamedLabel)}
-        </span>
-      </li>
-    ))}
-  </ul>
-);
 
 const ModelPanelsError: React.FC<{ message: string; onRetry: () => void }> = ({ message, onRetry }) => {
   const t = useT();

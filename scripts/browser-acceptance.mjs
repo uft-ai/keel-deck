@@ -15,25 +15,17 @@ import { chromium } from 'playwright-core';
 import {
   createFakeCpaServer,
   FAKE_ACCOUNT_SECRET,
-  FAKE_CLIENT_SECRET,
   FAKE_CPA_MANAGEMENT_KEY,
   FAKE_PROVIDER_SECRET,
   FAKE_SECOND_PROVIDER_SECRET,
 } from './fake-cpa.mjs';
-import {
-  createChecker,
-  measureStable,
-  settleLayout,
-  until,
-} from './acceptance/harness.mjs';
-import { runAuthFilesAcceptance } from './acceptance/auth-files.mjs';
-import { runKeyManagementAcceptance } from './acceptance/key-management.mjs';
-import { runUsageEventsAcceptance } from './acceptance/usage-events.mjs';
-import { runProvidersAcceptance } from './acceptance/providers.mjs';
-import { runObservabilityAcceptance } from './acceptance/observability.mjs';
-import { auditNativePluginHostResponse, isNativePluginHostResponse, settleNativeResponseAudits, runConfigurationPluginsAcceptance } from './acceptance/configuration-plugins.mjs';
-import { runThemeBrandAcceptance } from './acceptance/theme-brand.mjs';
-import { runOAuthFlowAcceptance } from './acceptance/oauth-flow.mjs';
+import { createChecker, measureStable } from './acceptance/harness.mjs';
+import { runRequestListAcceptance } from './acceptance/request-list.mjs';
+import { runAddProviderAcceptance } from './acceptance/add-provider.mjs';
+import { runMcpAcceptance } from './acceptance/mcp.mjs';
+import { runCopyFallbackAcceptance } from './acceptance/copy-fallback.mjs';
+import { runYamlWorkerAcceptance } from './acceptance/yaml-worker.mjs';
+import { auditNativePluginHostResponse, isNativePluginHostResponse, settleNativeResponseAudits, runPluginHostedPageAcceptance } from './acceptance/plugin-host.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -47,9 +39,6 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
  */
 const providerSecrets = [FAKE_PROVIDER_SECRET, FAKE_SECOND_PROVIDER_SECRET];
 const smokeOnly = process.argv.includes('--smoke');
-const p0Only = process.argv.includes('--p0');
-
-class SmokeComplete extends Error {}
 if (process.env.OMCPA_LIVE_CPA === '1') {
   await import('./browser-live-smoke.mjs');
   process.exit();
@@ -59,17 +48,13 @@ const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'omc-e2e-'));
 // One master key for the whole run: the app, the seeder and the fingerprint
 // assertions must all derive caller-key identities with the same key.
 const MASTER_KEY = ['fixture', 'master', 'key', 'for', 'browser', 'acceptance', 'only'].join('-');
-// The name the alias checks assign through the UI. It is deliberately not the
-// key's own value: the assertions below prove the list shows this name while the
-// filter keeps using the stored fingerprint.
-const CLIENT_KEY_ALIAS = '验收专用密钥';
 const configuredExecutable = process.env.OMCPA_BROWSER_BINARY?.trim();
 const executable = configuredExecutable
   ? path.resolve(root, configuredExecutable)
   : path.join(temporary, process.platform === 'win32' ? 'oh-my-cpa.exe' : 'oh-my-cpa');
 const configuredSeeder = process.env.OMCPA_SEED_USAGE_BINARY?.trim();
 const appLog = [];
-const { check, checkEventually, checkHoldsFor, checks, failures } = createChecker();
+const { check, checkEventually, checks, failures } = createChecker();
 let appProcess;
 let browser;
 let network;
@@ -117,99 +102,13 @@ async function browserStorage(page) {
   });
 }
 
-async function lobeIconSignature(locator) {
-  return locator.evaluate((root) => {
-    const image = root.querySelector('img[src*="/lobe-icons/"]');
-    if (image) return image.getAttribute('src') ?? '';
-    const masked = [...root.querySelectorAll('span')].find((node) => {
-      const style = getComputedStyle(node);
-      return (style.maskImage && style.maskImage !== 'none')
-        || (style.webkitMaskImage && style.webkitMaskImage !== 'none');
-    });
-    if (!masked) return '';
-    const style = getComputedStyle(masked);
-    return style.maskImage !== 'none' ? style.maskImage : style.webkitMaskImage;
-  });
-}
-
-async function lobeIconImageState(locator) {
-  return locator.evaluate((root) => {
-    const image = root.querySelector('img[src*="/lobe-icons/"]');
-    if (!image) return null;
-    return {
-      src: image.getAttribute('src') ?? '',
-      complete: image.complete,
-      naturalWidth: image.naturalWidth,
-      naturalHeight: image.naturalHeight,
-    };
-  });
-}
-
 /**
- * The artwork a provider surface actually draws, whatever its source.
+ * The secret sweep: every console route renders on the built binary, lays out within
+ * the viewport, and neither its DOM, its browser storage nor any response it read
+ * carries the management key or OAuth credential material. Routes whose contract does
+ * not include plaintext provider keys also exclude those (`pageSecrets`).
  *
- * `lobeIconImageState` answers for the console's own catalog only (an embedded
- * `/lobe-icons/` image), so it cannot see a plugin-published logo - which is
- * exactly the mark a plugin-owned provider is supposed to draw. This reads the
- * element's own source and decoded size, so "the plugin's icon is used, and it
- * loaded" is one assertion instead of two.
- */
-async function providerMarkImage(locator) {
-  return locator.evaluate((root) => {
-    const image = root.querySelector('img');
-    if (!image) return null;
-    return {
-      src: image.getAttribute('src') ?? '',
-      complete: image.complete,
-      naturalWidth: image.naturalWidth,
-      naturalHeight: image.naturalHeight,
-    };
-  });
-}
-
-function shorten(value, max = 64) {
-  if (typeof value !== 'string') return String(value);
-  return value.length <= max ? value : `${value.slice(0, max)}…`;
-}
-
-async function auditPage(page, responseBodies, route, selector, { pageSecrets = [] } = {}) {
-  await page.goto(`${appURL}${route}`, { waitUntil: 'domcontentloaded' });
-  await page.locator(selector).first().waitFor({ state: 'visible', timeout: 15000 });
-  const bodyText = await page.locator('body').innerText();
-  const stored = await browserStorage(page);
-  // Secret policy follows the current product contract: the management key
-  // and OAuth credential material must never appear in DOM, browser
-  // storage, or ordinary page responses. Downstream client/provider API
-  // keys are intentionally returned in plaintext (see
-  // `refactor(providers): show keys unmasked ...`), so they are asserted
-  // per-page instead: pages whose contract includes plaintext key
-  // management opt back in through `pageSecrets`.
-  const strictSecrets = [FAKE_CPA_MANAGEMENT_KEY, FAKE_ACCOUNT_SECRET];
-  for (const value of strictSecrets) {
-    check(`${route} excludes management and OAuth credentials`, !bodyText.includes(value) && !stored.includes(value) && !responseBodies.some((body) => body.includes(value)));
-  }
-  if (pageSecrets.length > 0) {
-    for (const value of pageSecrets) {
-      check(`${route} excludes fixture credentials`, !bodyText.includes(value) && !stored.includes(value) && !responseBodies.some((body) => body.includes(value)));
-    }
-  }
-  responseBodies.length = 0;
-}
-
-/**
- * auditRoutes is `auditPage` for the routes whose only claims are the secret sweep
- * and a clean render.
- *
- * The secret check comes from the same place in every case, so the per-route cost
- * is one navigation plus one README-sized assertion, not a new kind of evidence.
- * Grouping them keeps the sweep in one place instead of scattering nine
- * near-identical blocks through the audit, and lets the shared "no document
- * overflow" measurement be taken once per route rather than restated.
- *
- * `routes` is a list of `[route, selector, options?]`. The overflow measurement is
- * the one piece of geometry here that is cheap to take and genuinely per-route: a
- * route can render and still lay out wider than the viewport, which no presence
- * check would notice.
+ * `routes` is a list of `[route, selector, options?]`.
  */
 async function auditRoutes(page, responseBodies, routes) {
   for (const [route, selector, options] of routes) {
@@ -365,115 +264,39 @@ try {
   await page.locator('.app-shell').waitFor({ state: 'visible', timeout: 15000 });
   check('valid sign-in creates an administrator session', await page.locator('.app-shell').isVisible());
 
-  await auditPage(page, responseBodies, '/dashboard', '.dashboard-page', { pageSecrets: providerSecrets });
+  const withProviderSecrets = { pageSecrets: providerSecrets };
+  await auditRoutes(page, responseBodies, [
+    ['/dashboard', '.dashboard-page', withProviderSecrets],
+    ['/agent', '[data-testid="agent-page"]', withProviderSecrets],
+    ['/playground', '[data-testid="playground-empty"]', withProviderSecrets],
+    ['/model-square', '.model-square-page [data-model-identity]', withProviderSecrets],
+    // Provider and client key management show plaintext keys by contract.
+    ['/ai-providers', '.providers-page'],
+    ['/oauth-management', '.oauth-management-page', withProviderSecrets],
+    ['/api-keys', '[data-testid="keys-count"]'],
+    ['/usage/events', '.usage-events-page', withProviderSecrets],
+    ['/pricing', '[data-testid="pricing-page"]', withProviderSecrets],
+    ['/logs', '.logs-page', withProviderSecrets],
+    ['/audit', '[data-testid="audit-page"]', withProviderSecrets],
+    ['/plugins', '.plugins-page', withProviderSecrets],
+    ['/plugins/store', '[data-plugin-panel="store"]', withProviderSecrets],
+    ['/plugins/settings', '[data-plugin-panel="settings"]', withProviderSecrets],
+    ['/config', '.config-page'],
+    ['/omc-settings', '.omc-settings-page', withProviderSecrets],
+    ['/system', '.system-page', withProviderSecrets],
+    // Retired paths still land on the page that replaced them.
+    ['/oauth', '.oauth-management-page', withProviderSecrets],
+    ['/quota', '.oauth-management-page', withProviderSecrets],
+    ['/auth-files', '.oauth-management-page', withProviderSecrets],
+  ]);
 
-  // Success-rate band: the seeded window carries 1 failure in 50 (2%), which is 98% success and
-  // sits above the 80% line, so the pip reads as healthy. The durable half of this check is the
-  // *negative*: a window this good must never be painted as a warning.
-  const verdictPip = page.locator('.dashboard-page .legend-dot').first();
-  await verdictPip.waitFor({ state: 'visible', timeout: 10000 });
-  const verdictClasses = (await verdictPip.getAttribute('class')) ?? '';
-  check(
-    'a 98%-success window is not painted as a warning',
-    /success/.test(verdictClasses) && !/warn|danger/.test(verdictClasses),
-    `class="${verdictClasses}"`,
-  );
-  await runUsageEventsAcceptance({
-    auditPage,
-    appURL,
-    page,
-    check,
-    checkEventually,
-    checkHoldsFor,
-    responseBodies,
-    providerSecrets,
-    until,
-    measureStable,
-    settleLayout,
-    smokeOnly,
-    consoleErrors,
-    pageErrors,
-    onSmokeComplete: () => { throw new SmokeComplete(); },
-    providerMarkImage,
-  });
-  if (!p0Only) {
-    await auditPage(page, responseBodies, '/pricing', '[data-testid="pricing-page"]', { pageSecrets: providerSecrets });
-
-    // The pricing page must open fast: a full table render is the budget, not a
-    // spinner wait. This is the regression guard for the old 5s page freeze.
-    const pricingOpenStart = Date.now();
-    await page.goto(`${appURL}/pricing`);
-    await page.locator('[data-testid="pricing-page"]').first().waitFor({ state: 'visible', timeout: 3000 });
-    const pricingOpenMS = Date.now() - pricingOpenStart;
-    check('pricing page opens under 3s', pricingOpenMS < 3000, `${pricingOpenMS}ms`);
-
-    // The in-place editor keeps rates labelled and denominated without leaving the book.
-    await page.locator('[data-testid="pricing-row-edit"]').first().click();
-    const priceEditor = page.locator('[data-testid="pricing-editor"]');
-    await priceEditor.waitFor({ state: 'visible', timeout: 5000 });
-    await priceEditor.locator('[data-testid="pricing-mode-custom"]').click();
-    const rateInputs = priceEditor.locator('input[data-testid^="pricing-rate-"]');
-    await rateInputs.first().waitFor({ state: 'visible', timeout: 5000 });
-    const labelledRates = await rateInputs.evaluateAll((inputs) => inputs.every((input) => input.closest('label')?.textContent.trim()));
-    check('price editor shows four labelled rates', (await rateInputs.count()) === 4 && labelledRates);
-    check('price editor states the per-million unit', /1M|1 M|百万/.test(await priceEditor.innerText()));
-    await page.keyboard.press('Escape');
-    await priceEditor.waitFor({ state: 'hidden', timeout: 5000 });
-    check('price editor closes cleanly', true);
-    await runProvidersAcceptance({
-      auditPage,
-      appURL,
-      page,
-      check,
-      checkEventually,
-      responseBodies,
-    });
-  }
-  await runAuthFilesAcceptance({
-    auditPage,
-    appURL,
-    page,
-    check,
-    checkEventually,
-    responseBodies,
-    providerSecrets,
-    until,
-    measureStable,
-    lobeIconSignature,
-    lobeIconImageState,
-    providerMarkImage,
-    path,
-    root,
-  });
-
-  if (!p0Only) {
-    await runObservabilityAcceptance({
-      auditPage,
-      appURL,
-      page,
-      check,
-      checkEventually,
-      responseBodies,
-      providerSecrets,
-      settleLayout,
-      lobeIconSignature,
-      providerMarkImage,
-    });
-
-    await runKeyManagementAcceptance({ appURL, page, check, checkEventually, responseBodies, clientKeyAlias: CLIENT_KEY_ALIAS, clientKeySecret: FAKE_CLIENT_SECRET });
-
-    await runConfigurationPluginsAcceptance({
-      auditRoutes,
-      appURL,
-      page,
-      check,
-      providerSecrets,
-      responseBodies,
-    });
-
-    await runThemeBrandAcceptance({ appURL, page, check, until, measureStable, settleLayout });
-
-    await runOAuthFlowAcceptance({ appURL, page, check });
+  await runRequestListAcceptance({ appURL, page, check });
+  await runMcpAcceptance({ appURL, page, check });
+  if (!smokeOnly) {
+    await runAddProviderAcceptance({ appURL, page, check, checkEventually, fakeCpa });
+    await runCopyFallbackAcceptance({ appURL, page, check, checkEventually });
+    await runYamlWorkerAcceptance({ appURL, page, check });
+    await runPluginHostedPageAcceptance({ appURL, page, check });
   }
 
   await Promise.all(nativeResponseAudits);
@@ -490,10 +313,8 @@ try {
   );
   check('fake CPA received authenticated management calls', fakeCpa.requests.some((request) => request.path === '/v8/management/credentials'));
 } catch (error) {
-  if (!(error instanceof SmokeComplete)) {
-    console.error(error.stack || error.message);
-    failures.push(error.message);
-  }
+  console.error(error.stack || error.message);
+  failures.push(error.message);
 } finally {
   if (network) check('built console makes no outbound network requests', !network.problems.some(problem => problem.kind === 'outbound'));
   await withOwnedCleanup(async () => {
@@ -523,6 +344,6 @@ if (failures.length > 0) {
   if (appLog.length > 0) console.error(appLog.join('').slice(-8000));
   process.exitCode = 1;
 } else {
-  const mode = smokeOnly ? ' (smoke)' : p0Only ? ' (p0)' : '';
+  const mode = smokeOnly ? ' (smoke)' : '';
   console.log(`\n${checks.length} deterministic browser checks passed${mode}.`);
 }

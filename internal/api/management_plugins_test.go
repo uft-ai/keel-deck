@@ -1,13 +1,11 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/cookiejar"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -120,6 +118,9 @@ func startPluginTestServer(t *testing.T) (*http.Client, string, *repository.Repo
 			writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 			writer.Header().Set("Set-Cookie", "plugin=1; Path=/")
 			_, _ = writer.Write([]byte(`<!doctype html><html><head><meta name="api" content="/v0/management/logger"><link rel="stylesheet" href="/v0/resource/plugins/logger/app.css"></head><body><script>const API='/v0/management/logger';const other="https://cpa.example/v0/management/logger";</script></body></html>`))
+		case path == "/v0/resource/plugins/logger/broken.js":
+			writer.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+			_, _ = writer.Write([]byte(`const path = location.pathname; function { /* private plugin source */`))
 		case path == "/v0/resource/plugins/logger/app.css":
 			writer.Header().Set("Content-Type", "text/css")
 			_, _ = writer.Write([]byte(`body{background:url(/v0/resource/plugins/logger/bg.png)}`))
@@ -145,7 +146,7 @@ func startPluginTestServer(t *testing.T) (*http.Client, string, *repository.Repo
 			state.routeCalls = append(state.routeCalls, pluginRouteCall{method: request.Method, path: path})
 			_, _ = writer.Write([]byte(`{"secret":"raw-core-document"}`))
 		case path == "/v8/management/plugins" && request.Method == http.MethodGet:
-			list := `{"plugins_enabled":true,"plugins_dir":"/srv/cpa/plugins","plugins":[{"id":"logger","path":"/srv/cpa/plugins/logger.so","configured":true,"registered":true,"enabled":true,"effective_enabled":true,"supports_oauth":true,"oauth_provider":"logger-oauth","supports_quota":false,"logo":"https://example.com/logo.png","config_fields":[{"name":"level","type":"enum","enum_values":["debug","info"],"description":"Log level"},{"name":"level","type":"string"}],"menus":[{"path":"/v0/resource/plugins/logger/console","menu":"Logger Console","description":"Live log view"},{"path":"/v0/resource/plugins/other/console","menu":"Foreign"},{"path":"/v0/management/config.yaml","menu":"Core"},{"path":"https://elsewhere.example/page","menu":"Elsewhere"}],"metadata":{"name":"Logger","version":"1.0.0","author":"cpa-official","github_repository":"router-for-me/logger-plugin","logo":"https://example.com/logo.png","config_fields":[]}}]}`
+			list := `{"plugins_enabled":true,"plugins_dir":"/srv/cpa/plugins","plugins":[{"id":"logger","path":"/srv/cpa/plugins/logger.so","configured":true,"registered":true,"enabled":true,"effective_enabled":true,"supports_oauth":true,"oauth_provider":"logger-oauth","supports_quota":false,"logo":"https://example.com/logo.png","config_fields":[{"name":"level","type":"enum","enum_values":["debug","info"],"description":"Log level","default":"info"},{"name":"level","type":"string"}],"menus":[{"path":"/v0/resource/plugins/logger/console","menu":"Logger Console","description":"Live log view"},{"path":"/v0/resource/plugins/other/console","menu":"Foreign"},{"path":"/v0/management/config.yaml","menu":"Core"},{"path":"https://elsewhere.example/page","menu":"Elsewhere"}],"metadata":{"name":"Logger","version":"1.0.0","author":"cpa-official","github_repository":"router-for-me/logger-plugin","logo":"https://example.com/logo.png","config_fields":[]}}]}`
 			if state.hasBareInstall {
 				list = strings.Replace(list, `"plugins":[`, `"plugins":[{"id":"installed","path":"/srv/cpa/plugins/installed.so","registered":true},`, 1)
 			}
@@ -197,7 +198,7 @@ func startPluginTestServer(t *testing.T) (*http.Client, string, *repository.Repo
 			state.deleted = id
 			_, _ = writer.Write([]byte(`{"status":"deleted","id":"` + id + `","path":"/srv/cpa/plugins/logger.so","file_deleted":true,"configured_removed":true,"restart_required":false}`))
 		case path == "/v8/management/plugins/store" && request.Method == http.MethodGet:
-			_, _ = writer.Write([]byte(`{"plugins_enabled":true,"plugins_dir":"plugins","sources":[{"id":"official","name":"official","url":"https://registry.example/plugins.json"},{"id":"source-abc","name":"mirror.example","url":"https://mirror.example/registry.json"}],"source_errors":[{"source_id":"source-def","source_name":"down.example","source_url":"https://down.example/r.json","message":"fetch registry: 503"}],"plugins":[{"store_id":"official/limiter","source_id":"official","source_name":"official","source_url":"https://registry.example/plugins.json","id":"limiter","name":"Rate Limiter","description":"Token buckets","author":"router-for-me","version":"1.2.0","repository":"router-for-me/limiter","install_type":"github_release","auth_required":false,"auth_configured":false,"platforms":[{"goos":"linux","goarch":"amd64"}],"logo":"https://cdn.example/limiter.png","homepage":"javascript:alert(1)","license":"MIT","tags":["network","limits"],"installed":false,"installed_version":"","path":"","configured":false,"registered":false,"enabled":false,"effective_enabled":false,"update_available":false},{"store_id":"source-abc/limiter","source_id":"source-abc","source_name":"mirror.example","source_url":"https://mirror.example/registry.json","id":"limiter","name":"Rate Limiter","author":"someone","version":"1.2.0","repository":"router-for-me/limiter","homepage":"https://limiter.example","installed":false}]}`))
+			_, _ = writer.Write([]byte(`{"plugins_enabled":true,"plugins_dir":"plugins","sources":[{"id":"official","name":"official","url":"https://registry.example/plugins.json"},{"id":"source-abc","name":"mirror.example","url":"https://mirror.example/registry.json"}],"source_errors":[{"source_id":"source-def","source_name":"down.example","source_url":"https://down.example/r.json","message":"fetch registry: 503"}],"plugins":[{"store_id":"official/limiter","source_id":"official","source_name":"official","source_url":"https://registry.example/plugins.json","id":"limiter","name":"Rate Limiter","description":"Token buckets","author":"router-for-me","version":"1.2.0","repository":"router-for-me/limiter","install_type":"github_release","auth_required":false,"auth_configured":false,"platforms":[{"goos":"linux","goarch":"amd64"}],"logo":"https://cdn.example/limiter.png","homepage":"javascript:alert(1)","license":"MIT","tags":["network","limits"],"installed":false,"installed_version":"","path":"","configured":false,"registered":false,"enabled":false,"effective_enabled":false,"update_available":false},{"store_id":"official/deepseek-search","source_id":"official","source_name":"official","source_url":"https://registry.example/plugins.json","id":"deepseek-search","name":"DeepSeek Search","author":"karuboniru","version":"0.1.0","repository":"karuboniru/deepseek-search","install_type":"github_release","installed":false},{"store_id":"source-abc/limiter","source_id":"source-abc","source_name":"mirror.example","source_url":"https://mirror.example/registry.json","id":"limiter","name":"Rate Limiter","author":"someone","version":"1.2.0","repository":"router-for-me/limiter","homepage":"https://limiter.example","installed":false}]}`))
 		case strings.HasPrefix(path, "/v8/management/plugins/store/") && strings.HasSuffix(path, "/install"):
 			parts := strings.Split(path, "/")
 			id := parts[len(parts)-2]
@@ -269,16 +270,7 @@ func startPluginTestServer(t *testing.T) (*http.Client, string, *repository.Repo
 	appServer := httptest.NewServer(handler.Router())
 	t.Cleanup(appServer.Close)
 
-	jar, err := cookiejar.New(nil)
-	if err != nil {
-		t.Fatalf("new cookie jar: %v", err)
-	}
-	client := &http.Client{Jar: jar}
-
-	loginResp, err := client.Post(appServer.URL+"/omc/api/auth/login", "application/json", bytes.NewBufferString(`{"password":"management-secret-value"}`))
-	if err != nil || loginResp.StatusCode != http.StatusOK {
-		t.Fatalf("login failed: %v", err)
-	}
+	client := signedInClient(t, appServer.URL+"/omc/api/auth/login", "management-secret-value")
 
 	return client, appServer.URL, repo, state
 }
@@ -328,8 +320,8 @@ func TestPluginsLifecycle(t *testing.T) {
 	if len(fields) != 1 {
 		t.Fatalf("config_fields = %#v, want one entry per declared name", plugin["config_fields"])
 	}
-	if field, _ := fields[0].(map[string]any); field["type"] != "enum" || len(field["enum_values"].([]any)) != 2 {
-		t.Fatalf("config field = %#v, want the enum with its values", fields[0])
+	if field, _ := fields[0].(map[string]any); field["type"] != "enum" || len(field["enum_values"].([]any)) != 2 || field["default"] != "info" {
+		t.Fatalf("config field = %#v, want the enum with its values and default", fields[0])
 	}
 
 	// The response shape is this console's own, not the facade model's: every field is
@@ -404,7 +396,7 @@ func TestPluginsLifecycle(t *testing.T) {
 	}
 	_ = json.NewDecoder(storeResp.Body).Decode(&storeData)
 	storeResp.Body.Close()
-	if len(storeData.Plugins) != 2 || storeData.Plugins[0]["id"] != "limiter" {
+	if len(storeData.Plugins) != 3 || storeData.Plugins[0]["id"] != "limiter" {
 		t.Fatalf("unexpected store plugins: %#v", storeData)
 	}
 	if storeData.Total != len(storeData.Plugins) {
@@ -416,11 +408,11 @@ func TestPluginsLifecycle(t *testing.T) {
 	if len(storeData.SourceErrors) != 1 || storeData.SourceErrors[0]["source_name"] != "down.example" {
 		t.Fatalf("source_errors = %#v, want the failing registry reported", storeData.SourceErrors)
 	}
-	official, mirror := storeData.Plugins[0], storeData.Plugins[1]
+	official, community, mirror := storeData.Plugins[0], storeData.Plugins[1], storeData.Plugins[2]
 	assertDeclaredKeys(t, "store plugin", official, []string{
 		"store_id", "source_id", "source_name", "id", "name", "description", "author", "version",
 		"repository_url", "homepage", "license", "tags", "logo", "install_type", "platforms",
-		"is_official", "auth_required", "auth_configured", "installed", "installed_version",
+		"is_official", "is_official_repository", "is_omc", "auth_required", "auth_configured", "installed", "installed_version",
 		"install_source_status", "effective_enabled", "update_available",
 	})
 	if storeLogo, _ := official["logo"].(string); !strings.HasPrefix(storeLogo, "data:image/png;base64,") {
@@ -429,11 +421,16 @@ func TestPluginsLifecycle(t *testing.T) {
 	if _, hasHomepage := official["homepage"]; hasHomepage {
 		t.Fatalf("homepage = %#v, want a non-http link dropped", official["homepage"])
 	}
-	if official["is_official"] != true || official["repository_url"] != "https://github.com/router-for-me/limiter" {
+	if official["is_official"] != true || official["is_official_repository"] != true || official["repository_url"] != "https://github.com/router-for-me/limiter" {
 		t.Fatalf("official entry = %#v", official)
 	}
+	// The official registry is a catalogue and lists plugins published in the author's
+	// own repository, so the source and the code are reported separately.
+	if community["is_official"] != true || community["is_official_repository"] != false || community["repository_url"] != "https://github.com/karuboniru/deepseek-search" {
+		t.Fatalf("official-registry community entry = %#v, want the source kept and the repository not called official", community)
+	}
 	// A third-party registry that copies a first-party repository is still third-party.
-	if mirror["is_official"] != false || mirror["homepage"] != "https://limiter.example" {
+	if mirror["is_official"] != false || mirror["is_official_repository"] != true || mirror["homepage"] != "https://limiter.example" {
 		t.Fatalf("mirror entry = %#v, want it untrusted with its homepage kept", mirror)
 	}
 	if platforms, _ := official["platforms"].([]any); len(platforms) != 1 || platforms[0] != "linux/amd64" {
@@ -500,9 +497,10 @@ func TestPluginSettingsRoundTrip(t *testing.T) {
 	writes := append([]string(nil), state.configWrites...)
 	state.mu.Unlock()
 	// One PATCH of the three keys the page owns: `dir` and `configs` are never
-	// written, only the variable the rule's type reads is sent, and the source
-	// list is de-duplicated.
-	want := `PATCH /v8/management/config {"plugins":{"enabled":true,"store-auth":[{"apply-to":["registry","artifact"],"match":"https://plugins.example/","token-env":"PLUGIN_TOKEN","type":"bearer"}],"store-sources":["https://plugins.example/registry.json"]}}`
+	// written, only the variable the rule's type reads is sent, the source list is
+	// de-duplicated, and the managed Oh My CPA registry is put back because its
+	// switch is on.
+	want := `PATCH /v8/management/config {"plugins":{"enabled":true,"store-auth":[{"apply-to":["registry","artifact"],"match":"https://plugins.example/","token-env":"PLUGIN_TOKEN","type":"bearer"}],"store-sources":["https://plugins.example/registry.json","https://raw.githubusercontent.com/WizisCool/oh-my-cpa/main/plugins/registry.json"]}}`
 	if len(writes) != 1 || writes[0] != want {
 		t.Fatalf("writes = %q\nwant %q", writes, want)
 	}
@@ -653,5 +651,48 @@ func TestPluginConfigOfAnInstalledPluginWithoutSettingsIsEmpty(t *testing.T) {
 	}
 	if response.StatusCode != http.StatusOK || payload["id"] != "installed" || fmt.Sprint(payload["config"]) != "map[]" {
 		t.Fatalf("config = %d %s, want an empty document", response.StatusCode, body)
+	}
+}
+
+// A declared default reaches the editor only as one bounded JSON value; null or
+// an oversized document states nothing.
+func TestProjectPluginDefaultKeepsOneBoundedValue(t *testing.T) {
+	for _, scenario := range []struct{ raw, want string }{
+		{`{ "a" : [1, 2] }`, `{"a":[1,2]}`},
+		{`false`, `false`},
+		{`null`, ``},
+		{``, ``},
+		{`"` + strings.Repeat("x", pluginDefaultLimit) + `"`, ``},
+	} {
+		if got := string(projectPluginDefault(json.RawMessage(scenario.raw))); got != scenario.want {
+			t.Errorf("projectPluginDefault(%.20q) = %q, want %q", scenario.raw, got, scenario.want)
+		}
+	}
+}
+
+// A repository is the vendor's only when the parsed URL's first path segment is the
+// vendor's account: a prefix match would accept a traversal a browser resolves to
+// another owner, and this answer is what waives the typed-id confirmation.
+func TestOfficialPluginRepositoryIsReadFromTheParsedPath(t *testing.T) {
+	for _, scenario := range []struct {
+		repository string
+		want       bool
+	}{
+		{"https://github.com/router-for-me/limiter", true},
+		{"https://github.com/router-for-me/limiter/tree/main/plugin", true},
+		{"https://GitHub.com/router-for-me/limiter", true},
+		{"https://github.com/karuboniru/deepseek-search", false},
+		{"https://github.com.example.net/router-for-me/limiter", false},
+		{"http://github.com/router-for-me/limiter", false},
+		{"", false},
+		{"https://github.com/router-for-me", false},
+		{"https://github.com/router-for-me/../other-owner/limiter", false},
+		{"https://github.com/router-for-me/%2e%2e/other-owner/limiter", false},
+		{`https://github.com/router-for-me/..\other-owner/limiter`, false},
+		{"https://github.com/router-for-me/./limiter", false},
+	} {
+		if got := isOfficialPluginRepository(scenario.repository); got != scenario.want {
+			t.Errorf("isOfficialPluginRepository(%q) = %v, want %v", scenario.repository, got, scenario.want)
+		}
 	}
 }

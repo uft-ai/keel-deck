@@ -49,6 +49,7 @@ export interface ThinkingSupportConfig {
  * states the whole entry: a setting left out is cleared.
  */
 export interface ProviderModelOptions {
+ openapi?: boolean;
   display_name?: string;
   max_context_length?: number;
   force_mapping?: boolean;
@@ -68,6 +69,7 @@ export interface ProviderModelOptions {
 
 /** The model settings only some families' entries have; the rest exist on every family. */
 export type ProviderModelOptionField =
+ | 'openapi'
   | 'max_context_length'
   | 'is_compat'
   | 'support_configuration_update'
@@ -118,9 +120,13 @@ export interface ProviderRuntimePolicy {
 
 /** The request-behaviour switches a family has; a family reports only its own. */
 export interface ProviderBehavior {
+ openapi?: ProviderOverride;
+ openapi_location?: string;
   alpha_search?: boolean;
   codex_cloaking?: ProviderOverride;
   rebuild_mid_system_message?: boolean;
+  /** Claude-only: trust the key's custom base URL with Anthropic native tool search. */
+  native_tool_search?: boolean;
   support_prompt_cache_key?: boolean;
   /** Vertex-only: native Vertex Interactions API routing for the key. */
   interactions?: boolean;
@@ -182,6 +188,8 @@ export interface SaveProviderModelItem {
 
 export interface SaveProviderPayload {
   family: string;
+  expected_auth_index?: string;
+  expected_name?: string;
   name: string;
   base_url?: string;
   prefix?: string;

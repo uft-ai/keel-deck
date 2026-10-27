@@ -99,11 +99,42 @@ const QUOTA_FILTERS = new Set<OAuthWorkspaceQuotaFilter>([
 const AUTH_FILE_SORTS = new Set<AuthFileSortKey>([
   'name-asc',
   'name-desc',
-  'requests-desc',
   'priority-desc',
   'weight-desc',
 ]);
 const PAGE_SIZES = new Set<number>([12, 24, 48]);
+
+export interface OAuthManagementViewPreference {
+  pageSize: 12 | 24 | 48;
+  status: AuthFileStatusFilter;
+  quota: OAuthWorkspaceQuotaFilter;
+  sort: AuthFileSortKey;
+}
+
+export const DEFAULT_OAUTH_MANAGEMENT_VIEW: OAuthManagementViewPreference = {
+  pageSize: 12,
+  status: 'all',
+  quota: 'all',
+  sort: 'name-asc',
+};
+
+export function parseOAuthManagementView(raw: unknown): OAuthManagementViewPreference | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const record = raw as Record<string, unknown>;
+  const params = new URLSearchParams();
+  for (const key of ['status', 'quota', 'sort'] as const) {
+    if (typeof record[key] === 'string') params.set(key, record[key]);
+  }
+  const query = parseOAuthWorkspaceQuery(params);
+  return {
+    pageSize: typeof record.pageSize === 'number' && PAGE_SIZES.has(record.pageSize)
+      ? record.pageSize as 12 | 24 | 48
+      : DEFAULT_OAUTH_MANAGEMENT_VIEW.pageSize,
+    status: query.status,
+    quota: query.quota,
+    sort: query.sort,
+  };
+}
 const BUILTIN_SIGN_IN_IDS: Record<string, string> = {
   claude: 'anthropic',
   antigravity: 'antigravity',
@@ -397,11 +428,6 @@ export function sortOAuthWorkspaceRecords(
   switch (sort) {
     case 'name-desc':
       return copy.sort((left, right) => byName(right, left));
-    case 'requests-desc':
-      return copy.sort((left, right) => {
-        const requestDelta = (right.file.success + right.file.failed) - (left.file.success + left.file.failed);
-        return requestDelta || byName(left, right);
-      });
     case 'priority-desc':
       return copy.sort((left, right) => {
         const priorityDelta = (right.file.priority ?? 0) - (left.file.priority ?? 0);
@@ -531,7 +557,7 @@ export function updateWorkspaceSearch(
   return next;
 }
 
-/** A one-shot action is consumed before the panel arms its own history entry. */
+/** Consume a one-shot action so a later render cannot reopen the panel it requested. */
 export function consumeOneShotIntent(params: URLSearchParams): URLSearchParams {
   const next = new URLSearchParams(params);
   next.delete('action');

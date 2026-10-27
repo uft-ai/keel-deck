@@ -138,10 +138,11 @@ func ResolveAutoRefreshSettings(raw string, isStored bool) AutoRefreshSettings {
 
 // Automatic refresh triggers, reported in the loop's summary.
 const (
-	AutoRefreshTriggerNone     = ""
-	AutoRefreshTriggerReset    = "reset"
-	AutoRefreshTriggerDelivery = "delivery"
-	AutoRefreshTriggerInterval = "interval"
+	AutoRefreshTriggerNone            = ""
+	AutoRefreshTriggerReset           = "reset"
+	AutoRefreshTriggerDelivery        = "delivery"
+	AutoRefreshTriggerInterval        = "interval"
+	AutoRefreshTriggerCooldownExpired = "cooldown_expired"
 )
 
 // AutoRefreshTriggerRank orders due credentials: a reset answers whether a credential
@@ -169,6 +170,14 @@ type AutoRefreshCandidate struct {
 	// HasUnavailableDelivery is set when the latest reading could not hand its period
 	// observation to Relay's ledger. A rejected observation does not set it.
 	HasUnavailableDelivery bool
+	// ActiveCooldownExpiredAtMS is the latest recovery time of stored cooldown evidence once
+	// every one of them has passed, or zero. CPA keeps the credential blocked until that
+	// evidence is cleared, whatever the clock says.
+	ActiveCooldownExpiredAtMS int64
+	// ReadBackoffUntilMS is when the provider's rate limit lets this credential be read again,
+	// or zero. Until then no read trigger fires, so a refused credential neither repeats the
+	// request every tick nor spends the attempt its reset-driven retry depends on.
+	ReadBackoffUntilMS int64
 }
 
 // IsAutoRefreshProvider reports whether the scheduler may read a provider on its own.
@@ -189,10 +198,14 @@ func IsAutoRefreshProvider(provider string) bool {
 // the newer of the observation and the attempt, so a failing scheduled read waits a
 // whole interval too.
 func AutoRefreshTrigger(settings AutoRefreshSettings, candidate AutoRefreshCandidate, nowMS int64) string {
-	if candidate.IsDisabled || !candidate.IsSupported || !IsAutoRefreshProvider(candidate.Provider) {
+	if candidate.IsDisabled {
 		return AutoRefreshTriggerNone
 	}
-	if settings.IsRefreshOnResetEnabled && candidate.LastObservedAtMS > 0 {
+	// Clearing a cooldown is not a read: it needs no probe and exchanges no key, so it
+	// applies to every enabled credential. A due reset read still goes first, because a
+	// read that finds capacity releases the cooldown as well.
+	isReadable := candidate.IsSupported && IsAutoRefreshProvider(candidate.Provider) && candidate.ReadBackoffUntilMS <= nowMS
+	if isReadable && settings.IsRefreshOnResetEnabled && candidate.LastObservedAtMS > 0 {
 		graceMS := AUTO_REFRESH_RESET_GRACE.Milliseconds()
 		for _, resetAtMS := range candidate.ResetAtMS {
 			dueAtMS := resetAtMS + graceMS
@@ -208,17 +221,23 @@ func AutoRefreshTrigger(settings AutoRefreshSettings, candidate AutoRefreshCandi
 			}
 		}
 	}
+	// A clear that failed leaves the evidence in place, so it waits out the same backoff a
+	// failed reset read does instead of repeating every minute and filling the round.
+	isClearBackedOff := candidate.LastAttemptAtMS > 0 && nowMS-candidate.LastAttemptAtMS < AUTO_REFRESH_RESET_RETRY_BACKOFF.Milliseconds()
+	if candidate.ActiveCooldownExpiredAtMS > 0 && candidate.ActiveCooldownExpiredAtMS <= nowMS && !isClearBackedOff {
+		return AutoRefreshTriggerCooldownExpired
+	}
 	// An observation Relay's ledger could not take is read and delivered again at the
 	// reset retry backoff, counted from the start of the last read or attempt. The cadence
 	// is a target: a busy round or a ledger that keeps failing delays it.
 	// It follows the two controls: with both off, nothing is read on its own.
-	if candidate.HasUnavailableDelivery && settings.IsEnabled() {
+	if isReadable && candidate.HasUnavailableDelivery && settings.IsEnabled() {
 		lastMS := max(candidate.LastObservedAtMS, candidate.LastAttemptAtMS)
 		if nowMS-lastMS >= AUTO_REFRESH_RESET_RETRY_BACKOFF.Milliseconds() {
 			return AutoRefreshTriggerDelivery
 		}
 	}
-	if settings.IntervalMinutes > 0 {
+	if isReadable && settings.IntervalMinutes > 0 {
 		lastMS := max(candidate.LastObservedAtMS, candidate.LastAttemptAtMS)
 		intervalMS := int64(settings.IntervalMinutes) * time.Minute.Milliseconds()
 		if lastMS == 0 || nowMS-lastMS+AUTO_REFRESH_INTERVAL_SLACK.Milliseconds() >= intervalMS {

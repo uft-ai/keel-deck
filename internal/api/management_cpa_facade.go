@@ -39,7 +39,15 @@ func writeCPAFacadeError(writer http.ResponseWriter, err error) {
 	// from the message so the console can frame it in the reader's language.
 	reason := ""
 	var httpErr *management.HTTPError
-	if errors.Is(err, management.ErrManagementV8Required) {
+	if errors.Is(err, management.ErrInvalidOAuthProxy) {
+		status = http.StatusBadRequest
+		code = "invalid_oauth_proxy"
+		message = "invalid OAuth proxy URL"
+	} else if errors.Is(err, management.ErrOAuthProxyUpgradeRequired) {
+		status = http.StatusNotImplemented
+		code = "oauth_proxy_upgrade_required"
+		message = "session proxy selection requires a CPA upgrade"
+	} else if errors.Is(err, management.ErrManagementV8Required) {
 		status = http.StatusBadGateway
 		code = "cpa_v8_required"
 		message = "CPA does not serve the v8 Management API; upgrade CPA to v8.0.0 or later"
@@ -56,6 +64,13 @@ func writeCPAFacadeError(writer http.ResponseWriter, err error) {
 		status = http.StatusBadGateway
 		code = "config_partially_applied"
 		message = "CPA applied only part of the configuration change before a request failed; reload the configuration to see what was saved"
+	} else if errors.Is(err, management.ErrConfigChanged) {
+		// CPA refused the first request because another writer saved after the
+		// file was read and backed up, so nothing was written. The editors
+		// already answer this code by reloading the configuration.
+		status = http.StatusConflict
+		code = "config_conflict"
+		message = "the CPA configuration was changed by another writer while saving; nothing was changed, reload and try again"
 	} else if cpaReason, rejected := management.IsConfigRejected(err); rejected {
 		status = http.StatusUnprocessableEntity
 		code = "config_rejected"
@@ -67,6 +82,12 @@ func writeCPAFacadeError(writer http.ResponseWriter, err error) {
 			status = http.StatusNotImplemented
 			code = "capability_missing"
 			message = "CPA does not support this management operation"
+		case http.StatusRequestEntityTooLarge:
+			// CPA v8.0.31+ caps every request body at server.max-request-body-bytes,
+			// management routes included.
+			status = http.StatusRequestEntityTooLarge
+			code = "cpa_request_too_large"
+			message = "CPA refused the request body as too large; raise server.max-request-body-bytes in the CPA configuration"
 		case http.StatusUnauthorized, http.StatusForbidden:
 			status = http.StatusBadGateway
 			code = "cpa_authentication_failed"

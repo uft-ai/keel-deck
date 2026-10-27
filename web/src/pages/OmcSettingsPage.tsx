@@ -1,3 +1,4 @@
+import type { MessageKey } from '../i18n/catalog';
 import { TimeZoneSelect } from '../components/common/TimeZoneSelect';
 import { useTimeZoneSetting } from '../utils/TimeZoneProvider';
 import React from 'react';
@@ -27,10 +28,15 @@ import type { TpsCalculationMode } from '../types/tpsCalculation';
 import type { TokenNumberStyle } from '../types/tokenDisplay';
 import { TOKEN_NUMBER_STYLES } from '../types/tokenDisplay';
 import { PageHeader } from '../components/common/PageHeader';
-import { useScrollSmoothingPreference } from '../hooks/useScrollSmoothing';
-import { SCROLL_SMOOTHING_PREFERENCES, type ScrollSmoothingPreference } from '../utils/scrollSmoothingPreference';
+import { useReducedMotionPreference } from '../hooks/useReducedMotionPreference';
+import { REDUCED_MOTION_PREFERENCES, type ReducedMotionPreference } from '../utils/motionPreference';
 import { SectionHeading } from '../components/common/SectionHeading';
+import { SettingRow } from '../components/common/SettingRow';
+import { FontSettings } from '../components/settings/FontSettings';
+import { SidebarNavSettings } from '../components/settings/SidebarNavSettings';
 import { usePreference } from '../hooks/usePreference';
+import { Notice } from '../components/feedback';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   DEFAULT_QUOTA_AUTO_REFRESH,
   QUOTA_AUTO_REFRESH_INTERVALS,
@@ -40,13 +46,13 @@ import {
 } from '../types/quotaAutoRefresh';
 
 
-const MODE_LABEL_KEYS: Record<ThemeModePreference, string> = {
+const MODE_LABEL_KEYS: Record<ThemeModePreference, MessageKey> = {
   light: 'omc.theme_mode_light',
   dark: 'omc.theme_mode_dark',
   system: 'omc.theme_mode_system',
 };
 
-const TOKEN_LABEL_KEYS: Record<keyof ThemeCore, string> = {
+const TOKEN_LABEL_KEYS: Record<keyof ThemeCore, MessageKey> = {
   bg: 'omc.token_bg',
   surface: 'omc.token_surface',
   elevated: 'omc.token_elevated',
@@ -58,7 +64,7 @@ const TOKEN_LABEL_KEYS: Record<keyof ThemeCore, string> = {
   accent: 'omc.token_accent',
 };
 
-const ROLE_LABEL_KEYS: Record<ContrastRole, string> = {
+const ROLE_LABEL_KEYS: Record<ContrastRole, MessageKey> = {
   text: 'omc.contrast_role_text',
   hint: 'omc.contrast_role_hint',
   quiet: 'omc.contrast_role_quiet',
@@ -74,6 +80,10 @@ const ROLE_LABEL_KEYS: Record<ContrastRole, string> = {
  * beside the dashboard's own readouts. Each control writes the same underlying setting its shortcut
  * writes, so the two cannot disagree, and an operator configuring a fresh deployment has one place
  * to look instead of discovering each control where it happens to surface.
+ *
+ * **The sidebar group comes last** because it is the setting here an operator touches once: it lists
+ * the rail's own destinations, so taking an entry out of the rail is done by reading the entries the
+ * rail has rather than by recalling what the console contains.
  *
  * **The appearance group is a mode and two palettes, not a list of palettes.** The header's control
  * answers "light or dark" and nothing else; which palette each of those two modes uses is a
@@ -102,10 +112,10 @@ const ROLE_LABEL_KEYS: Record<ContrastRole, string> = {
  * surface is the config panel's, with its different save semantics. The two pages coexist in the
  * sidebar under "Control".
  */
-const SCROLL_SMOOTHING_LABEL_KEYS: Record<ScrollSmoothingPreference, string> = {
-  on: 'omc.scroll_smoothing_on',
+const REDUCED_MOTION_LABEL_KEYS: Record<ReducedMotionPreference, MessageKey> = {
+  on: 'omc.reduced_motion_on',
   system: 'omc.theme_mode_system',
-  off: 'omc.scroll_smoothing_off',
+  off: 'omc.reduced_motion_off',
 };
 
 export const OmcSettingsPage: React.FC = () => {
@@ -125,7 +135,7 @@ export const OmcSettingsPage: React.FC = () => {
   // and the items do not wrap, so later options paint past the card's edge. Below the console's
   // narrow breakpoint it becomes a vertical list instead, which is the shape that fits.
   const isNarrow = useIsNarrowViewport();
-  const scrollSmoothing = useScrollSmoothingPreference();
+  const reducedMotion = useReducedMotionPreference();
 
   // The Chinese scale is words - 万, 亿 - so it is offered only to a Chinese
   // console. The option stays visible and disabled rather than hidden: an
@@ -173,8 +183,8 @@ export const OmcSettingsPage: React.FC = () => {
             <Segmented
               value={tpsMode}
               options={[
-                { value: 'exclude_ttft', label: t('omc.tps_exclude_ttft') },
                 { value: 'include_ttft', label: t('omc.tps_include_ttft') },
+                { value: 'exclude_ttft', label: t('omc.tps_exclude_ttft') },
               ]}
               onChange={(next) => setTpsMode(next as TpsCalculationMode)}
               aria-label={t('omc.tps_calculation_mode')}
@@ -183,6 +193,11 @@ export const OmcSettingsPage: React.FC = () => {
             />
           }
         />
+        {tpsMode === 'exclude_ttft' && (
+          <div className="settings-inline-notice">
+            <Notice tone="warning" description={t('omc.tps_exclude_warning')} />
+          </div>
+        )}
         <SettingRow
           label={t('omc.request_model_icons')}
           description={t('omc.request_model_icons_desc')}
@@ -197,6 +212,8 @@ export const OmcSettingsPage: React.FC = () => {
       </div>
 
       <QuotaAutoRefreshGroup />
+
+      <PluginSourceGroup />
 
       <div className="settings-group omc-settings-group">
         <SectionHeading className="settings-group-head" title={t('omc.section_appearance')} />
@@ -224,6 +241,7 @@ export const OmcSettingsPage: React.FC = () => {
         )}
         <PaletteSetting mode="light" />
         <PaletteSetting mode="dark" />
+        <FontSettings />
         <SettingRow
           label={t('omc.language')}
           control={
@@ -254,20 +272,63 @@ export const OmcSettingsPage: React.FC = () => {
           }
         />
         <SettingRow
-          label={t('omc.scroll_smoothing')}
-          description={t('omc.scroll_smoothing_desc')}
+          label={t('omc.reduced_motion')}
+          description={t('omc.reduced_motion_desc')}
           control={
             <Segmented
-              value={scrollSmoothing.value}
-              options={SCROLL_SMOOTHING_PREFERENCES.map((value) => ({ value, label: t(SCROLL_SMOOTHING_LABEL_KEYS[value]) }))}
-              onChange={(next) => { void scrollSmoothing.set(next as ScrollSmoothingPreference); }}
-              aria-label={t('omc.scroll_smoothing')}
+              value={reducedMotion.value}
+              options={REDUCED_MOTION_PREFERENCES.map((value) => ({ value, label: t(REDUCED_MOTION_LABEL_KEYS[value]) }))}
+              onChange={(next) => { void reducedMotion.set(next as ReducedMotionPreference); }}
+              aria-label={t('omc.reduced_motion')}
               vertical={isNarrow}
               block={isNarrow}
             />
           }
         />
       </div>
+
+      <SidebarNavSettings />
+    </div>
+  );
+};
+
+/**
+ * PluginSourceGroup is the one switch for Oh My CPA's own plugin registry.
+ *
+ * The registry's address is compiled in and the server's store and configuration reads keep it
+ * in place; this preference is what the server consults, so switching it off removes the address
+ * from `plugins.store-sources` on the next plugin read. The two plugin queries are invalidated
+ * here because the store they cached was read under the previous answer.
+ */
+const PLUGIN_SOURCE_PREFERENCE = 'omc_plugin_source_enabled';
+const parsePluginSourceEnabled = (raw: unknown) => (typeof raw === 'boolean' ? raw : undefined);
+
+const PluginSourceGroup: React.FC = () => {
+  const t = useT();
+  const queryClient = useQueryClient();
+  const preference = usePreference<boolean>(PLUGIN_SOURCE_PREFERENCE, true, parsePluginSourceEnabled);
+  const setEnabled = (enabled: boolean) => {
+    void preference.set(enabled).then((outcome) => {
+      if (!outcome.ok) return;
+      void queryClient.invalidateQueries({ queryKey: ['management-plugin-store'] });
+      void queryClient.invalidateQueries({ queryKey: ['management-plugin-settings'] });
+    });
+  };
+  return (
+    <div className="settings-group omc-settings-group">
+      <SectionHeading className="settings-group-head" title={t('omc.section_plugin_source')} />
+      <SettingRow
+        label={t('omc.plugin_source')}
+        description={t('omc.plugin_source_desc')}
+        control={(
+          <Switch
+            checked={preference.value}
+            disabled={!preference.loaded}
+            onChange={setEnabled}
+            aria-label={t('omc.plugin_source')}
+          />
+        )}
+      />
     </div>
   );
 };
@@ -345,6 +406,7 @@ const PaletteSetting: React.FC<{ mode: ThemeMode }> = ({ mode }) => {
       <SettingRow
         label={t(mode === 'light' ? 'omc.palette_light' : 'omc.palette_dark')}
         control={<PaletteChooser mode={mode} />}
+        isStacked
       />
       {editingCustomMode === mode && <CustomPaletteEditor mode={mode} />}
     </>
@@ -517,26 +579,3 @@ const PaletteTokenRow: React.FC<{
     </div>
   );
 };
-
-/**
- * SettingRow is one labelled setting: name on the left, control on the right.
- *
- * The description is optional because most of these settings name themselves -
- * "Theme" needs no sentence - and copy that only restates the label is the
- * decorative text `docs/design.md` §3 rules out. A description survives only
- * where it states a fact the label cannot: what a unit style changes, or what
- * an abbreviated number is rounded from.
- */
-const SettingRow: React.FC<{ label: string; description?: string; control: React.ReactNode }> = ({
-  label,
-  description,
-  control,
-}) => (
-  <div className="settings-toggle-row">
-    <div className="settings-toggle-info">
-      <div className="settings-toggle-title">{label}</div>
-      {description && <div className="settings-toggle-desc">{description}</div>}
-    </div>
-    <div className="settings-toggle-control">{control}</div>
-  </div>
-);

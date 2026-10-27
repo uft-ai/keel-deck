@@ -129,6 +129,7 @@ var demoPolicy = []demoPolicyRule{
 	{http.MethodDelete, "/api/mcp", demoRefuse, "external agent access is unavailable in the demonstration"},
 	{http.MethodGet, "/api/v1/agent/session", demoAllow, ""},
 	{http.MethodGet, "/api/v1/agent/images/{id}", demoRefuse, "agent execution and authorization are unavailable in the demonstration"},
+	{http.MethodPost, "/api/v1/agent/data-rows", demoRefuse, "agent execution and authorization are unavailable in the demonstration"},
 	{http.MethodPost, "/api/v1/agent/session/reset", demoRefuse, "agent execution and authorization are unavailable in the demonstration"},
 	{http.MethodPost, "/api/v1/agent/run", demoRefuse, "agent execution and authorization are unavailable in the demonstration"},
 	{http.MethodGet, "/api/v1/agent/operations/{id}", demoRefuse, "agent execution and authorization are unavailable in the demonstration"},
@@ -140,6 +141,12 @@ var demoPolicy = []demoPolicyRule{
 	{http.MethodGet, "/api/v1/{workspace:agent|playground}/runs/{id}", demoRefuse, "live inference is unavailable in the demonstration"},
 	{http.MethodPost, "/api/v1/{workspace:agent|playground}/runs/{id}/cancel", demoRefuse, "live inference is unavailable in the demonstration"},
 	{http.MethodPatch, "/api/v1/resources/{id}/override", demoAllow, ""},
+	{http.MethodGet, "/api/v1/fonts", demoAllow, ""},
+	{http.MethodGet, "/api/v1/fonts/{id}/faces/{faceId}", demoAllow, ""},
+	{http.MethodHead, "/api/v1/fonts/{id}/faces/{faceId}", demoAllow, ""},
+	{http.MethodPost, "/api/v1/fonts/google", demoRefuse, "Installing fonts is unavailable in the demo"},
+	{http.MethodPost, "/api/v1/fonts/upload", demoRefuse, "Font uploads are unavailable in the demo"},
+	{http.MethodDelete, "/api/v1/fonts/{id}", demoRefuse, "Font deletion is unavailable in the demo"},
 	{http.MethodGet, "/api/v1/preferences", demoAllow, ""},
 	{http.MethodPut, "/api/v1/preferences/{key}", demoAllow, ""},
 	{http.MethodGet, "/api/v1/management/client-key-aliases", demoAllow, ""},
@@ -166,6 +173,8 @@ var demoPolicy = []demoPolicyRule{
 	{http.MethodGet, "/api/v1/management/dashboard/token-heatmap", demoAllow, ""},
 	{http.MethodGet, "/api/v1/management/dashboard/models", demoAllow, ""},
 	{http.MethodGet, "/api/v1/management/dashboard/providers", demoAllow, ""},
+	{http.MethodGet, "/api/v1/management/insights/cube", demoAllow, ""},
+	{http.MethodGet, "/api/v1/management/insights/rhythm", demoAllow, ""},
 	{http.MethodGet, "/api/v1/management/logs", demoAllow, ""},
 	{http.MethodGet, "/api/v1/management/logs/status", demoAllow, ""},
 	{http.MethodGet, "/api/v1/management/service-logs", demoAllow, ""},
@@ -178,6 +187,10 @@ var demoPolicy = []demoPolicyRule{
 	{http.MethodGet, "/api/v1/usage/events", demoAllow, ""},
 	{http.MethodGet, "/api/v1/usage/events/{id}", demoAllow, ""},
 	{http.MethodGet, "/api/v1/usage/facets", demoAllow, ""},
+	// The live stream answers 204 in the demonstration, which has no collector to
+	// signal from; the pages keep polling the fixture instead.
+	{http.MethodGet, "/api/v1/usage/live", demoAllow, ""},
+	{http.MethodGet, "/api/v1/usage/routing", demoAllow, ""},
 	{http.MethodGet, "/api/v1/management/audit/events", demoAllow, ""},
 	{http.MethodGet, "/api/v1/management/audit/summary", demoAllow, ""},
 	{http.MethodGet, "/api/v1/management/audit/export", demoAllow, ""},
@@ -247,6 +260,10 @@ var demoPolicy = []demoPolicyRule{
 	// Sign-in: starting a real OAuth exchange is the one thing a public demo must
 	// never do, because it would mint a credential against a real provider account.
 	{http.MethodPost, "/api/v1/management/oauth/start", demoRefuse, "sign-in is disabled: the demo holds no provider account to authorize"},
+	{http.MethodPost, "/api/v1/management/oauth/siwc/bind", demoRefuse, "credential binding is disabled in the demonstration"},
+	{http.MethodPost, "/api/v1/management/oauth/siwc/callback", demoRefuse, "credential binding is disabled in the demonstration"},
+	{http.MethodGet, "/api/v1/management/oauth/siwc/status", demoRefuse, "credential binding is disabled in the demonstration"},
+	{http.MethodDelete, "/api/v1/management/oauth/siwc/session", demoRefuse, "credential binding is disabled in the demonstration"},
 	{http.MethodPost, "/api/v1/management/oauth/callback", demoRefuse, "sign-in is disabled: the demo holds no provider account to authorize"},
 	{http.MethodDelete, "/api/v1/management/oauth/session", demoRefuse, "sign-in is disabled: the demo holds no provider account to authorize"},
 
@@ -340,6 +357,13 @@ var demoPolicyConsole = []demoPolicyRule{
 	{http.MethodHead, "/lobe-icons/*", demoAllow, ""},
 	{http.MethodGet, "/favicon.svg", demoAllow, ""},
 	{http.MethodHead, "/favicon.svg", demoAllow, ""},
+	// The installable-app surface is public build output, like the assets above: it
+	// carries no operator data and the manifest cannot be authenticated anyway, since
+	// the browser reads it while evaluating whether the app can be installed.
+	{http.MethodGet, "/manifest.webmanifest", demoAllow, ""},
+	{http.MethodHead, "/manifest.webmanifest", demoAllow, ""},
+	{http.MethodGet, "/icons/*", demoAllow, ""},
+	{http.MethodHead, "/icons/*", demoAllow, ""},
 	{http.MethodGet, "/*", demoAllow, ""},
 	{http.MethodHead, "/*", demoAllow, ""},
 }

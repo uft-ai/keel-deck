@@ -426,3 +426,114 @@ func TestQueryCredentialModelWindowUsageRejectsUninitializedRepository(t *testin
 		}
 	}
 }
+
+func TestRepositoryQuotaRefreshAttempts(t *testing.T) {
+	ctx := context.Background()
+	repo, _ := testRepository(t)
+
+	nowMS := time.Now().UnixMilli()
+	failed := QuotaRefreshAttemptRecord{
+		AuthIndex:     "auth-attempt",
+		AttemptedAtMS: nowMS,
+		Outcome:       QuotaRefreshAttemptFailed,
+		Error:         "HTTP 401: unauthorized",
+	}
+	if err := repo.SaveQuotaRefreshAttempt(ctx, failed); err != nil {
+		t.Fatalf("SaveQuotaRefreshAttempt failed: %v", err)
+	}
+
+	attempts, err := repo.GetQuotaRefreshAttempts(ctx, []string{"auth-attempt", "auth-absent", " "})
+	if err != nil {
+		t.Fatalf("GetQuotaRefreshAttempts failed: %v", err)
+	}
+	if got := attempts["auth-attempt"]; got.Outcome != QuotaRefreshAttemptFailed || got.Error != failed.Error || got.AttemptedAtMS != nowMS {
+		t.Fatalf("attempt = %+v, want the failed read", got)
+	}
+	if _, ok := attempts["auth-absent"]; ok {
+		t.Fatal("a credential nobody tried must not report an attempt")
+	}
+
+	// A newer success replaces the failure it followed: the console asks what the last try was.
+	if err := repo.SaveQuotaRefreshAttempt(ctx, QuotaRefreshAttemptRecord{
+		AuthIndex:     "auth-attempt",
+		AttemptedAtMS: nowMS + 1000,
+		Outcome:       QuotaRefreshAttemptSucceeded,
+	}); err != nil {
+		t.Fatalf("SaveQuotaRefreshAttempt (success) failed: %v", err)
+	}
+	attempts, _ = repo.GetQuotaRefreshAttempts(ctx, []string{"auth-attempt"})
+	if got := attempts["auth-attempt"]; got.Outcome != QuotaRefreshAttemptSucceeded || got.Error != "" {
+		t.Fatalf("attempt = %+v, want the later success with no reason left over", got)
+	}
+
+	// A slow read that finishes after a newer one must not resurrect its own outcome.
+	if err := repo.SaveQuotaRefreshAttempt(ctx, QuotaRefreshAttemptRecord{
+		AuthIndex:     "auth-attempt",
+		AttemptedAtMS: nowMS,
+		Outcome:       QuotaRefreshAttemptFailed,
+		Error:         "HTTP 500: late arrival",
+	}); err != nil {
+		t.Fatalf("SaveQuotaRefreshAttempt (late) failed: %v", err)
+	}
+	attempts, _ = repo.GetQuotaRefreshAttempts(ctx, []string{"auth-attempt"})
+	if got := attempts["auth-attempt"]; got.Outcome != QuotaRefreshAttemptSucceeded {
+		t.Fatalf("attempt = %+v, want the later success to survive an older write", got)
+	}
+
+	if err := repo.SaveQuotaRefreshAttempt(ctx, QuotaRefreshAttemptRecord{AuthIndex: " ", AttemptedAtMS: nowMS, Outcome: QuotaRefreshAttemptFailed}); err == nil {
+		t.Fatal("an attempt with no credential must be refused")
+	}
+	if err := repo.SaveQuotaRefreshAttempt(ctx, QuotaRefreshAttemptRecord{AuthIndex: "auth-attempt", AttemptedAtMS: nowMS, Outcome: "maybe"}); err == nil {
+		t.Fatal("an unknown outcome must be refused")
+	}
+}
+
+func TestBatchExpiredCooldownsReportsOnlyFullyRecoveredEvidence(t *testing.T) {
+	ctx := context.Background()
+	repo, _ := testRepository(t)
+	if _, err := repo.SQL().ExecContext(ctx, `
+		INSERT INTO cpa_instances (id, name, base_url, usage_addr, management_key_ciphertext, management_key_nonce, status, created_at, updated_at)
+		VALUES ('default', 'Default', 'http://127.0.0.1:8317', '127.0.0.1:8317', x'00', x'00', 'unknown', 0, 0)
+	`); err != nil {
+		t.Fatalf("insert instance failed: %v", err)
+	}
+	nowMS := time.Now().UnixMilli()
+	hour := time.Hour.Milliseconds()
+	insertWithRetry := func(eventKey, authIndex string, quotaExceeded int, recoverAtMS, retryAtMS any) {
+		t.Helper()
+		if _, err := repo.SQL().ExecContext(ctx, `
+			INSERT INTO error_events (
+				instance_id, event_key, provider, model, auth_index, status_code, body,
+				retryable, auth_status, auth_disabled, auth_unavailable, quota_exceeded,
+				quota_reason, next_recover_at_ms, next_retry_after_ms, timestamp_ms, created_at_ms
+			) VALUES (
+				'default', ?, 'codex', 'gpt-5', ?, 429, 'usage limit reached',
+				1, 'active', 0, 0, ?, 'usage_limit_reached', ?, ?, ?, ?
+			)
+		`, eventKey, authIndex, quotaExceeded, recoverAtMS, retryAtMS, nowMS-24*hour, nowMS-24*hour); err != nil {
+			t.Fatalf("insert %s failed: %v", eventKey, err)
+		}
+	}
+	insert := func(eventKey, authIndex string, quotaExceeded int, recoverAtMS any) {
+		t.Helper()
+		insertWithRetry(eventKey, authIndex, quotaExceeded, recoverAtMS, nil)
+	}
+	// Recovered long ago, well past the 6-hour lookback of BatchCorrelatedCooldowns.
+	insert("old-1", "auth-old", 1, nowMS-20*hour)
+	insert("old-2", "auth-old", 1, nowMS-7*hour)
+	insert("cleared", "auth-cleared", 0, nowMS-7*hour)
+	insert("future", "auth-future", 1, nowMS+hour)
+	insert("mixed-past", "auth-mixed", 1, nowMS-7*hour)
+	insert("mixed-future", "auth-mixed", 1, nowMS+hour)
+	insert("no-recover", "auth-no-recover", 1, nil)
+	insert("retry-recovered", "auth-retry", 1, nowMS-7*hour)
+	insertWithRetry("retry-ahead", "auth-retry", 1, nil, nowMS+hour)
+
+	expired, err := repo.BatchExpiredCooldowns(ctx, []string{"auth-old", "auth-cleared", "auth-future", "auth-mixed", "auth-no-recover", "auth-retry", " "}, nowMS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(expired) != 1 || expired["auth-old"] != nowMS-7*hour {
+		t.Fatalf("expired = %v, want only auth-old with its latest recovery time %d", expired, nowMS-7*hour)
+	}
+}

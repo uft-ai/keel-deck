@@ -18,6 +18,7 @@ const (
 // alias, image flag and thinking levels. On a write it is authoritative for
 // every field its family has; a model entry sent without it keeps what is stored.
 type ProviderModelOptionsDTO struct {
+	OpenAPI                    *bool    `json:"openapi,omitempty"`
 	DisplayName                string   `json:"display_name,omitempty"`
 	MaxContextLength           int      `json:"max_context_length,omitempty"`
 	ForceMapping               bool     `json:"force_mapping,omitempty"`
@@ -41,6 +42,7 @@ type ProviderModelOptionsDTO struct {
 // one setting written to a family without it makes CPA refuse the whole
 // configuration.
 type providerModelOptionFields struct {
+	hasOpenAPI             bool
 	hasMaxContextLength    bool
 	hasIsCompat            bool
 	hasConfigurationUpdate bool
@@ -55,7 +57,7 @@ func providerModelOptionFieldsFor(family string) providerModelOptionFields {
 	}
 	switch management.ConfigKeyFamily(family) {
 	case management.ConfigFamilyVertex:
-		return providerModelOptionFields{}
+		return providerModelOptionFields{hasOpenAPI: true}
 	case management.ConfigFamilyCodex, management.ConfigFamilyXAI, management.ConfigFamilyMeta:
 		return providerModelOptionFields{hasMaxContextLength: true, hasIsCompat: true, hasConfigurationUpdate: true}
 	}
@@ -66,6 +68,7 @@ func providerModelOptionFieldsFor(family string) providerModelOptionFields {
 // the common plain entry adds nothing to the list response.
 func providerModelOptionsDTO(model management.ModelAlias) *ProviderModelOptionsDTO {
 	options := ProviderModelOptionsDTO{
+		OpenAPI:                    model.OpenAPI,
 		DisplayName:                model.DisplayName,
 		MaxContextLength:           model.MaxContextLength,
 		ForceMapping:               model.ForceMapping,
@@ -91,7 +94,7 @@ func providerModelOptionsDTO(model management.ModelAlias) *ProviderModelOptionsD
 }
 
 func (options ProviderModelOptionsDTO) isZero() bool {
-	return options.DisplayName == "" && options.MaxContextLength == 0 && !options.ForceMapping &&
+	return options.OpenAPI == nil && options.DisplayName == "" && options.MaxContextLength == 0 && !options.ForceMapping &&
 		!options.IsCompat && !options.SupportConfigurationUpdate &&
 		len(options.InputModalities) == 0 && len(options.OutputModalities) == 0 &&
 		!options.UseMaxCompletionTokens && len(options.Operations) == 0 && len(options.Native) == 0 &&
@@ -108,6 +111,8 @@ func normalizedProviderModelOptions(family, modelName string, options ProviderMo
 	}
 	fields := providerModelOptionFieldsFor(family)
 	switch {
+	case !fields.hasOpenAPI && options.OpenAPI != nil:
+		return refuse("model openapi requires Vertex")
 	case !fields.hasMaxContextLength && options.MaxContextLength != 0:
 		return refuse("this provider family has no max_context_length")
 	case !fields.hasIsCompat && options.IsCompat:
@@ -240,6 +245,7 @@ func normalizedModalities(modalities []string) ([]string, error) {
 // and thinking levels alone. An entry whose thinking ends with neither bounds
 // nor levels loses the object, as CPA reads an empty one as "no thinking".
 func (options ProviderModelOptionsDTO) applyTo(model *management.ModelAlias) {
+	model.OpenAPI = options.OpenAPI
 	model.DisplayName = options.DisplayName
 	model.MaxContextLength = options.MaxContextLength
 	model.ForceMapping = options.ForceMapping
@@ -333,50 +339,84 @@ func newProviderModels(edited []editedProviderModel) []management.ModelAlias {
 	return models
 }
 
-// mergeModelEdits applies the form's models to the stored ones. A row always
-// states the name, alias, image flag and thinking levels. With options it states
-// the whole entry CPA models; without them (the agent's provider operations, an
-// older client) the stored model of the same name keeps its other settings.
-// Either way the fields this console does not model survive. Two routes that
-// share an upstream name stay separate: the match is the upstream name plus
-// the client alias, with a single same-name row as a fallback for an edit
-// that names the stored route in original_name and original_alias. A unique
-// upstream name can still match an older client that omits that identity.
-// Original identity is only the lookup key: once a row is found, the requested
-// name replaces the stored upstream name. An original identity that names no
-// stored route is refused rather than appended as a new model.
-func mergeModelEdits(stored []management.ModelAlias, edited []editedProviderModel) ([]management.ModelAlias, error) {
-	byRoute := make(map[string]management.ModelAlias, len(stored))
-	byName := make(map[string]management.ModelAlias, len(stored))
-	nameCount := make(map[string]int, len(stored))
-	for _, model := range stored {
-		byRoute[storedModelKey(model.Name, model.Alias)] = model
-		name := strings.TrimSpace(model.Name)
-		nameCount[name]++
-		if _, seen := byName[name]; !seen {
-			byName[name] = model
+// matchProviderModelRoutes reserves unchanged routes before resolving renames.
+// Matching a rename against the whole stored name set would confuse sibling aliases;
+// guessing between multiple unmatched rows would silently move their route policy.
+func matchProviderModelRoutes(stored, requested []management.ModelAlias) ([]int, error) {
+	matches := make([]int, len(requested))
+	used := make([]bool, len(stored))
+	routeKey := func(model management.ModelAlias) [2]string {
+		name, alias := strings.TrimSpace(model.Name), strings.TrimSpace(model.Alias)
+		if alias == "" {
+			alias = name
+		}
+		return [2]string{name, alias}
+	}
+	for index, model := range requested {
+		matches[index] = -1
+		for position, previous := range stored {
+			if !used[position] && routeKey(previous) == routeKey(model) {
+				matches[index], used[position] = position, true
+				break
+			}
 		}
 	}
-	merged := make([]management.ModelAlias, 0, len(edited))
-	for _, row := range edited {
-		keyName := row.originalName
-		keyAlias := row.originalAlias
-		if keyName == "" {
-			keyName = row.model.Name
-			keyAlias = row.model.Alias
-		}
-		old, found := byRoute[storedModelKey(keyName, keyAlias)]
-		if !found && row.originalName == "" && nameCount[strings.TrimSpace(row.model.Name)] == 1 {
-			old, found = byName[strings.TrimSpace(row.model.Name)]
-		}
-		if !found {
-			if row.originalName != "" {
-				return nil, newProviderWriteError(http.StatusBadRequest, fmt.Sprintf("model %q is not a stored route of this provider", row.originalName))
-			}
-			row.model.Disabled = row.disabled != nil && *row.disabled
-			merged = append(merged, row.model)
+	for index, model := range requested {
+		if matches[index] >= 0 {
 			continue
 		}
+		candidate, candidateCount := -1, 0
+		for position, previous := range stored {
+			if !used[position] && strings.TrimSpace(previous.Name) == strings.TrimSpace(model.Name) {
+				candidate, candidateCount = position, candidateCount+1
+			}
+		}
+		if candidateCount == 0 {
+			continue
+		}
+		requestedCount := 0
+		for position, next := range requested {
+			if matches[position] < 0 && strings.TrimSpace(next.Name) == strings.TrimSpace(model.Name) {
+				requestedCount++
+			}
+		}
+		if candidateCount != 1 || requestedCount != 1 {
+			return nil, newProviderWriteError(http.StatusBadRequest, "ambiguous model alias rename; rename one alias at a time")
+		}
+		matches[index], used[candidate] = candidate, true
+	}
+	return matches, nil
+}
+
+// mergeModelEdits keeps stored model options on partial edits and unmodelled fields
+// on full edits. Route matching must finish before any row can consume a sibling.
+// A row naming its stored route in original_name/original_alias matches by that
+// identity only, so the requested name can replace the stored upstream name; an
+// original identity that names no stored route is refused, not appended.
+func mergeModelEdits(stored []management.ModelAlias, edited []editedProviderModel) ([]management.ModelAlias, error) {
+	requested := newProviderModels(edited)
+	keys := append([]management.ModelAlias(nil), requested...)
+	for index, row := range edited {
+		if row.originalName != "" {
+			keys[index] = management.ModelAlias{Name: row.originalName, Alias: row.originalAlias}
+		}
+	}
+	matches, err := matchProviderModelRoutes(stored, keys)
+	if err != nil {
+		return nil, err
+	}
+
+	merged := make([]management.ModelAlias, 0, len(edited))
+	for index, row := range edited {
+		if row.originalName != "" && (matches[index] < 0 ||
+			storedModelKey(stored[matches[index]].Name, stored[matches[index]].Alias) != storedModelKey(row.originalName, row.originalAlias)) {
+			return nil, newProviderWriteError(http.StatusBadRequest, fmt.Sprintf("model %q is not a stored route of this provider", row.originalName))
+		}
+		if matches[index] < 0 {
+			merged = append(merged, requested[index])
+			continue
+		}
+		old := stored[matches[index]]
 		// A row that does not state the switch keeps the stored choice, so an
 		// older client's edit cannot turn a disabled model back on.
 		disabled := old.Disabled

@@ -1,21 +1,13 @@
-import React from 'react';
-import { App } from 'antd';
-import { defaultScheduler, notifyManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { I18nProvider } from '../src/i18n';
+import { defaultScheduler, notifyManager } from '@tanstack/react-query';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
+import { expect, it, vi } from 'vitest';
+import { installOmcApi } from './support/omcApi';
+import { renderWithOmc } from './support/render';
 import { UpdateAction, UpdateStatusLine, UpdaterSetup, UPDATER_INSTALL_COMMAND } from '../src/pages/SystemPage/UpdateControls';
 import { UPDATE_WATCH_LIMIT_MS, UPDATER_QUERY_KEY, useConsoleUpdate, type UpdateOutcome } from '../src/pages/SystemPage/useConsoleUpdate';
 import { deriveUpdateOffer } from '../src/pages/SystemPage/versionPresentation';
 import type { SystemProductVersion } from '../src/types/system';
 import { createSystemUpdaterFixture, SYSTEM_UPDATER_CONTRACT } from '../../scripts/acceptance/system-updater-fixture.mjs';
-
-beforeEach(() => {
-  window.localStorage.setItem('omc-lang', 'en');
-  vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
-  vi.stubGlobal('matchMedia', (query: string) => ({ matches: false, media: query, onchange: null, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {}, dispatchEvent: () => false }));
-});
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 const VERSION: SystemProductVersion = {
   product: 'omc', running_version: 'v1.0.0', latest_version: 'v1.1.0',
@@ -40,27 +32,23 @@ function Card({ onFinished }: { onFinished: (outcome: UpdateOutcome) => void }) 
 type Reply = () => Response | Promise<Response>;
 
 function mount(fixture = createSystemUpdaterFixture()) {
-  const requests: { method: string; path: string }[] = [];
   // A queued reply stands in for one answer, which is how a test makes the console unreachable.
   const overrides: Reply[] = [];
   const reach = { isLost: false };
-  vi.stubGlobal('fetch', async (path: string, options: RequestInit) => {
-    const method = options.method ?? 'GET';
-    requests.push({ method, path });
-    const override = method === 'GET' ? overrides.shift() : undefined;
+  const omc = installOmcApi();
+  omc.serve(/^\/management\/system\/updater/, fixture);
+  omc.on('*', /^\/management\/system\/updater/, request => {
+    const override = request.method === 'GET' ? overrides.shift() : undefined;
     if (override) return override();
-    if (reach.isLost) throw new TypeError('Failed to fetch');
-    const result = fixture(new URL(path, 'http://127.0.0.1'), method, options.body as string);
-    return new Response(JSON.stringify(result.json), { status: result.status });
+    if (reach.isLost) return Promise.reject(new TypeError('Failed to fetch'));
+    return undefined;
   });
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  const requests = () => omc.requests.map(request => ({ method: request.method, path: `/omc/api/v1${request.path}` }));
   const onFinished = vi.fn<(outcome: UpdateOutcome) => void>();
-  const surface = render(
-    <React.StrictMode><App><QueryClientProvider client={client}><I18nProvider><Card onFinished={onFinished} /></I18nProvider></QueryClientProvider></App></React.StrictMode>,
-  );
-  const reread = () => act(async () => { await client.refetchQueries({ queryKey: UPDATER_QUERY_KEY }); });
-  const close = () => { surface.unmount(); client.clear(); };
-  return { fixture, requests, overrides, reach, client, onFinished, reread, close };
+  const surface = renderWithOmc(<Card onFinished={onFinished} />, { isStrict: true });
+  const reread = () => act(async () => { await surface.client.refetchQueries({ queryKey: UPDATER_QUERY_KEY }); });
+  const close = () => { surface.unmount(); };
+  return { fixture, get requests() { return requests(); }, overrides, reach, client: surface.client, onFinished, reread, close };
 }
 
 async function startUpdate() {
@@ -77,6 +65,19 @@ it('asks before updating and sends nothing until the question is answered', asyn
   fireEvent.click(screen.getByRole('button', { name: 'Update now' }));
   await screen.findByText('Pulling the new image…');
   expect(surface.requests.filter((entry) => entry.method === 'POST').map((entry) => entry.path)).toEqual(['/omc/api/v1/management/system/updater/apply']);
+  surface.close();
+});
+
+it('draws a running update as the four steps the updater reports', async () => {
+  const surface = mount();
+  await startUpdate();
+  const reached = () => Array.from(screen.getByTestId('sys-update-steps').children).map((step) => step.getAttribute('data-reached'));
+  expect(reached()).toEqual(['true', 'false', 'false', 'false']);
+
+  surface.fixture.advance('verifying');
+  await surface.reread();
+  await screen.findByText('Checking that the new container is healthy…');
+  expect(reached()).toEqual(['true', 'true', 'true', 'true']);
   surface.close();
 });
 
@@ -140,6 +141,53 @@ it('gives up on an update whose updater forgot it or stopped answering', async (
   await waitFor(() => expect(screen.queryByTestId('sys-update-stage')).toBeNull());
   expect(silent.onFinished).toHaveBeenCalledTimes(1);
   silent.close();
+});
+
+it('reports one end for the job it gave up on, even when the updater answers again', async () => {
+  const surface = mount();
+  await startUpdate();
+
+  // The updater stops answering, and the console gives up on the running job once.
+  surface.reach.isLost = true;
+  await surface.reread();
+  const readClock = Date.now.bind(Date);
+  let clockShift = UPDATE_WATCH_LIMIT_MS;
+  vi.spyOn(Date, 'now').mockImplementation(() => readClock() + clockShift);
+  await surface.reread();
+  await waitFor(() => expect(surface.onFinished).toHaveBeenCalledTimes(1));
+
+  // The updater comes back and still names the job it lost. That answer is the update the page
+  // has already ended: following it again would report a second end for one update, so the
+  // console keeps the one report it made and waits for a different job.
+  surface.reach.isLost = false;
+  await surface.reread();
+  surface.reach.isLost = true;
+  await surface.reread();
+  clockShift = 3 * UPDATE_WATCH_LIMIT_MS;
+  await surface.reread();
+  expect(surface.onFinished).toHaveBeenCalledTimes(1);
+  expect(surface.onFinished).toHaveBeenCalledWith({ job: null, product: 'omc' });
+  surface.close();
+});
+
+it('reports a later update that arrives with its own job id', async () => {
+  const surface = mount();
+  await startUpdate();
+  surface.fixture.advance('done');
+  await surface.reread();
+  await waitFor(() => expect(surface.onFinished).toHaveBeenCalledTimes(1));
+
+  // A later update, admitted under an id of its own, is followed and reported too: the end already
+  // reported for the previous job must not swallow it. The stage line is what proves the page is
+  // following this job before it finishes; reading twice without it can collapse into one render.
+  surface.fixture.admit('job-later');
+  await surface.reread();
+  await screen.findByText('Pulling the new image…');
+  surface.fixture.advance('done');
+  await surface.reread();
+  await waitFor(() => expect(surface.onFinished).toHaveBeenCalledTimes(2));
+  expect(surface.onFinished.mock.calls[1][0].job).toMatchObject({ id: 'job-later', stage: 'done', finished: true });
+  surface.close();
 });
 
 it('follows an update that was already running when the page opened', async () => {

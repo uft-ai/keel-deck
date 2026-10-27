@@ -1,6 +1,5 @@
 import React from 'react';
 import { Button, Dropdown } from 'antd';
-import { LabelTip } from '../../components/common/LabelTip';
 import { AssistantRuntimeProvider, ThreadPrimitive } from '@assistant-ui/react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
@@ -41,7 +40,9 @@ import {
 import type { Content, Message, PlaygroundParameters, PlaygroundSession, PlaygroundTarget, Turn } from './state';
 import { usePlaygroundRun } from './usePlaygroundRun';
 import styles from './PlaygroundPage.module.css';
+import { ToolButton } from '../../components/common/ToolButton';
 import { LoadFailure, Notice, useToast } from '../../components/feedback';
+import { Tooltip } from '../../components/common/Tooltip';
 
 /**
  * How long the stored session waits for edits to settle before it is written.
@@ -367,14 +368,10 @@ export const PlaygroundPage: React.FC = () => {
           },
         }}
       >
-        <Button aria-label={t('agent.export')} icon={<DownloadOutlined />} loading={isExporting} disabled={turns.length === 0 || isRunning || isExporting}>
-          <span className={styles['action-label']}>{t('agent.export')}</span>
-        </Button>
+        <ToolButton label={t('agent.export')} icon={<DownloadOutlined />} loading={isExporting} disabled={turns.length === 0 || isRunning || isExporting} />
       </Dropdown>
-      <Button aria-label={t('pg.new_chat')} icon={<MessageOutlined />} disabled={isRunning || !isRecoveryChecked || turns.length === 0} onClick={resetConversation}>
-        <span className={styles['action-label']}>{t('pg.new_chat')}</span>
-      </Button>
-      <LabelTip title={t('pg.parameters')}>
+      <ToolButton label={t('pg.new_chat')} icon={<MessageOutlined />} disabled={isRunning || !isRecoveryChecked || turns.length === 0} onClick={resetConversation} />
+      <Tooltip title={t('pg.parameters')}>
         <Button
           aria-label={t('pg.parameters')}
           aria-pressed={isPanelOpen}
@@ -382,7 +379,7 @@ export const PlaygroundPage: React.FC = () => {
           icon={<LayoutOutlined />}
           onClick={() => setIsPanelOpen(value => !value)}
         />
-      </LabelTip>
+      </Tooltip>
     </>
   );
 

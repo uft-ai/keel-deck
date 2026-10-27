@@ -1,0 +1,11 @@
+{
+  "why": "The provider reported its counters and they are genuine zeros.",
+  "now_ms": 0,
+  "body": {
+    "record": {
+      "request_id": "reported",
+      "tokens_reported": true,
+      "tokens": {"input_tokens": 0, "output_tokens": 0}
+    }
+  }
+}

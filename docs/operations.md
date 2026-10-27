@@ -74,6 +74,7 @@ a message naming the variable.
 | `OMCPA_DEMO_MODE` | `false` | Serve the console from the built-in fixture; see [Demo mode](#demo-mode) |
 | `OMCPA_UPDATER_ENABLED` | `true` | `false` makes the console ignore an updater and offer no update action; see [Console updates](#console-updates) |
 | `OMCPA_UPDATER_URL` | `http://oh-my-cpa-updater:8090` | Where the console looks for the updater. The default is the service and container name every install method uses |
+| `OMCPA_GOOGLE_FONTS_URL` | `https://fonts.googleapis.com` | The Google Fonts stylesheet API the font library installs from, or a compatible mirror for a deployment that cannot reach Google. Requests honour `HTTPS_PROXY`; font files are downloaded only from Google's font hosts or the mirror's own site. Used only when an operator installs a family; uploading needs no network |
 
 The MCP stdio bridge (`oh-my-cpa mcp`) reads `OMCPA_SERVER_URL`,
 `OMCPA_CPA_MANAGEMENT_KEY` and the optional `OMCPA_VERSION` only; the remote MCP
@@ -89,7 +90,7 @@ endpoint has no setting of its own. See [Agent and MCP](#agent-and-mcp).
   (NFS/CIFS).
 - **Master key**: `OMCPA_MASTER_KEY` is required to decrypt stored credentials and
   payloads. Back it up securely.
-- **Framed content**: The console's document declares `frame-src 'self' blob:`. It frames plugin pages from its own origin and the Agent's sandboxed canvases (ADR 0072); a reverse proxy must not replace that policy with one that allows other frame sources.
+- **Framed content**: The console's document declares `frame-src 'self' blob:`. It frames plugin pages from its own origin; a reverse proxy must not replace that policy with one that allows other frame sources.
 - **Network security**: Keep CPA on a private network or loopback interface. The supplied
   Compose files publish CPA and OMC only on loopback; use direct local access or an SSH
   tunnel. Public access requires HTTPS through operator-owned infrastructure.
@@ -282,8 +283,8 @@ needed) allows or denies that one operation; `omc_operation_status` reads the
 outcome and can wait up to 30 seconds for the decision (`wait_seconds`). The read-only database queries and `ask_question` are offered to the built-in
 Agent only. Raw SQL results and private model history are omitted from Agent session
 responses and run snapshots, and query receipts have no raw-result preview; the selected
-model still receives the rows and may use them in its answer or an explicit
-`render_ui` display. See `docs/agent-capabilities.md`.
+model still receives the rows and may use them in its answer or in a projected
+`data_rows` reference a drawn interface uses. See `docs/agent-capabilities.md`.
 
 ## Model playground
 
@@ -360,11 +361,42 @@ responses.
 ## TPS calculation mode
 
 OMC Settings → Display chooses whether request-record and Playground TPS includes
-first-token latency. The default excludes it when the remaining window is at least
-50 ms; otherwise it falls back to total latency. Including it always uses total latency.
-The server-stored `omc_tps_calculation_mode` preference (`exclude_ttft` /
-`include_ttft`) also supports Agent/MCP reads and writes; historical timing and usage
-remain unchanged.
+first-token latency. The rate describes observed output delivery, not the model's
+internal decoding clock.
+
+- **Include first-token latency (default).** TPS is total output tokens divided by total
+  latency. Known reasoning tokens remain in the output total.
+- **Exclude first-token latency.** When `exclude_ttft` is selected, TPS divides
+  output tokens by the interval from the first observable token to completion. A record
+  that reports reasoning tokens uses this denominator only when the first timestamp is
+  known to mark non-reasoning content. A Playground turn has that boundary when reasoning
+  arrives on a separate thought channel; inline reasoning shares the reply clock. A usage
+  record without reported reasoning may subtract a valid `ttft_ms`; when reasoning is
+  reported, its single timestamp does not locate the answer boundary and exclusion is
+  unavailable.
+- **Unavailable is a result.** Missing or contradictory timing and token accounting, or a
+  reasoning count that cannot be attributed to the observed interval, displays `—` with the
+  reason rather than silently switching to another denominator. There is no duration or
+  rate threshold. Choosing exclusion displays a warning that the narrower denominator can
+  make the rate unusually high.
+
+Both modes recalculate historical readouts from stored observations. The setting never
+rewrites usage or timing, and it does not change the independent TTFT readout. TPS exports
+also carry `tps_basis` and `tps_mode`.
+
+## Plugin store
+
+The plugin store reads CPA's built-in `official` registry plus the registries in
+`plugins.store-sources`. Oh My CPA's own registry
+(`https://raw.githubusercontent.com/WizisCool/oh-my-cpa/main/plugins/registry.json`)
+is a managed entry: the server adds it when the source is on (the default) and restores
+it after a configuration save that removed it, so the switch is **OMC Settings →
+Plugin store** (`omc_plugin_source_enabled`, ADR 0104), not the configuration editor
+and not the source list on the plugin settings tab. Turning it off removes the
+address on the next plugin read, install or plugin-settings save. Its entries are
+marked Oh My CPA and listed first; like every entry outside CPA's built-in registry,
+installing one requires typing the plugin id, because the confirmation is about
+running code inside the gateway.
 
 ## Plugin pages
 
@@ -373,6 +405,12 @@ session; CPA need not be reachable from the browser. It can use CPA-native v0/v8
 routes and the fixed model directory, including configuration containing client and provider
 secrets. Install only plugins you trust: the page is same-origin with the console and acts
 with the signed-in operator's authority, while the plugin already runs inside CPA.
+
+The host adapts same-origin native API and resource fetches to carry the OMC session,
+including pages that set `credentials: 'omit'`. This does not grant access without a
+console session or change credentials on external requests. Plugin scripts that identify
+their provider through direct `location.pathname` access receive the CPA-native resource
+path, while the frame itself remains under the configured OMC base path.
 
 A plugin page may ask for a management key of its own. The host compares a page's explicit
 Authorization or X-Management-Key with the stored CPA management key and answers a wrong one
@@ -446,18 +484,37 @@ prices read "Price unavailable" and request counts stay unknown, never unpriced 
 ## OAuth model rules
 
 Open **Model rules** in OAuth management to edit CPA's provider-wide aliases or
-model exclusions. These settings affect every OAuth/file-backed credential of
-the selected provider, not just one file. Exact exclusions and `*` patterns match
-case-insensitively; `*` excludes all models. Exclusions run before alias mapping,
-so aliasing an excluded upstream model does not make it available again. Use the
-credential configuration tab for an individual file's exclusion fields.
+model exclusions. Aliases are provider-scoped; exclusions are defaults for
+OAuth/file-backed credentials without a non-empty own `excluded_models` list.
+A non-empty credential list replaces, rather than extends, the provider's
+`oauth.excluded-models`. A missing, empty or null credential list inherits the
+current provider rules. Use the credential configuration tab to edit an override;
+clearing it restores inheritance, not unrestricted availability.
+
+Exact exclusions and `*` patterns match case-insensitively. Provider `*` excludes
+all models only for inheriting credentials: with provider `["*"]` and credential
+`["model-b"]`, the credential uses only `["model-b"]`, so `model-a` is not blocked
+by provider `*`. Clearing that override makes the credential inherit `*` again.
+Exclusions run before alias mapping; an alias cannot restore a source hidden by
+the applicable rules. Deleting provider rules removes those defaults but leaves
+non-empty credential overrides unchanged; it does not guarantee that models are
+served again. CPA's per-credential model list is authoritative for availability.
+Disable a credential explicitly when it must stop serving.
+
+This precedence requires **CPA v8.0.33 or later**; upgrade an older gateway before
+relying on credential overrides. OMC's general v8.0.0 Management API baseline is
+unchanged. The behavior follows CPA's [credential override change](https://github.com/router-for-me/CLIProxyAPI/commit/69d0ff8e295aea349966b16f20e2966421bfeb18).
+The upstream regression
+[`TestCodexExcludedModelsCredentialPriorityAfterPatchAndReload`](https://github.com/router-for-me/CLIProxyAPI/blob/2422c6b0f5fe16495320fa29456493874c1977a0/sdk/cliproxy/service_excluded_models_priority_test.go)
+checks immediate PATCH effects, reloads and restored inheritance after clearing.
 
 The facade exposes GET/PATCH at `/api/v1/management/auth-files/model-aliases` and
 `/api/v1/management/auth-files/excluded-models`. An exclusion PATCH carries
 `provider` and `models`; an empty `models` array removes that provider's rules.
 The provider model catalog is read at
-`/api/v1/management/auth-files/provider-models?provider=codex`. Without a catalog,
-the editors still accept typed names. A successful write requires CPA readback;
+`/api/v1/management/auth-files/provider-models?provider=codex`; plugin-owned
+providers read the catalog CPA's plugin host publishes (CPA v8.0.34 or later). Without a catalog, the
+editors still accept typed names. A successful write requires CPA readback;
 changes are serialized with other whole-config writes, backed up and audit logged
 (`oauth_model_alias.update` or `oauth_excluded_models.update`). Demo mode allows
 reads but refuses durable changes.
@@ -494,9 +551,27 @@ read every such credential. Each automatic read is a provider request made with 
 minute; a failed reset-driven read is retried every ten minutes for an hour. Configured
 NaN keys are included. When a NaN reading is saved but Relay's period ledger could not
 take its observation, the key is read and delivered again about ten minutes later
-(ADR 0095); a delivery Relay refused waits for the next normal read. Meta credentials are only read on a manual
+(ADR 0095); a delivery Relay refused waits for the next normal read. Claude quota reads go one at a time
+on every path, because Anthropic answers a burst of usage reads with HTTP 429 for every credential in it. After a
+429, OMC sends no Claude quota read for the `Retry-After` the provider named, or at least two minutes, including a
+manual refresh, which shows the last good reading marked stale with the 429 as its reason. The refused credential
+is not read automatically again for 5 minutes, doubling with each consecutive 429 up to 30 minutes, and its next
+successful read ends the backoff. That backoff covers every automatic quota read, including
+credential warmup's evidence read and its pending confirmation, so a probe nobody is waiting
+on cannot spend another refused request; a manual refresh keeps its own rule and waits only for
+the provider pause. A Claude re-read sends only the usage request: the plan is
+re-read every six hours and the reset grants every hour, and a refused grants listing waits its
+hour without holding back the usage reads. This pacing lives in memory and restarts with the process. Meta credentials are only read on a manual
 refresh, because that read exchanges a key upstream. Turning both off restores
 operator-only reads. A demonstration never runs it.
+
+Any read, manual or automatic, that shows room in every window releases a credential CPA
+still holds in cooldown, because providers can reset a quota before the recovery time they
+announced. While the policy is on, each round also releases an enabled credential whose
+recorded recovery times have all passed, including Meta and providers without a quota
+probe. Each release is logged as `CPA cooldown cleared after quota restored` or `expired
+CPA cooldown cleared` with the `auth_index`, and appears in the audit log as
+`quota.clear_cooldown.automatic`.
 
 ## Meta quota and live subscription tiers
 
@@ -606,7 +681,7 @@ remain coarse summaries, and the details retain the precise reading.
 ## Credential window warmup
 
 Configure provider defaults from OAuth management's Warmup settings, or a complete
-credential override from its Quota tab. Reset mode is Off, Weekly, or Weekly and five-hour.
+credential override from its Window warmup tab. Reset mode is Off, Weekly, or Weekly and five-hour.
 Daily warmup defaults off with 06:00 as its editable time in the effective OMC timezone.
 Choose an available model; Claude's available Haiku models are listed first. Changing a
 model never silently selects a replacement. Saving an enabled policy authorizes automatic
@@ -621,12 +696,15 @@ Paid fallback must be affirmatively disabled by a fresh usage read. Claude uses
 billing settings or redeem a reset credit to make warmup eligible. A zero reading with
 an active fixed boundary is not an idle window. Model-scoped Sonnet, Opus and Fable
 limits can pause the selected family without blocking unrelated Haiku. Fable evidence
-accepts the legacy `iguana_necktie` or modern model-scoped `limits`; malformed modern
+accepts the legacy `iguana_necktie` (unless it carries dollar amounts, which make it the
+cloud session credit pool) or modern model-scoped `limits`; malformed modern
 evidence, including a present non-array or null `limits` field, remains unknown rather
 than falling back to an apparently available legacy limit.
 
 The background loop checks once per minute, with bounded four-way rounds of 16, and
-reuses stored quota observations targeted for refresh every five minutes. Daily starts
+reuses stored quota observations targeted for refresh every five minutes. A round whose windows
+are already active stores the observation it reconciled and sends nothing, not even another
+quota read; a consuming request still reads fresh evidence immediately before it is sent. Daily starts
 missed by more than one hour are not replayed. If starting now would overlap the next
 daily time, reset-driven requests wait, including weekly triggers. Changing the OMC
 zone changes future calendar decisions, not stored instants.
@@ -636,8 +714,10 @@ evidence. No activation observed is a neutral historical fact, while absent bill
 reads Unknown and pauses requests. Current reasons distinguish active windows, missing quota
 and billing refusals. An unsupported response pauses automatic requests for the selected
 model until a confirmed recheck succeeds or an available replacement model is explicitly
-selected. Rechecks still obey unresolved-outcome suppression. Manual outcomes stay in that section
-without a duplicate toast. Saving credential fields keeps a separate warmup draft open.
+selected. Rechecks still obey unresolved-outcome suppression. Manual actions report an outcome
+through a toast; sent requests also update the durable last result in the Window warmup tab.
+Warm up now opens its confirmation on both HTTP and HTTPS deployments. Switching tabs or
+saving credential fields keeps a separate warmup draft open.
 
 A consuming request is recorded before it is sent. If pre-send revalidation refuses the
 request, its provisional cycle and daily identities are restored. A temporary startup

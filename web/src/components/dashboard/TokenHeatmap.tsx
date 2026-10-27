@@ -1,3 +1,4 @@
+import type { MessageKey } from '../../i18n/catalog';
 import { useTimeZone } from '../../utils/TimeZoneProvider';
 import React from 'react';
 import { Tooltip } from 'antd';
@@ -38,7 +39,7 @@ const FULL_NUMBER_FORMAT = new Intl.NumberFormat('en');
  * week of labels is what makes the rows readable without counting them - which is the whole
  * reason the grid has rows.
  */
-const WEEKDAY_KEYS = [
+const WEEKDAY_KEYS: readonly MessageKey[] = [
   'dash.heatmap.dow.mon',
   'dash.heatmap.dow.tue',
   'dash.heatmap.dow.wed',
@@ -253,8 +254,8 @@ export const TOKEN_HEATMAP_QUERY_KEY = 'dashboard-token-heatmap';
  * does not distinguish a day that has not happened from one whose records were pruned, because a
  * reader comparing days can only act on one thing - whether there is data for it.
  *
- * **The cells are DOM, not a chart mark.** `@ant-design/charts` is isolated in its own lazy chunk
- * and reaches the browser only from the trend marks above. A field of ~370 cells needs per-cell
+ * **The cells are DOM, not a chart mark.** The SVG chart runtime is lazy;
+ * the calendar does not depend on it. A field of ~370 cells needs per-cell
  * text, focus and hit areas, so a canvas mark would need a parallel DOM layer for all three. See
  * docs/design.md §2 and ADR 0005.
  *

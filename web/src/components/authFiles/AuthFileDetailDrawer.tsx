@@ -1,3 +1,5 @@
+import { SecretInput } from '../common/SecretInput';
+import type { MessageKey } from '../../i18n/catalog';
 import React, { useEffect, useLayoutEffect, useState, useCallback, useRef } from 'react';
 import {
   Tabs,
@@ -7,6 +9,7 @@ import {
   InputNumber,
   Form,
   Table,
+  Segmented,
   App as AntdApp,
 } from 'antd';
 import { Switch } from '../common/Switch';
@@ -34,7 +37,6 @@ import {
   summarizeAuthFileStatusMessage,
 } from './authFileLogic';
 import styles from './AuthFileDetailDrawer.module.css';
-import { useOverlayHistory } from '../../hooks/useOverlayHistory';
 import { copyText } from '../../utils/clipboard';
 import { useToast } from '../feedback';
 import { LoadFailure, Notice } from '../feedback';
@@ -51,11 +53,22 @@ import {
   readCredentialPolicyDraft,
   type CredentialPolicyDraft,
 } from './credentialPolicy';
+import {
+  buildVertexOpenAPIPatch,
+  isVertexServiceAccount,
+  MAX_VERTEX_OPENAPI_MODELS,
+  readVertexOpenAPIDraft,
+  vertexOpenAPIProblem,
+  type VertexOpenAPIDraft,
+  type VertexOpenAPIMode,
+  type VertexOpenAPIProblem,
+} from './vertexOpenAPI';
 import { SearchInput } from '../common/SearchInput';
 import { SectionHeading } from '../common/SectionHeading';
 import { AppDrawer } from '../common/AppDrawer';
 import { Tag } from '../common/Tag';
 import { FactList } from '../common/FactList';
+import { TAB_OVERFLOW } from '../common/tabOverflow';
 
 const { Text } = Typography;
 
@@ -66,8 +79,9 @@ interface AuthFileDetailDrawerProps {
   onSaved: (file?: ManagementAuthFile) => void;
   onDownload: (file: ManagementAuthFile) => void;
   quotaContent?: React.ReactNode;
+  warmupContent?: React.ReactNode;
   hasExternalDraft?: boolean;
-  initialSection?: 'overview' | 'configuration' | 'models';
+  initialSection?: 'overview' | 'warmup' | 'configuration' | 'models';
   /**
    * Whether the safe fields may be written. The write is keyed by file name, so a
    * credential whose name does not identify one entry cannot be edited safely: the
@@ -87,16 +101,24 @@ interface FormValues {
   websockets?: boolean;
   using_api?: boolean;
   excluded_models?: string;
+  openapi_mode?: VertexOpenAPIMode;
+  openapi_location?: string;
+  openapi_models?: string;
 }
 
 // Listed out so the translation check can see every key the alias rules can report.
-const ALIAS_PROBLEM_KEYS: Record<OAuthModelAliasValidationError, string> = {
+const ALIAS_PROBLEM_KEYS: Record<OAuthModelAliasValidationError, MessageKey> = {
   provider: 'af.alias_error_provider',
   too_many: 'af.alias_error_too_many',
   name_alias_required: 'af.alias_error_name_alias_required',
   field_too_long: 'af.alias_error_field_too_long',
   alias_same: 'af.alias_error_alias_same',
   alias_duplicate: 'af.alias_error_alias_duplicate',
+};
+const VERTEX_PROBLEM_KEYS: Record<VertexOpenAPIProblem, MessageKey> = {
+  location: 'af.vertex_openapi_location_invalid',
+  models_too_many: 'af.vertex_openapi_models_too_many',
+  model_too_long: 'af.vertex_openapi_model_too_long',
 };
 const MAX_CREDENTIAL_WEIGHT = 1_000_000;
 const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
@@ -133,7 +155,16 @@ function formValues(
     websockets: safeFields?.websockets ?? false,
     using_api: safeFields?.using_api ?? false,
     excluded_models: excludedModelsText(safeFields?.excluded_models),
+    ...vertexFormValues(readVertexOpenAPIDraft(safeFields)),
   };
+}
+
+function vertexFormValues(draft: VertexOpenAPIDraft): Pick<FormValues, 'openapi_mode' | 'openapi_location' | 'openapi_models'> {
+  return { openapi_mode: draft.mode, openapi_location: draft.location, openapi_models: draft.models };
+}
+
+function vertexDraft(values: FormValues): VertexOpenAPIDraft {
+  return { mode: values.openapi_mode ?? 'inherit', location: values.openapi_location ?? '', models: values.openapi_models ?? '' };
 }
 
 function sameFormValues(left: FormValues, right: FormValues): boolean {
@@ -146,7 +177,8 @@ function sameFormValues(left: FormValues, right: FormValues): boolean {
     && Boolean(left.disable_cooling) === Boolean(right.disable_cooling)
     && Boolean(left.websockets) === Boolean(right.websockets)
     && Boolean(left.using_api) === Boolean(right.using_api)
-    && (left.excluded_models ?? '') === (right.excluded_models ?? '');
+    && (left.excluded_models ?? '') === (right.excluded_models ?? '')
+    && Object.keys(buildVertexOpenAPIPatch(vertexDraft(left), vertexDraft(right))).length === 0;
 }
 
 export const AuthFileDetailDrawer: React.FC<AuthFileDetailDrawerProps> = ({
@@ -156,6 +188,7 @@ export const AuthFileDetailDrawer: React.FC<AuthFileDetailDrawerProps> = ({
   onSaved,
   onDownload,
   quotaContent,
+  warmupContent,
   hasExternalDraft = false,
   initialSection = 'overview',
   canEdit = false,
@@ -167,6 +200,7 @@ export const AuthFileDetailDrawer: React.FC<AuthFileDetailDrawerProps> = ({
   const queryClient = useQueryClient();
   const [form] = Form.useForm<FormValues>();
   const [baseline, setBaseline] = useState<FormValues>({});
+  const isVertex = file ? isVertexServiceAccount(file) : false;
   const [isDirty, setIsDirty] = useState(false);
   // The policy lives beside the form rather than in it: its rules are a nested, reorderable
   // list, which the flat field comparison the form's dirty check relies on cannot express.
@@ -174,7 +208,7 @@ export const AuthFileDetailDrawer: React.FC<AuthFileDetailDrawerProps> = ({
   const [policyBaseline, setPolicyBaseline] = useState<CredentialPolicyDraft>(EMPTY_CREDENTIAL_POLICY_DRAFT);
   const [isPolicyChecked, setIsPolicyChecked] = useState(false);
   const [modelFilter, setModelFilter] = useState('');
-  const [activeSection, setActiveSection] = useState<'overview' | 'configuration' | 'models'>(initialSection);
+  const [activeSection, setActiveSection] = useState<'overview' | 'warmup' | 'configuration' | 'models'>(initialSection);
 
   const resetPolicy = useCallback((next: CredentialPolicyDraft) => {
     setPolicy(next);
@@ -318,10 +352,6 @@ export const AuthFileDetailDrawer: React.FC<AuthFileDetailDrawerProps> = ({
     }
   }, [isDirty, hasExternalDraft, modal, onClose, saveMutation.isPending, t]);
 
-  // Back goes through the same guard the drawer's own X does, so an edit in progress is never
-  // discarded by a physical key that the reader may have pressed by accident.
-  useOverlayHistory({ isOpen: open, onClose: handleAttemptClose });
-
   const safeFieldsQuery = useQuery({
     queryKey: ['auth-file-safe-fields', file?.name, file?.auth_index],
     queryFn: () => api.getManagementAuthFileSafeFields(file!.name, file!.auth_index),
@@ -366,9 +396,17 @@ export const AuthFileDetailDrawer: React.FC<AuthFileDetailDrawerProps> = ({
       );
       return;
     }
+    const vertexProblem = isVertex ? vertexOpenAPIProblem(vertexDraft(values)) : null;
+    if (vertexProblem) {
+      toast.warning(t(VERTEX_PROBLEM_KEYS[vertexProblem], { n: MAX_VERTEX_OPENAPI_MODELS }));
+      return;
+    }
     isPendingRef.current = true;
 
-    const patch: Record<string, unknown> = buildCredentialPolicyPatch(policy, policyBaseline);
+    const patch: Record<string, unknown> = {
+      ...buildCredentialPolicyPatch(policy, policyBaseline),
+      ...(isVertex ? buildVertexOpenAPIPatch(vertexDraft(values), vertexDraft(baseline)) : {}),
+    };
     const nextPriority = values.priority ?? 0;
     const nextWeight = values.weight ?? 1;
     if (nextPriority !== (baseline.priority ?? 0)) {
@@ -524,7 +562,7 @@ export const AuthFileDetailDrawer: React.FC<AuthFileDetailDrawerProps> = ({
     >
       {file ? (
         <div className={styles['drawer-content']}>
-          <Tabs
+          <Tabs more={TAB_OVERFLOW}
             activeKey={activeSection}
             onChange={(key) => setActiveSection(key as typeof activeSection)}
             items={[
@@ -601,6 +639,12 @@ export const AuthFileDetailDrawer: React.FC<AuthFileDetailDrawerProps> = ({
                   </div>
                 ),
               },
+              ...(warmupContent ? [{
+                key: 'warmup',
+                label: <span className={styles['tab-label']}>{t('warmup.title')}{hasExternalDraft && <Tag tone="warn">{t('cfg.dirty_bar_unsaved')}</Tag>}</span>,
+                disabled: saveMutation.isPending,
+                children: warmupContent,
+              }] : []),
               {
                 key: 'configuration',
                 forceRender: true,
@@ -667,8 +711,8 @@ export const AuthFileDetailDrawer: React.FC<AuthFileDetailDrawerProps> = ({
                           <Form.Item name="prefix" label={t('af.field_prefix')}>
                             <Input allowClear maxLength={4096} disabled={!safeFieldsReady} />
                           </Form.Item>
-                          <Form.Item name="proxy_url" label={t('af.field_proxy_url')}>
-                            <Input allowClear maxLength={4096} disabled={!safeFieldsReady} />
+                          <Form.Item name="proxy_url" label={t('af.field_proxy_url')} extra={t('af.field_proxy_auth_hint')}>
+                            <SecretInput allowClear maxLength={4096} disabled={!safeFieldsReady} />
                           </Form.Item>
 
                           <Form.Item
@@ -742,12 +786,60 @@ export const AuthFileDetailDrawer: React.FC<AuthFileDetailDrawerProps> = ({
                             <div className={styles['policy-desc']}>{t('af.policy_aliases_desc')}</div>
                             {safeFieldsReady && (
                               <CredentialModelAliasesEditor
+                                isVertex={isVertex}
                                 aliases={policy.modelAliases}
                                 onChange={(modelAliases) => handlePolicyChange({ ...policy, modelAliases })}
                               />
                             )}
                           </div>
                         </div>
+
+                        {isVertex && (
+                          <div className={styles['policy']} data-testid="vertex-openapi-section">
+                            <h4 className={styles['policy-title']}>{t('af.vertex_openapi_section')}</h4>
+                            <div className={styles['policy-desc']}>{t('af.vertex_openapi_section_desc')}</div>
+                            <Form.Item
+                              name="openapi_mode"
+                              label={t('af.vertex_openapi_mode')}
+                              extra={t('af.vertex_openapi_mode_hint')}
+                            >
+                              <Segmented
+                                disabled={!safeFieldsReady}
+                                options={[
+                                  { value: 'inherit', label: t('af.vertex_openapi_mode_inherit') },
+                                  { value: 'on', label: t('af.vertex_openapi_mode_on') },
+                                  { value: 'off', label: t('af.vertex_openapi_mode_off') },
+                                ]}
+                              />
+                            </Form.Item>
+                            <Form.Item
+                              name="openapi_location"
+                              label={t('af.vertex_openapi_location')}
+                              extra={t('af.vertex_openapi_location_hint')}
+                            >
+                              <Input allowClear maxLength={64} disabled={!safeFieldsReady} placeholder="global" />
+                            </Form.Item>
+                            <Form.Item
+                              name="openapi_models"
+                              label={t('af.vertex_openapi_models')}
+                              extra={t('af.vertex_openapi_models_hint')}
+                            >
+                              <Input.TextArea
+                                rows={3}
+                                maxLength={65536}
+                                disabled={!safeFieldsReady}
+                                placeholder="meta/llama-3.3-70b-instruct-maas"
+                              />
+                            </Form.Item>
+                            {(safeFieldsQuery.data?.openapi_legacy_models?.length ?? 0) > 0 && (
+                              <div className={styles['policy-desc']} data-testid="vertex-openapi-legacy-models">
+                                {t('af.vertex_openapi_legacy_models', {
+                                  models: (safeFieldsQuery.data?.openapi_legacy_models ?? []).join(', '),
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        )}
 
                         <Form.Item
                           className={styles['field-grid-wide']}

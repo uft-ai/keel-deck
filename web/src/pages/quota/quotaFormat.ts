@@ -1,6 +1,7 @@
 import dayjs from '../../utils/time';
 import type { TFunc } from '../../i18n';
 import type { QuotaItem } from '../../types/quota';
+import { formatUsd } from '../../types/pricingDisplay';
 
 const pad2 = (n: number): string => (n < 10 ? `0${n}` : String(n));
 
@@ -110,22 +111,25 @@ export type QuotaEmptyStateKey =
   | 'quota.credential_disabled'
   | 'quota.no_live_probe'
   | 'quota.usage_not_published'
+  | 'quota.reading_failed'
   | 'quota.not_observed_yet';
 
 /**
  * Which message a credential with no window carries.
  *
  * The cases are exclusive and ordered by who owns the reason: a disabled credential is not read at
- * all, a provider without a live probe has nothing to read, and the last two are both readings that
- * happened — upstream answered and published no window, or nobody has read the credential yet.
- * Those two must not share copy, because one of them is worth repeating and the other already ran.
+ * all, a provider without a live probe has nothing to read, and the rest are all readings that were
+ * attempted — upstream answered and published no window, the attempt failed, or nobody has tried
+ * yet. They must not share copy: one is worth repeating, one has a failure to report, and the last
+ * one already ran.
  */
 export function quotaEmptyStateKey(
-  item: Pick<QuotaItem, 'disabled' | 'capabilities' | 'status'>,
+  item: Pick<QuotaItem, 'disabled' | 'capabilities' | 'status' | 'last_refresh'>,
 ): QuotaEmptyStateKey {
   if (item.disabled) return 'quota.credential_disabled';
   if (item.capabilities?.refresh_supported === false) return 'quota.no_live_probe';
   if (item.status === 'unpublished') return 'quota.usage_not_published';
+  if (item.last_refresh?.outcome === 'failed') return 'quota.reading_failed';
   return 'quota.not_observed_yet';
 }
 
@@ -153,4 +157,15 @@ export function quotaResetText(
   const approximate = resetAccuracyMarker(window.reset_accuracy);
   if (window.reset_at_ms) return `${approximate}${formatTimeWithCountdown(window.reset_at_ms, nowMS, t)}`;
   return window.reset_label ? `${approximate}${window.reset_label}` : '';
+}
+
+/** A quota amount in its own currency; USD keeps the console's magnitude-aware format. */
+export function formatQuotaMoney(amount: number | undefined, currency?: string): string {
+  if (amount == null || !Number.isFinite(amount)) return '—';
+  if (!currency || currency === 'USD') return formatUsd(amount);
+  try {
+    return new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(amount);
+  } catch {
+    return `${amount.toFixed(2)} ${currency}`;
+  }
 }

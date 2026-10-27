@@ -40,8 +40,11 @@ export const EMPTY_BEHAVIOR_DRAFT: BehaviorDraft = {
   alpha_search: false,
   codex_cloaking: 'inherit',
   rebuild_mid_system_message: false,
+  native_tool_search: false,
   support_prompt_cache_key: false,
   interactions: false,
+ openapi: 'inherit',
+ openapi_location: '',
 };
 
 export function readRuntimePolicyDraft(provider: ProviderItem): RuntimePolicyDraft {
@@ -104,7 +107,9 @@ export function countPolicyOverrides(
   if (policy.requestRetry !== null) count++;
   for (const name of switches ?? []) {
     const value = behavior[name];
-    if (value === true || (typeof value === 'string' && value !== 'inherit')) count++;
+    if (name === 'openapi_location') {
+      if (typeof value === 'string' && value.trim() !== '') count++;
+    } else if (value === true || (typeof value === 'string' && value !== 'inherit')) count++;
   }
   return count;
 }

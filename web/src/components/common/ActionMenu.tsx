@@ -2,7 +2,7 @@ import React from 'react';
 import { Button, Popover } from 'antd';
 import { MoreOutlined } from '../icons';
 import { useT } from '../../i18n';
-import { useOverlayHistory } from '../../hooks/useOverlayHistory';
+import { LabelledActionsContext } from './ToolButton';
 
 export interface ActionMenuProps {
   children: React.ReactNode;
@@ -19,7 +19,6 @@ export function ActionMenu({ children, label }: ActionMenuProps) {
     setIsOpen(false);
     triggerRef.current?.focus();
   };
-  useOverlayHistory({ isOpen, onClose: closeMenu });
 
   return (
     <Popover
@@ -59,7 +58,7 @@ export function ActionMenu({ children, label }: ActionMenuProps) {
             }
           }}
         >
-          {children}
+          <LabelledActionsContext.Provider value>{children}</LabelledActionsContext.Provider>
         </div>
       )}
     >

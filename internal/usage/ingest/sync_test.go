@@ -253,8 +253,9 @@ func TestCaptureNowFlushesBufferedSubscriptionMessages(t *testing.T) {
 	waitForMode(t, runner, ModeSubscribe)
 
 	// A live subscription suppresses CPA's enqueue, so these records exist only
-	// in the reader's buffer until something flushes them. The idle interval is
-	// an hour, so the flush ticker cannot be what does it.
+	// in the collector until it writes them. Whether the collector persisted them
+	// on arrival or the manual pass drained them from the buffer, a sync that
+	// returns must leave both stored: that is what "synced" promises the page.
 	upstream.push("usage", usagePayload("stream-1"))
 	upstream.push("usage", usagePayload("stream-2"))
 
@@ -264,8 +265,8 @@ func TestCaptureNowFlushesBufferedSubscriptionMessages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CaptureNow: %v", err)
 	}
-	if outcome.Captured != 2 {
-		t.Fatalf("captured = %d, want 2 buffered records", outcome.Captured)
+	if got := inboxCount(t, store, ""); got != 2 {
+		t.Fatalf("inbox holds %d records after the sync, want both pushed records", got)
 	}
 	if outcome.Mode != ModeSubscribe {
 		t.Fatalf("mode = %q, want subscribe", outcome.Mode)
@@ -378,6 +379,47 @@ func TestRefreshNowWaitsForEventsToBecomeQueryable(t *testing.T) {
 	// runs next can already see the records.
 	if got := eventsFor(t, store, "queryable-1", "queryable-2"); got != 2 {
 		t.Fatalf("queryable events = %d, want 2", got)
+	}
+}
+
+func TestRefreshNowCountsRecordsDecodedBeforeCaptureReturns(t *testing.T) {
+	store := newStore(t)
+	upstream := newFakeUpstream()
+	upstream.holdPops()
+	runner, err := NewRunner("default", upstream, store, nil, nil, syncConfig(ModeHTTPPull))
+	if err != nil {
+		t.Fatal(err)
+	}
+	processor, err := NewProcessor(store, nil, 10, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pipeline, err := NewPipeline(runner, processor, nil, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Force the decoder to win the scheduling race: capture normally wakes its
+	// goroutine, which can finish before CaptureNow returns to the caller.
+	runner.SetCaptureHandlers(func() {
+		if _, err := processor.ProcessOnce(context.Background()); err != nil {
+			t.Errorf("decode during capture: %v", err)
+		}
+	}, nil)
+	startRunner(t, runner)
+	upstream.waitForHeldPop(t)
+	upstream.releasePops([][]string{{}, {usagePayload("already-decoded")}})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	result, err := pipeline.RefreshNow(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Synced || result.Captured != 1 || result.Decoded != 1 || result.Pending != 0 || result.Failed != 0 {
+		t.Fatalf("unexpected result after early decode: %+v", result)
+	}
+	if got := eventsFor(t, store, "already-decoded"); got != 1 {
+		t.Fatalf("queryable events = %d, want 1", got)
 	}
 }
 

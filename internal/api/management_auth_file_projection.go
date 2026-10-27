@@ -10,6 +10,7 @@ import (
 
 func projectManagementAuthFile(file management.AuthFile) managementAuthFileResponse {
 	result := managementAuthFileResponse{
+		SIWCStatus: file.SafeSIWCSummary().SIWCStatus, SIWCBindSupported: file.SIWCBindSupported, UseSIWC: file.UseSIWC, SIWCBound: file.SIWCBound, SIWCExpiresAt: file.SafeSIWCSummary().SIWCExpiresAt,
 		Name:          boundedText(firstNonEmpty(file.Name, file.ID), managementAuthFileNameLimit),
 		AuthIndex:     boundedText(file.AuthIndex, managementAuthFileNameLimit),
 		Type:          boundedText(firstNonEmpty(file.Type, file.Provider), managementAuthFileFieldLimit),

@@ -1,3 +1,4 @@
+import type { MessageKey } from '../i18n/catalog';
 /** Response shapes for the dashboard, which reads permanent usage facts. */
 
 export interface DashboardWindow {
@@ -34,6 +35,13 @@ export interface DashboardRequests {
 }
 
 export interface DashboardTokens {
+  token_accounting?: {
+    canonical_requests: number;
+    unresolved_requests: number;
+    raw_input_tokens: number;
+    raw_output_tokens: number;
+    raw_total_tokens: number;
+  };
   total: number;
   input: number;
   output: number;
@@ -66,7 +74,7 @@ export interface DashboardMetrics {
  *
  * Returns undefined when the total is complete and needs no caption.
  */
-export function costNoteKey(costSource: string): string | undefined {
+export function costNoteKey(costSource: string): MessageKey | undefined {
   switch (costSource) {
     case 'partial':
       return 'dash.cost_partial_note';

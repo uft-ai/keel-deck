@@ -1,0 +1,166 @@
+#!/usr/bin/env node
+/**
+ * The maintenance contract for the demonstration's dataset.
+ *
+ * The demonstration serves answers generated from the real handlers, so a change to a
+ * console page's data can leave the served copy behind. That failure is invisible: the
+ * page renders, it simply renders what the API said last month. This is the gate that
+ * makes keeping it current an obligation rather than a habit.
+ *
+ * It checks two things, and each covers a way the dataset can go quietly wrong:
+ *
+ * 1. **Every read the console makes has somewhere to come from.** The routes the Worker
+ *    answers are compared with the routes the console requests, so a new page fails
+ *    here rather than in front of a visitor.
+ * 2. **Nothing private is in it.** The dataset is public, so an operator identifier,
+ *    a credential shape or a deployment hostname is a leak rather than a defect.
+ *
+ * That the committed dataset matches the handlers is `TestExportDemoDataset`'s claim:
+ * it regenerates the dataset and compares it byte for byte.
+ */
+import { readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { dirname, join, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+/**
+ * The console's routes, which the browser check drives. Duplicated from App.tsx for the
+ * same reason that check duplicates it: importing the router would make a missing route
+ * unrepresentable, and representing it is the point.
+ */
+export const CONSOLE_ROUTES = [
+  '/dashboard',
+  '/insights',
+  '/model-square',
+  '/playground',
+  '/agent',
+  '/ai-providers',
+  '/api-keys',
+  '/oauth-management',
+  '/logs',
+  '/audit',
+  '/usage/events',
+  '/pricing',
+  '/config',
+  '/omc-settings',
+  '/plugins',
+  '/system',
+];
+
+/**
+ * The reads each route makes, named as the Worker's route table names them.
+ *
+ * A route maps to the dataset entries its page needs, so the check fails when a page's
+ * data has no captured response even if the route itself renders.
+ */
+export const ROUTE_READS: Record<string, string[]> = {
+  '/dashboard': ['overview', 'pricing-attention', 'dashboard-24h', 'dashboard-tail-24h', 'dashboard-models-call-24h', 'dashboard-models-model-24h', 'dashboard-token-heatmap-utc', 'usage-routing', 'usage-live'],
+  '/insights': ['insights-cube-7d', 'insights-rhythm-7d', 'auth-files', 'providers'],
+  '/model-square': ['model-square', 'pricing', 'usage-facets'],
+  '/playground': ['api-keys', 'playground-models', 'playground-run-active'],
+  '/agent': ['api-keys', 'capabilities', 'agent-session'],
+  '/ai-providers': ['providers', 'dashboard-providers-24h'],
+  '/api-keys': ['api-keys', 'client-key-aliases'],
+  '/oauth-management': ['auth-files', 'auth-files-model-aliases', 'auth-files-excluded-models', 'auth-files-provider-models-claude', 'auth-files-provider-models-codex', 'auth-files-provider-models-none', 'plugins', 'quota', 'warmup-settings', 'warmup-codex', 'warmup-codex-secondary', 'warmup-claude'],
+  '/logs': ['logs', 'logs-status', 'request-error-logs'],
+  '/audit': ['audit-events', 'audit-summary'],
+  '/usage/events': ['usage-events', 'usage-facets', 'usage-event-detail', 'usage-ingest-status', 'usage-live'],
+  '/pricing': ['pricing', 'pricing-attention', 'pricing-catalog', 'pricing-model-claude-opus-5.5'],
+  '/config': ['config', 'config-source'],
+  '/omc-settings': ['preferences', 'system', 'fonts'],
+  '/plugins': ['plugins', 'plugin-store', 'plugins-settings', 'plugin-config-usage-exporter'],
+  '/system': ['system', 'system-releases', 'system-maintenance'],
+};
+
+/** Values that must never appear in a dataset a stranger can download. */
+const FORBIDDEN = [
+  { pattern: /junze/i, why: 'an operator identifier' },
+  { pattern: /dongjunze/i, why: 'an operator identifier' },
+  { pattern: /@gmail\./i, why: 'a personal email domain' },
+  { pattern: /vercel\.app/i, why: 'a deployment hostname' },
+  { pattern: /\.vercel\.com/i, why: 'a deployment hostname' },
+  { pattern: /vcp_[A-Za-z0-9]{10,}/, why: 'a Vercel token shape' },
+  { pattern: /ghp_[A-Za-z0-9]{20,}/, why: 'a GitHub token shape' },
+  { pattern: /sk-[A-Za-z0-9]{20,}/, why: 'a provider key shape' },
+  { pattern: /xox[baprs]-[A-Za-z0-9-]{10,}/, why: 'a Slack token shape' },
+  { pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----/, why: 'a private key' },
+];
+
+/** The recordings the console replays in demonstration mode. */
+const RECORDINGS = ['web/src/demo/agentRecording.json', 'web/src/demo/playgroundRecording.json'];
+
+/** What a recording taken from a real conversation must have had removed. */
+const RECORDING_FORBIDDEN = [
+  { pattern: /hmac:[0-9a-f]{16,}/, why: 'a client key fingerprint' },
+];
+
+export async function checkDemo(root = ROOT, {
+  consoleRoutes = CONSOLE_ROUTES,
+  routeReads = ROUTE_READS,
+}: { consoleRoutes?: string[]; routeReads?: Record<string, string[]> } = {}) {
+  const DATASET = join(root, 'deploy', 'cloudflare', 'data', 'responses.json');
+  const failures: string[] = [];
+
+  if (!existsSync(DATASET)) {
+    return { failures: [`no dataset at ${relative(root, DATASET)}; run pnpm demo:generate`], responseCount: 0 };
+  }
+
+  const dataset = JSON.parse(await readFile(DATASET, 'utf8'));
+  const responses = new Set(Object.keys(dataset.responses ?? {}));
+
+  // 1. Coverage: every route the console has, and every read each one makes.
+  const coveredRoutes = Object.keys(routeReads);
+  for (const route of consoleRoutes) {
+    if (!coveredRoutes.includes(route)) {
+      failures.push(`${route} is a console route with no reads declared in check-demo.ts`);
+    }
+  }
+  for (const [route, reads] of Object.entries(routeReads)) {
+    for (const read of reads) {
+      if (!responses.has(read)) {
+        failures.push(`${route} needs "${read}", which the dataset does not contain`);
+      }
+    }
+  }
+
+  // 2. Privacy: the dataset is served to anyone who opens the link.
+  const body = JSON.stringify(dataset);
+  for (const { pattern, why } of FORBIDDEN) {
+    if (pattern.test(body)) {
+      failures.push(`the dataset contains ${why} (${pattern})`);
+    }
+  }
+
+  // The recorded runs the demonstration replays (ADR 0092) are public for the same reason, and
+  // they began as a real deployment's conversation: a key fingerprint is the identifier a
+  // recording is most likely to carry in unnoticed.
+  for (const name of RECORDINGS) {
+    const recording = await readFile(join(root, name), 'utf8');
+    for (const { pattern, why } of [...FORBIDDEN, ...RECORDING_FORBIDDEN]) {
+      if (pattern.test(recording)) {
+        failures.push(`${name} contains ${why} (${pattern})`);
+      }
+    }
+  }
+
+  return { failures, responseCount: responses.size };
+}
+
+export async function runDemoCheck(root = ROOT): Promise<number> {
+  try {
+    const { failures, responseCount } = await checkDemo(root);
+    for (const failure of failures) console.error(`  FAIL ${failure}`);
+    if (failures.length) return 1;
+    console.log(`the demonstration dataset is current: ${responseCount} responses covering ${CONSOLE_ROUTES.length} console routes`);
+    return 0;
+  } catch (error) {
+    console.error(`check-demo: ${error instanceof Error ? error.message : String(error)}`);
+    return 1;
+  }
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  process.exitCode = await runDemoCheck();
+}

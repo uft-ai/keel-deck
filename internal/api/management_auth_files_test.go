@@ -8,7 +8,6 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
-	"net/http/cookiejar"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -114,19 +113,7 @@ func startAuthFilesTestServer(t *testing.T, managementKey string, handler func(h
 	server := httptest.NewServer(appHandler.Router())
 	t.Cleanup(server.Close)
 
-	jar, err := cookiejar.New(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	client := &http.Client{Jar: jar}
-	login, err := client.Post(server.URL+"/omc/api/auth/login", "application/json", bytes.NewBufferString(`{"password":"management-secret-value"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	login.Body.Close()
-	if login.StatusCode != http.StatusOK {
-		t.Fatalf("login status = %d", login.StatusCode)
-	}
+	client := signedInClient(t, server.URL+"/omc/api/auth/login", "management-secret-value")
 	return client, server.URL, recorder
 }
 
@@ -370,6 +357,50 @@ func TestManagementAuthFilesFacadeProjectsAndForwards(t *testing.T) {
 		t.Fatalf("safe fields response = %#v", safe)
 	}
 
+	for _, proxyURL := range []string{"http://proxy-user:proxy-password@proxy.example.test:8080", "socks5h://proxy-user:proxy-password@proxy.example.test:1080"} {
+		body, _ := json.Marshal(map[string]any{"name": "claude.json", "auth_index": "idx-1", "proxy_url": proxyURL})
+		response, raw = doJSON(t, client, http.MethodPatch, base+"/fields", string(body))
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("proxy patch status = %d", response.StatusCode)
+		}
+		if safeFields["proxy_url"] != proxyURL {
+			t.Fatal("CPA must retain the exact proxy authentication")
+		}
+		if strings.Contains(string(raw), "proxy-user") || strings.Contains(string(raw), "proxy-password") {
+			t.Fatal("proxy auth escaped through patch readback")
+		}
+		response, raw = doJSON(t, client, http.MethodGet, base+"/safe-fields?name=claude.json&auth_index=idx-1", "")
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("proxy readback status = %d", response.StatusCode)
+		}
+		if strings.Contains(string(raw), "proxy-user") || strings.Contains(string(raw), "proxy-password") {
+			t.Fatal("proxy auth escaped through safe fields")
+		}
+		if !strings.Contains(string(raw), "proxy.example.test") {
+			t.Fatal("safe routing host must remain visible")
+		}
+		var masked managementAuthFileSafeFields
+		if err := json.Unmarshal(raw, &masked); err != nil {
+			t.Fatal(err)
+		}
+		masked.ProxyURL = strings.Replace(masked.ProxyURL, "proxy.example.test", "other.example.test", 1)
+		body, _ = json.Marshal(map[string]any{"name": "claude.json", "proxy_url": masked.ProxyURL})
+		response, _ = doJSON(t, client, http.MethodPatch, base+"/fields", string(body))
+		if response.StatusCode != 400 || safeFields["proxy_url"] != proxyURL {
+			t.Fatal("masked authentication must never be written back to CPA")
+		}
+
+		body, _ = json.Marshal(map[string]any{
+			"name":      "claude.json",
+			"proxy_url": "http://proxy-user:%5Bredacted%5D@other.example.test:8080",
+		})
+		response, _ = doJSON(t, client, http.MethodPatch, base+"/fields", string(body))
+		if response.StatusCode != 400 || safeFields["proxy_url"] != proxyURL {
+			t.Fatal("a percent-encoded masked password must never be written back to CPA")
+		}
+
+	}
+
 	response, raw = doJSON(t, client, http.MethodPost, base+"?name=uploaded.json", `{"type":"gemini","token":"secret-token"}`)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("raw upload = %d body = %s", response.StatusCode, raw)
@@ -561,16 +592,7 @@ func TestManagementAuthFilesFacadeGuardrails(t *testing.T) {
 	emptyHandler := NewHandler(config.Config{BasePath: "/omc", Version: "test", RequestTimeout: time.Second}, repository.New(db), cipher, nil, authManager)
 	emptyServer := httptest.NewServer(emptyHandler.Router())
 	defer emptyServer.Close()
-	jar, err := cookiejar.New(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	emptyClient := &http.Client{Jar: jar}
-	login, err := emptyClient.Post(emptyServer.URL+"/omc/api/auth/login", "application/json", bytes.NewBufferString(`{"password":"management-secret-value"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	login.Body.Close()
+	emptyClient := signedInClient(t, emptyServer.URL+"/omc/api/auth/login", "management-secret-value")
 	unconfigured, raw := doJSON(t, emptyClient, http.MethodGet, emptyServer.URL+"/omc/api/v1/management/auth-files", "")
 	if unconfigured.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("unconfigured status = %d body = %s", unconfigured.StatusCode, raw)

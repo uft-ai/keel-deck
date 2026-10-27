@@ -27,6 +27,7 @@ import {
   ProvidersPage,
   ApiKeysPage,
   DashboardPage,
+  InsightsPage,
   AgentPage,
   AuthorizePage,
   PlaygroundPage,
@@ -45,6 +46,8 @@ import { ThemeProvider, ThemeServerSync, useTheme } from './theme/ThemeContext';
 import { I18nProvider, useI18n } from './i18n';
 import { TokenDisplayProvider } from './types/tokenDisplayContext';
 import { useScrollSmoothing } from './hooks/useScrollSmoothing';
+import { MotionPreferenceSync, MotionProvider } from './hooks/useReducedMotionPreference';
+import { useConsoleFonts } from './hooks/useFonts';
 
 // The recovery boundary stays eager even when the authenticated shell cannot be downloaded.
 const AppLayout = React.lazy(() => import('./components/common/AppLayout').then(module => ({ default: module.AppLayout })));
@@ -98,20 +101,45 @@ const ScrollSmoothingSync: React.FC = () => {
   return null;
 };
 
+/** Renders nothing; it keeps the document painted in the chosen typefaces (`useConsoleFonts`). */
+const FontSync: React.FC = () => {
+  useConsoleFonts();
+  return null;
+};
+
+const TAG_CONFIG = { variant: 'filled' } as const;
+const WAVE_CONFIG = { disabled: true } as const;
+const BUTTON_CONFIG = { autoInsertSpace: false } as const;
+
 const ThemedShell: React.FC = () => {
   const { lang } = useI18n();
   const { theme } = useTheme();
   const antdTheme = React.useMemo(() => createThemeConfig(theme), [theme]);
   return (
-    <ConfigProvider locale={ANTD_LOCALES[lang]} theme={antdTheme}>
-      <AntdApp notification={TOAST_CONFIG}>
-        <ThemeServerSync />
-        <ScrollSmoothingSync />
-        <DemoNotice />
-        <TokenDisplayProvider>
-          <AppRoutes />
-        </TokenDisplayProvider>
-      </AntdApp>
+    <ConfigProvider
+      locale={ANTD_LOCALES[lang]}
+      theme={antdTheme}
+      // Fields are wells, not boxes: a filled control reads as part of the toolbar or form it sits
+      // in, and its edge appears only under focus. A tag is a soft fill with no edge for the same
+      // reason. The click wave is a material ripple that no native control draws, and a space
+      // pushed between two Chinese characters ("取 消") is a typesetting habit no platform keeps.
+      variant="filled"
+      tag={TAG_CONFIG}
+      wave={WAVE_CONFIG}
+      button={BUTTON_CONFIG}
+    >
+      <MotionProvider>
+        <AntdApp notification={TOAST_CONFIG}>
+          <ThemeServerSync />
+          <MotionPreferenceSync />
+          <ScrollSmoothingSync />
+          <FontSync />
+          <DemoNotice />
+          <TokenDisplayProvider>
+            <AppRoutes />
+          </TokenDisplayProvider>
+        </AntdApp>
+      </MotionProvider>
     </ConfigProvider>
   );
 };
@@ -130,6 +158,7 @@ const AppRoutes: React.FC = () => {
       children: [
         { index: true, element: <Navigate to="/dashboard" replace /> },
         { path: 'dashboard', element: <DashboardPage /> },
+        { path: 'insights', element: <InsightsPage /> },
         { path: 'playground', element: <PlaygroundPage /> },
         { path: 'agent', element: <AgentPage /> },
         { path: 'model-square', element: <ModelSquarePage /> },

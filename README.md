@@ -86,7 +86,7 @@ inspects the machine, picks the matching method and installs it:
 
 ```text
 Install Oh My CPA for me by following
-https://raw.githubusercontent.com/WizisCool/oh-my-cpa/master/docs/install-for-agents.md
+https://raw.githubusercontent.com/WizisCool/oh-my-cpa/main/docs/install-for-agents.md
 ```
 
 ### Install with Docker Compose
@@ -323,9 +323,11 @@ troubleshooting.
 <details>
 <summary><b>Observability</b></summary>
 
+- **Insights**: per-key, per-model, per-provider and per-credential comparison over today, yesterday, this or last week and month, rolling spans or custom ranges, each against the previous period, with each key's model mix, a traffic flow and an hour-of-day usage rhythm.
 - **Dashboard**: request volume, token throughput, cache hit rate and cost over presets from 15 minutes to 90 days, an all-time window since installation, or any custom range, plus a year-long token heatmap. Statistics are kept permanently; request records roll out of a configurable retention.
+- **Live routing**: a rolling minute of which models were called and which credentials and providers CPA sent them to. Each new request travels the map out to its credential and back, rerouted attempts and cooldowns included. The panel updates as records are stored, falls back to a short poll when the live stream is unavailable, and is shown on desktop widths.
 - **Model panels**: token trend and usage ring by call model or by requested model, with cost shares.
-- **Request records**: multi-select facets and full-text search; a detail drawer with duration, TTFT, token breakdown and the raw per-request log. Each record keeps the model the upstream reported serving, and flags the ones where it differs from the model requested.
+- **Request records**: multi-select facets and full-text search; with auto-refresh on, new records appear as soon as they are stored; a detail drawer with duration, TTFT, token breakdown and the raw per-request log. Each record keeps the model the upstream reported serving, and flags the ones where it differs from the model requested.
 - **Background collection**: usage is ingested by stream or polling, even with no browser open.
 - **Logs and audit trail**: tail the gateway log, read the console's own service log, and review an append-only audit trail with filters and JSON export.
 
@@ -338,6 +340,7 @@ troubleshooting.
 - **OpenRouter price book**: every served model priced from OpenRouter's public list, including long-context and time-of-day tiers.
 - **Linked and custom prices**: pin a model to an OpenRouter entry or set custom rates, with tier presets and a calculator.
 - **Channel multipliers**: scale everything one provider answers, for example a relay billed at 30% of list.
+- **Channel model prices**: give the same model different custom rates and time tiers on different channels, with shared prices as the default.
 
 </details>
 
@@ -348,8 +351,8 @@ troubleshooting.
 - **Automatic config backups**: an encrypted copy of `config.yaml` before every change, restorable from the console.
 - **Encryption at rest**: stored credentials and raw usage messages are AES-GCM encrypted.
 - **Audited sensitive actions**: revealing keys, downloading auth files and exporting logs are written to the audit log, and refused if that write fails.
-- **Offline operation**: every asset is embedded in the binary; no CDN is contacted.
-- **Personalization**: four interface languages, light and dark themes with custom palettes, a deployment time zone, and K/M/B or 万/亿 number units.
+- **Offline operation**: bundled assets are embedded in the binary; installed and uploaded fonts are stored and served by the deployment. The browser contacts no CDN.
+- **Personalization**: four interface languages, light and dark themes with custom palettes, interface and monospace fonts from a font library (bundled, uploaded or installed from Google Fonts and served by the console itself), a deployment time zone, and K/M/B or 万/亿 number units.
 
 </details>
 
@@ -486,7 +489,7 @@ Browser ──▶ Direct listener / existing HTTPS ingress ──▶ Oh My CPA (
 
 ## Contributing
 
-Issues and pull requests are welcome. Development needs Go 1.25+, Node.js 22+ and
+Issues and pull requests are welcome. Development needs Go 1.26+, Node.js 22+ and
 pnpm 11+:
 
 ```bash
