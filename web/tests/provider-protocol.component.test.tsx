@@ -33,7 +33,8 @@ function DraftProbes() {
   return <>
     <button onClick={() => { editor.handleOpenEdit(PROVIDER); setHasOpened(true); }}>Load draft</button>
     {hasOpened && <>
-      <button onClick={() => editor.setFormFamily('claude')}>Switch to Messages</button>
+      {/* A draft with several keys pulls models through the key the operator picked. */}
+      <button onClick={() => { editor.setFormFamily('claude'); editor.setPullKeyID('key-edit-0'); }}>Switch to Messages</button>
       <button onClick={() => { void editor.handleTestAllKeys(); }}>Probe draft</button>
       <button onClick={() => { void editor.handlePullModels(); }}>Pull draft models</button>
       <button onClick={editor.handleAddModel}>Add draft model</button>

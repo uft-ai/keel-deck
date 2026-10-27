@@ -34,6 +34,8 @@ function Editor({ isCreate }: { isCreate: boolean }) {
       editor.setFormName('Relay');
       editor.setFormBaseURL('https://relay.test');
       editor.setFormIcon('DeepSeek');
+      // Only a mark the operator chose is stored.
+      editor.setIconManuallySelected(true);
       editor.setFormKeys([
         { id: 'first', apiKey: 'fixture-key-one', proxyUrl: 'http://proxy-one.test', weight: 3, isChanging: true },
         { id: 'second', apiKey: 'fixture-key-two', proxyUrl: 'http://proxy-two.test', weight: 7, isChanging: true },

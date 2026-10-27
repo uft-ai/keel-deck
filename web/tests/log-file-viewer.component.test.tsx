@@ -23,7 +23,7 @@ function Surface({ target, onClose = () => {} }: { target: LogViewerTarget | nul
 /** Answers every read with one response and records the paths that were asked for. */
 function stubLogRead(respond: () => Response): string[] {
   const paths: string[] = [];
-  installOmcApi().on('GET', /^\/management\/request(-error)?-logs\//, request => {
+  installOmcApi().on('GET', /^\/(management\/request(-error)?-logs\/|usage\/events\/\d+\/request-log$)/, request => {
     paths.push(`/omc/api/v1${request.path}`);
     return respond();
   });

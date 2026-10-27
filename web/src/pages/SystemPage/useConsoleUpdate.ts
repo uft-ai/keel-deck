@@ -49,10 +49,13 @@ export function useConsoleUpdate({ onFinished }: ConsoleUpdateOptions) {
     queryFn: api.getSystemUpdater,
     retry: false,
     meta: { silent: true },
-    refetchInterval: (query) => (watched || (query.state.data?.job && !query.state.data.job.finished) ? UPDATE_POLL_MS : false),
+    refetchInterval: (query) => (watched || (query.state.data?.job && !query.state.data.job.finished && !reportedJobsRef.current.has(query.state.data.job.id)) ? UPDATE_POLL_MS : false),
   });
   if (data?.state === 'ready') lastReadyRef.current = data;
-  const updater = watched && data?.state !== 'ready' ? lastReadyRef.current ?? data : data;
+  const current = watched && data?.state !== 'ready' ? lastReadyRef.current ?? data : data;
+  // A cached answer still naming a reported, unfinished job is history: show no stage for it.
+  const updater = current?.job && !current.job.finished && reportedJobsRef.current.has(current.job.id)
+    ? { ...current, job: null } : current;
 
   React.useEffect(() => {
     const reportEnd = (jobId: string, outcome: UpdateOutcome) => {
