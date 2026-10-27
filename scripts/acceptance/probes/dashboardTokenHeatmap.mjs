@@ -1,4 +1,5 @@
 import { fulfillFixture } from '../browser-guard.mjs';
+import { until } from '../harness.mjs';
 /**
  * Probes for the dashboard's token-activity grid: its day geometry and ramp, the
  * phone layout, the failure state of one panel, and the grid over pruned history.
@@ -21,7 +22,7 @@ async function checkActivityHealthLayout(page, check, isStacked) {
   const layout = await page.evaluate(() => {
     const heatmap = document.querySelector('.heatmap-panel').getBoundingClientRect();
     const health = document.querySelector('[data-testid="dashboard-credential-quota"]').getBoundingClientRect();
-    const row = document.querySelector('.dashboard-activity-row').getBoundingClientRect();
+    const row = document.querySelector('[data-testid="dashboard-board"]').getBoundingClientRect();
     return {
       heatmap: { left: heatmap.left, right: heatmap.right, top: heatmap.top, bottom: heatmap.bottom, width: heatmap.width },
       health: { left: health.left, right: health.right, top: health.top, bottom: health.bottom, width: health.width },
@@ -878,6 +879,13 @@ export async function dashboardTokenHeatmap({ base, page, check }) {
   await openLink.waitFor({ state: 'visible', timeout: 5000 });
   await openLink.click();
   await page.waitForFunction(() => location.pathname.endsWith('/usage/events'), null, { timeout: 10_000 });
+  // React Router v7 commits navigation inside a transition, so the outgoing dashboard can
+  // remain mounted for a beat after the URL changes. Wait for the portal to leave before
+  // asserting its absence rather than racing the transition.
+  await until(
+    async () => await page.locator('.heatmap-tooltip-anchor, .heatmap-tip-popper').count() === 0,
+    { label: 'the dashboard tooltip portal to leave with its route' },
+  );
   check('leaving the dashboard removes its popup portal and anchor',
     await page.locator('.heatmap-tooltip-anchor, .heatmap-tip-popper').count() === 0);
   const query = await page.evaluate(() => Object.fromEntries(new URLSearchParams(location.search).entries()));
@@ -1175,10 +1183,13 @@ export async function dashboardTokenHeatmapPruned({ base, page, check }) {
     states.ratio.unrecorded < states.ratio.empty && states.ratio.empty < states.ratio.measured,
     `unrecorded=${states.ratio.unrecorded} empty=${states.ratio.empty} measured=${states.ratio.measured}`,
   );
-  // And both zeros stay quiet: they must never compete with the greens that carry the data.
+  // And both zeros stay quiet: they must never compete with the greens that carry the data. The card
+  // is drawn on the page ground (`--bg`), where the two steps measure ~1.17 and ~1.35 on dark and
+  // ~1.19 and ~1.37 on light (docs/design.md §2); a ceiling a step above each catches a zero token
+  // moved toward the ink without freezing the exact shade.
   check(
     'neither zero state competes with the measured cells',
-    states.ratio.unrecorded < 1.15 && states.ratio.empty < 1.2,
+    states.ratio.unrecorded < 1.2 && states.ratio.empty < 1.4,
     `unrecorded=${states.ratio.unrecorded} empty=${states.ratio.empty}`,
   );
 }

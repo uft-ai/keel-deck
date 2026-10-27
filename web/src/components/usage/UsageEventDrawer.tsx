@@ -1,6 +1,7 @@
+import { TokenAccountingNote } from './TokenAccountingNote';
 import { useTimeZone } from '../../utils/TimeZoneProvider';
 import React from 'react';
-import { Button, Modal, Tabs, Tooltip } from 'antd';
+import { Button, Modal, Tabs } from 'antd';
 import { FactList } from '../common/FactList';
 import { ParagraphPlaceholder } from '../common/ContentPlaceholder';
 import {
@@ -30,13 +31,16 @@ import {
 } from '../../types/usageEventIdentity';
 import {
   formatEventDuration,
+  eventTokensPerSecond,
+  tpsCalculationHintKey,
   hasMeasurableTTFT,
   isFastTierEvent,
+  fastTierHintKey,
+  resolvedTierHintKey,
   isNonStreamingEvent,
 } from '../../types/usageEventMetrics';
 import { requestGroupName } from '../../types/usageEventLabels';
 import { RequestInspectorView } from './RequestInspectorView';
-import { useOverlayHistory } from '../../hooks/useOverlayHistory';
 import { CostBreakdownView } from '../pricing/CostBreakdownView';
 import { LoadFailure, Notice } from '../feedback';
 import { LogFileViewer } from '../logs/LogFileViewer';
@@ -46,6 +50,8 @@ import { AppDrawer } from '../common/AppDrawer';
 import { CopyButton } from '../common/CopyButton';
 import './UsageEventDrawer.css';
 import './requestMarks.css';
+import { Tooltip } from '../common/Tooltip';
+import { TAB_OVERFLOW } from '../common/tabOverflow';
 
 export interface UsageEventDrawerProps {
   eventId: number | null;
@@ -67,19 +73,11 @@ export const UsageEventDrawer: React.FC<UsageEventDrawerProps> = ({
   const isDemo = isDemoMode();
   // The drawer's token cards follow the console's unit style; the values are
   // exact counts, so the full form is what this surface prints.
-  const { style: tokenStyle, modelView } = useTokenDisplayStyle();
+  const { style: tokenStyle, modelView, tpsMode } = useTokenDisplayStyle();
   const isCallView = modelView === 'call';
   const [logModalOpen, setLogModalOpen] = React.useState(false);
   const [viewerTarget, setViewerTarget] = React.useState<LogViewerTarget | null>(null);
 
-  // The drawer and the log confirmation over it are two overlays on one stack, so Back
-  // closes the confirmation first and the record second - the order the reader sees them in.
-  // The log viewer registers its own entry.
-  useOverlayHistory({ isOpen: eventId != null, onClose });
-  useOverlayHistory({
-    isOpen: logModalOpen && eventId != null,
-    onClose: () => setLogModalOpen(false),
-  });
   const [tab, setTab] = React.useState('overview');
   React.useEffect(() => {
     setLogModalOpen(false);
@@ -202,6 +200,7 @@ export const UsageEventDrawer: React.FC<UsageEventDrawerProps> = ({
     </div>
   );
 
+  const rate = eventTokensPerSecond(event, tpsMode);
   const latency = event?.latency_ms ?? 0;
   const isMeasurable = hasMeasurableTTFT(event);
   const ttft = isMeasurable && event?.ttft_ms != null ? event.ttft_ms : 0;
@@ -234,11 +233,11 @@ export const UsageEventDrawer: React.FC<UsageEventDrawerProps> = ({
                 />
                 <h2>{(isCallView ? (event.model_alias || event.model) : event.model) || t('events.not_captured')}</h2>
                 {isFastTierEvent(event) && (
-                  <Tooltip title={t('events.fast_tier_hint', { tier: event.response_service_tier ?? '' })}>
+                  <Tooltip title={t(fastTierHintKey(event), { tier: event.resolved_service_tier ?? '' })}>
                     <span
                       className="req-mode-mark req-fast-icon"
                       role="img"
-                      aria-label={t('events.fast_tier_hint', { tier: event.response_service_tier ?? '' })}
+                      aria-label={t(fastTierHintKey(event), { tier: event.resolved_service_tier ?? '' })}
                     >
                       <ThunderboltFilled />
                     </span>
@@ -270,6 +269,14 @@ export const UsageEventDrawer: React.FC<UsageEventDrawerProps> = ({
               <span>{t('events.duration')}</span>
               <strong>{formatEventDuration(event.latency_ms)}</strong>
             </div>
+            {rate.basis !== null && (
+              <div>
+                <span>{t('events.col_tps')}</span>
+                <Tooltip title={t(tpsCalculationHintKey(rate.basis))}>
+                  <strong tabIndex={0} aria-label={`${t('events.col_tps')}: ${rate.formatted}. ${t(tpsCalculationHintKey(rate.basis))}`}>{rate.formatted}</strong>
+                </Tooltip>
+              </div>
+            )}
             {isMeasurable && (
               <div>
                 <span>{t('events.ttft')}</span>
@@ -287,7 +294,7 @@ export const UsageEventDrawer: React.FC<UsageEventDrawerProps> = ({
               <strong>{event.cost_usd != null ? `$${event.cost_usd.toFixed(4)}` : '—'}</strong>
             </div>
           </div>
-          <Tabs
+          <Tabs more={TAB_OVERFLOW}
             activeKey={tab}
             onChange={setTab}
             animated={false}
@@ -395,7 +402,14 @@ export const UsageEventDrawer: React.FC<UsageEventDrawerProps> = ({
                         ],
                         [t('events.reasoning_effort'), value(displayEffortName(event.reasoning_effort))],
                         [t('events.service_tier'), value(event.service_tier)],
+                        [t('events.outbound_tier'), value(event.effective_service_tier)],
                         [t('events.response_tier'), value(event.response_service_tier)],
+                        [
+                          t('events.resolved_tier'),
+                          event.resolved_service_tier || event.resolved_service_tier_source === 'outbound'
+                            ? t(resolvedTierHintKey(event), { tier: event.resolved_service_tier || '—' })
+                            : value(undefined),
+                        ],
                         [
                           t('events.generation'),
                           t(event.generate ? 'events.generation_yes' : 'events.preflight'),
@@ -499,6 +513,7 @@ export const UsageEventDrawer: React.FC<UsageEventDrawerProps> = ({
                           : []),
                       ]),
                     )}
+                    <TokenAccountingNote accounting={event.token_accounting} className="request-detail-note" />
                     {section(
                       t('events.token_breakdown'),
                       fields([

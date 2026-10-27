@@ -1,3 +1,4 @@
+import { expect } from '@playwright/test';
 import { fulfillFixture } from '../browser-guard.mjs';
 import fs from 'node:fs';
 
@@ -38,6 +39,8 @@ export const alignmentRecords = (() => {
     generate: true,
     service_tier: 'auto',
     response_service_tier: 'default',
+    resolved_service_tier: 'default',
+    resolved_service_tier_source: 'response',
     source: 'hmac:source-fingerprint',
     auth_index: 'credential-1',
     auth_type: 'api_key',
@@ -61,6 +64,7 @@ export const alignmentFacets = {
   auth_types: [],
   reasoning_efforts: [],
   service_tiers: [],
+  resolved_service_tiers: [],
 };
 
 /**
@@ -367,11 +371,14 @@ export const interactionRecords = (() => {
     event_key: `event-${index}`,
     request_id: `req_interaction_${String(index).padStart(4, '0')}`,
     timestamp_ms: now - index * 1000,
-    provider: ['openai', 'claude', 'gemini'][index % 3],
-    model: ['gpt-5.4', 'claude-sonnet-4-6', 'gemini-2.5-pro'][index % 3],
-    service_tier: 'auto',
-    // One record in four was served on the upstream's fast lane, and thought about it.
-    response_service_tier: index % 4 === 1 ? 'priority' : 'default',
+    provider: index % 4 === 1 ? 'codex' : ['openai', 'claude', 'gemini'][index % 3],
+    model: index % 4 === 1 ? 'gpt-5.4' : ['gpt-5.4', 'claude-sonnet-4-6', 'gemini-2.5-pro'][index % 3],
+    // Both client-requested and server-injected Codex Fast retain a default response.
+    service_tier: index % 8 === 5 ? 'auto' : index % 4 === 1 ? 'priority' : 'auto',
+    ...(index % 8 === 5 ? { effective_service_tier: 'priority' } : {}),
+    response_service_tier: 'default',
+    resolved_service_tier: index % 4 === 1 ? 'priority' : 'default',
+    resolved_service_tier_source: index % 8 === 5 ? 'outbound' : index % 4 === 1 ? 'request' : 'response',
     ...(index % 4 === 1 ? { reasoning_effort: 'high' } : {}),
     source: `hmac:source-fingerprint-${index % 3}`,
     auth_index: `credential-${index % 3}`,
@@ -458,6 +465,20 @@ export async function requestListInteractions({ base, page, check }) {
   check('the initial request mount is bounded by row geometry rather than generic list items',
     mountWindow.peak > 0 && mountWindow.peak <= mountWindow.allowedRows, JSON.stringify(mountWindow));
 
+  // A selected resolved tier must name itself and remove its exact query dimension.
+  await page.getByRole('button', { name: 'More filters', exact: true }).click();
+  const resolvedTierControl = page.getByRole('combobox', { name: 'Resolved service tier', exact: true });
+  await resolvedTierControl.click();
+  await page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option')
+    .filter({ hasText: 'priority' }).click();
+  await page.locator('label[for="req-multi-resolved_service_tier"]').click();
+  await page.getByTestId('req-filter-apply').click();
+  await expect(page.locator('.req-filter-chip-text')).toHaveText('Resolved service tier: priority');
+  await expect(page).toHaveURL(/resolved_service_tier=priority/);
+  await page.getByRole('button', { name: 'Remove filter: Resolved service tier: priority', exact: true }).click();
+  await expect(page.locator('.req-filter-chip')).toHaveCount(0);
+  await expect(page).not.toHaveURL(/resolved_service_tier=/);
+
   check('request cells mount without dormant popup instances',
     await page.locator('.request-cell-tooltip').count() === 0);
   const timestampCell = page.locator('.request-row .req-time-text').first();
@@ -480,7 +501,7 @@ export async function requestListInteractions({ base, page, check }) {
     await timestampHandle.evaluate((element) => element === document.querySelector('.req-time-text')),
     JSON.stringify(tooltipAnchor));
 
-  const cacheCell = page.locator('.request-row .req-cache-hit').first();
+  const cacheCell = page.locator('.request-row .req-cache-pill').first();
   await cacheCell.hover();
   const cacheTitle = await cacheCell.getAttribute('data-request-tooltip');
   await until(async () => (await cellPopup.innerText()) === cacheTitle, { label: 'shared cache tooltip' });
@@ -556,7 +577,7 @@ export async function requestListInteractions({ base, page, check }) {
   check('the failure popup is a panel on the theme surface, not the inverse tooltip block',
     failureSurface.fill === failureSurface.elevated && failureSurface.ink === failureSurface.fg, JSON.stringify(failureSurface));
   // How a request was made lives in its own column: the model cell is the name, and the
-  // fast-lane mark appears exactly on the records the upstream reported as served there.
+  // Fast mark follows the resolved Codex request evidence despite its default response.
   const modeCells = await page.evaluate(() => [...document.querySelectorAll('.request-row')].map((row) => ({
     hasEffortInModel: row.querySelector('.req-col-model .req-effort-badge') !== null,
     effort: row.querySelector('.req-col-mode .req-effort-badge')?.textContent ?? '',
@@ -567,8 +588,10 @@ export async function requestListInteractions({ base, page, check }) {
   const fastCells = modeCells.filter((cell) => cell.isFast);
   check('the mode column carries the effort and the fast-lane mark, and the model cell neither',
     fastCells.length > 0 && fastCells.length < modeCells.length &&
-    modeCells.every((cell) => !cell.hasEffortInModel && cell.isFast === (cell.effort === 'high')) &&
-    fastCells.every((cell) => cell.fastName.includes('priority')),
+    modeCells.every((cell) => !cell.hasEffortInModel && cell.isFast === (cell.effort === 'High')) &&
+    fastCells.every((cell) => cell.fastName.includes('priority')) &&
+    fastCells.some((cell) => /outbound|出站/.test(cell.fastName)) &&
+    fastCells.some((cell) => /requested|请求/.test(cell.fastName)),
     JSON.stringify(modeCells.slice(0, 4)));
   check('every request row is the same height', new Set(modeCells.map((cell) => Math.round(cell.height))).size === 1,
     JSON.stringify([...new Set(modeCells.map((cell) => cell.height))]));
@@ -664,6 +687,8 @@ export async function requestListInteractions({ base, page, check }) {
   await page.mouse.move(0, 0);
 
   const priceAction = page.locator('[data-testid="request-set-price"]').first();
+  // A keyboard focus: the popup answers a visible focus, not the one a click leaves behind.
+  await page.keyboard.press('Shift');
   await priceAction.focus();
   await cellPopup.waitFor({ state: 'visible' });
   await until(async () => (await cellPopup.innerText()) === (await priceAction.getAttribute('aria-label')),
@@ -727,7 +752,7 @@ export async function requestListInteractions({ base, page, check }) {
     });
     // The mounted window is what must stay bounded; it settles asynchronously, so
     // the count is read after the virtualizer stops changing it.
-    await sleep(400);
+    await expect(page.locator('.request-row .req-time-sub-id').last()).toHaveText(interactionRecords.at(-1).request_id);
     const mounted = await page.locator('.request-row').count();
     check('the virtualized window stays bounded at the bottom', mounted > 0 && mounted < 40, `rows=${mounted}`);
     await cellPopup.waitFor({ state: 'hidden' });
@@ -745,8 +770,13 @@ export async function requestListInteractions({ base, page, check }) {
   await returnToLatest();
   const groupingControl = page.getByRole('combobox', { name: 'Group by', exact: true });
   const groupingSelect = page.locator('.request-toolbar .ant-select').filter({ has: groupingControl });
+  // With no configured providers or credentials, source identities retain these
+  // raw keys. Groups follow first occurrence; each group's records keep input order.
+  const lastRecordBySource = new Map(interactionRecords.map((record) => [
+    JSON.stringify([record.provider, record.auth_index]), record,
+  ]));
   for (const [label, lastRequestId] of [
-    ['By source', interactionRecords.filter((record) => record.provider === interactionRecords[2].provider).at(-1).request_id],
+    ['By source', [...lastRecordBySource.values()].at(-1).request_id],
     ['By client', interactionRecords.at(-1).request_id],
   ]) {
     await groupingSelect.click();
@@ -755,6 +785,10 @@ export async function requestListInteractions({ base, page, check }) {
     await until(async () => (await page.locator('.request-group-title').count()) > 0 &&
       (await page.locator('.request-row .req-time-sub-id').first().innerText()) === interactionRecords[0].request_id,
     { label: `first row after ${label}` });
+    // The first row is identical in both groupings. Observing it can release a
+    // stale holder that React is about to replace; the new group title cannot.
+    if (label === 'By client') await expect(page.locator('.request-group-title strong').first()).toHaveText('Client not recorded');
+    else await expect(page.locator('.request-group-title strong').first()).not.toHaveText('Client not recorded');
     const holder = page.locator('.request-list [class*="-holder"]').first();
     await holder.evaluate((element) => { element.scrollTop = element.scrollHeight; });
     const hasReachedLast = await until(async () => (await page.locator('.request-row .req-time-sub-id').last().innerText()) === lastRequestId,
@@ -763,6 +797,16 @@ export async function requestListInteractions({ base, page, check }) {
     check(`${label} measures group headers and keeps the final request reachable`,
       hasReachedLast && mounted > 0 && mounted < 40, `rows=${mounted} last=${await page.locator('.request-row .req-time-sub-id').last().innerText()}`);
     await returnToLatest();
+    const expectedGrouping = label === 'By source' ? 'source' : 'ua';
+    await until(async () => {
+      const saved = await page.evaluate(async () => (await (await fetch('/omc/api/v1/preferences')).json()).preferences.usage_events_view);
+      return saved?.grouping === expectedGrouping;
+    }, { label: `saved ${label} request grouping` });
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.locator('.request-row').first().waitFor();
+    await until(async () => (await groupingSelect.innerText()).includes(label) && (await page.locator('.request-group-title').count()) > 0,
+      { label: `${label} request grouping after reload` });
+    check(`${label} request grouping survives reload`, (await groupingSelect.innerText()).includes(label));
   }
   await groupingSelect.click();
   await page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option')
@@ -950,6 +994,7 @@ export function refreshRecords() {
         return fulfill({
           window: { from: now - 3600000, to: now },
           facets: {
+            ...alignmentFacets,
             models: [{ value: 'gpt-5-codex', requests: 25 }],
             providers: [{ value: 'openai', requests: 25 }],
             sources: [],

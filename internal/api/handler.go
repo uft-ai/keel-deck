@@ -28,6 +28,7 @@ import (
 	"github.com/oh-my-cpa/oh-my-cpa/internal/cpa/management"
 	appcrypto "github.com/oh-my-cpa/oh-my-cpa/internal/crypto"
 	"github.com/oh-my-cpa/oh-my-cpa/internal/domain"
+	"github.com/oh-my-cpa/oh-my-cpa/internal/fontasset"
 	"github.com/oh-my-cpa/oh-my-cpa/internal/repository"
 	"github.com/oh-my-cpa/oh-my-cpa/internal/security"
 	"github.com/oh-my-cpa/oh-my-cpa/internal/web"
@@ -42,6 +43,12 @@ type Handler struct {
 	cipher          *appcrypto.Cipher
 	discoverer      *discovery.Discoverer
 	logger          *slog.Logger
+	// consoleRoot is the built console's root: the directory holding index.html,
+	// manifest.webmanifest and the icons that manifest names. Production points it at
+	// the embedded dist; a test points it at the committed web/public directory,
+	// because the embed is fixed at build time and the installable-app routes must be
+	// testable in a checkout that has not built the frontend.
+	consoleRoot fs.FS
 	// serviceLog is the bounded copy of this process's own log the console reads;
 	// nil when the logger was not built with the applog tee.
 	serviceLog *applog.Buffer
@@ -71,6 +78,11 @@ type Handler struct {
 	// pluginLogos inlines the logos plugins publish, so the browser never fetches a
 	// plugin's own host; see management_plugin_logos.go.
 	pluginLogos *pluginLogoFetcher
+	// fontInstaller downloads Google Fonts families for the font library. It is built on
+	// first use from the configured stylesheet URL; tests set it to a local fixture.
+	fontInstaller     *fontasset.GoogleInstaller
+	fontInstallerErr  error
+	fontInstallerOnce sync.Once
 	// pluginIdentities remembers the name and logo each installed plugin is listed under
 	// in the store, for a plugin CPA has not loaded and so reports by id alone.
 	pluginIdentities *pluginIdentityCache
@@ -83,13 +95,17 @@ type Handler struct {
 	// zero means gatewayLogWriteWait. Only tests set it.
 	gatewayLogWriteWait time.Duration
 
+	siwcBindings siwcBindingStore
+
 	configMu       sync.Mutex
 	startTime      time.Time
 	limiter        *loginLimiter
 	trustedProxies []*net.IPNet
 	// quotaAutoRefresh is the background quota refresh's memory of its own attempts.
 	quotaAutoRefresh quotaAutoRefreshState
-	warmupRuntime    warmupRuntime
+	// quotaReadGates paces the providers that rate-limit quota reads; see quota_read_gate.go.
+	quotaReadGates quotaReadGates
+	warmupRuntime  warmupRuntime
 	// providerWrites serialises whole-list provider configuration writes; see
 	// management_provider_writes.go for why one global permit is required.
 	providerWrites providerWriteGate
@@ -119,6 +135,7 @@ func (h *Handler) now() time.Time {
 func NewHandler(cfg config.Config, repo *repository.Repository, cipher *appcrypto.Cipher, logger *slog.Logger, authManager *auth.Manager) *Handler {
 	handler := &Handler{
 		playgroundSlots:  make(chan struct{}, 4),
+		consoleRoot:      consoleRootFiles(),
 		cfg:              cfg,
 		repo:             repo,
 		cipher:           cipher,
@@ -202,6 +219,7 @@ func (h *Handler) routes() chi.Router {
 				v1.Get("/capabilities/operations/{id}", h.getCapabilityOperation)
 				v1.Get("/agent/session", h.currentAgent)
 				v1.Get("/agent/images/{id}", h.agentImage)
+				v1.Post("/agent/data-rows", h.agentDataRows)
 				v1.Post("/agent/session/reset", h.resetAgent)
 				v1.Post("/agent/run", h.startAgentRun)
 				v1.Get("/agent/operations/{id}", h.getCapabilityOperation)
@@ -222,6 +240,8 @@ func (h *Handler) routes() chi.Router {
 				v1.Get("/management/dashboard/token-heatmap", h.dashboardTokenHeatmap)
 				v1.Get("/management/dashboard/models", h.dashboardModels)
 				v1.Get("/management/dashboard/providers", h.dashboardProviders)
+				v1.Get("/management/insights/cube", h.insightsCube)
+				v1.Get("/management/insights/rhythm", h.insightsRhythm)
 				v1.Get("/management/logs", h.managementLogs)
 				v1.Delete("/management/logs", h.clearManagementLogs)
 				v1.Get("/management/logs/status", h.managementLogsStatus)
@@ -236,6 +256,12 @@ func (h *Handler) routes() chi.Router {
 				v1.Delete("/custom-icons/{id}", h.deleteCustomIcon)
 				v1.Get("/custom-icons/{id}/content", h.customIconContent)
 				v1.Head("/custom-icons/{id}/content", h.customIconContent)
+				v1.Get("/fonts", h.listFonts)
+				v1.Post("/fonts/google", h.installGoogleFont)
+				v1.Post("/fonts/upload", h.uploadFont)
+				v1.Delete("/fonts/{id}", h.deleteFont)
+				v1.Get("/fonts/{id}/faces/{faceId}", h.fontFaceContent)
+				v1.Head("/fonts/{id}/faces/{faceId}", h.fontFaceContent)
 				v1.Get("/preferences", h.listPreferences)
 				v1.Put("/preferences/{key}", h.putPreference)
 				v1.Get("/usage/ingest-status", h.dashboardIngestStatus)
@@ -258,6 +284,8 @@ func (h *Handler) routes() chi.Router {
 				v1.Get("/usage/events/{id}/request-log", h.downloadUsageEventRequestLog)
 				v1.Get("/usage/events/{id}/inspector", h.inspectUsageEventRequestLog)
 				v1.Get("/usage/facets", h.listUsageFacets)
+				v1.Get("/usage/live", h.usageLive)
+				v1.Get("/usage/routing", h.usageRouting)
 				v1.Get("/management/auth-files", h.listManagementAuthFiles)
 				v1.Get("/management/auth-files/safe-fields", h.getManagementAuthFileSafeFields)
 				v1.Get("/management/auth-files/model-aliases", h.listManagementOAuthModelAliases)
@@ -302,6 +330,10 @@ func (h *Handler) routes() chi.Router {
 				v1.Patch("/management/providers/status", h.patchManagementProviderStatus)
 				v1.Get("/management/oauth/providers", h.listOAuthProviders)
 				v1.Post("/management/oauth/start", h.startOAuthFlow)
+				v1.Post("/management/oauth/siwc/bind", h.startSIWCBinding)
+				v1.Get("/management/oauth/siwc/status", h.getSIWCBindingStatus)
+				v1.Post("/management/oauth/siwc/callback", h.submitSIWCBindingCallback)
+				v1.Delete("/management/oauth/siwc/session", h.cancelSIWCBinding)
 				v1.Get("/management/oauth/status", h.getOAuthStatus)
 				v1.Post("/management/oauth/callback", h.handleOAuthCallback)
 				v1.Delete("/management/oauth/session", h.cancelOAuthSession)
@@ -366,6 +398,13 @@ func (h *Handler) routes() chi.Router {
 		r.Head("/lobe-icons/*", h.asset)
 		r.Get("/favicon.svg", h.asset)
 		r.Head("/favicon.svg", h.asset)
+		// The installable-app surface. These do not go through asset(): their names are
+		// stable rather than content-hashed, so asset()'s immutable policy would pin an
+		// old manifest and icons in the browser. See pwa.go.
+		r.Get("/manifest.webmanifest", h.manifest)
+		r.Head("/manifest.webmanifest", h.manifest)
+		r.Get("/icons/*", h.appIcon)
+		r.Head("/icons/*", h.appIcon)
 		r.Get("/*", h.spa)
 		r.Head("/*", h.spa)
 		r.MethodNotAllowed(h.methodNotAllowed)
@@ -899,6 +938,8 @@ func serveAssetRepresentation(writer http.ResponseWriter, request *http.Request,
 
 func contentType(name string) string {
 	switch {
+	case strings.HasSuffix(name, ".html"):
+		return "text/html; charset=utf-8"
 	case strings.HasSuffix(name, ".js"):
 		return "text/javascript; charset=utf-8"
 	case strings.HasSuffix(name, ".css"):

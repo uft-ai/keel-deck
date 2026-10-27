@@ -21,6 +21,7 @@ import (
 // blob store reachable through the session.
 var knownPreferences = map[string]bool{
 	repository.PreferenceDashboardRange:      true,
+	repository.PreferenceInsightsRange:       true,
 	repository.PreferenceLogFilters:          true,
 	repository.PreferenceProviderIcons:       true,
 	repository.PreferenceProviderNames:       true,
@@ -34,11 +35,17 @@ var knownPreferences = map[string]bool{
 	repository.PreferenceModelView:           true,
 	repository.PreferenceRequestModelIcons:   true,
 	repository.PreferenceTheme:               true,
-	repository.PreferenceScrollSmoothing:     true,
+	repository.PreferenceReducedMotion:       true,
+	repository.PreferenceFonts:               true,
+	repository.PreferenceNavHidden:           true,
+	repository.PreferenceNavOrder:            true,
+	repository.PreferenceSidebarCollapsed:    true,
+	repository.PreferenceDashboardLayout:     true,
 	repository.PreferencePlaygroundSession:   true,
 	repository.PreferenceAgentTarget:         true,
 	repository.PreferenceUpdateDismissals:    true,
 	repository.PreferenceQuotaAutoRefresh:    true,
+	repository.PreferenceOMCPluginSource:     true,
 }
 
 // preferenceValue is a stored JSON document kept exactly as the client sent it.
@@ -108,9 +115,29 @@ func (h *Handler) putPreference(writer http.ResponseWriter, request *http.Reques
 			return
 		}
 	}
+	// The plugin source preference is read by the server when it reconciles CPA's
+	// store sources, so it is a switch and nothing else.
+	if key == repository.PreferenceOMCPluginSource {
+		var enabled *bool
+		if json.Unmarshal(body, &enabled) != nil || enabled == nil {
+			writeError(writer, http.StatusBadRequest, "the plugin source preference must be true or false")
+			return
+		}
+	}
+	if key == repository.PreferenceSidebarCollapsed {
+		var isCollapsed *bool
+		if json.Unmarshal(body, &isCollapsed) != nil || isCollapsed == nil {
+			writeError(writer, http.StatusBadRequest, "the sidebar collapsed preference must be true or false")
+			return
+		}
+	}
 	if err := h.repo.PutPreference(request.Context(), key, string(body)); err != nil {
 		if errors.Is(err, repository.ErrCustomIconMissing) || errors.Is(err, repository.ErrCustomIconName) {
 			writeCustomIconError(writer, err)
+			return
+		}
+		if errors.Is(err, repository.ErrFontMissing) || errors.Is(err, repository.ErrFontReference) {
+			writeFontError(writer, err)
 			return
 		}
 		if errors.Is(err, timezone.ErrInvalid) {

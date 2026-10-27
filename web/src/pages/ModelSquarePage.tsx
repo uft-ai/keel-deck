@@ -1,8 +1,10 @@
+import { translateOr } from '../i18n/catalog';
 import React from 'react';
 import clsx from 'clsx';
 import { Button, Select } from 'antd';
 import { useQuery } from '@tanstack/react-query';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link } from 'react-router-dom';
+import { useViewSearchParams, type ViewChangeOptions } from '../hooks/useViewSearchParams';
 import { api, ApiError } from '../api/client';
 import { useT } from '../i18n';
 import { LobeIcon, ProviderBrandIcon } from '../components/LobeIcon';
@@ -14,11 +16,11 @@ import { credentialProviderIconId, getCredentialProviderMetadata } from '../comp
 import { LoadFailure, Notice, useToast } from '../components/feedback';
 import { useOpenPriceEditor } from '../components/pricing/PricingEditorContext';
 import { PRICING_QUERY_KEYS } from '../components/pricing/pricingQueries';
-import { useOverlayHistory } from '../hooks/useOverlayHistory';
 import { copyText } from '../utils/clipboard';
 import { formatRatePer1M } from '../types/pricingDisplay';
 import { isUsageFacetsResponse } from '../types/usageEvents';
-import { MODEL_REQUEST_FACET_QUERY, buildModelLedger, modelRequestsLink, type ModelLedger } from '../types/modelSquareLedger';
+import { MODEL_REQUEST_FACET_QUERY, buildModelLedger, modelRequestsLink, type ModelLedger, type ModelPricingTarget } from '../types/modelSquareLedger';
+import type { ModelPrice } from '../types/pricing';
 import {
   UNRESOLVED_CONNECTION,
   buildModelReferenceLinks,
@@ -39,6 +41,7 @@ import {
   type ModelSquareProvider,
 } from '../types/modelSquare';
 import styles from './ModelSquarePage.module.css';
+import selectionStyles from '../components/common/selection.module.css';
 import { SearchInput } from '../components/common/SearchInput';
 import { EmptyState } from '../components/common/EmptyState';
 import { SectionHeading } from '../components/common/SectionHeading';
@@ -53,7 +56,7 @@ const PREVIEW_CONNECTIONS = 3;
 const KNOWN_MODALITIES = ['text', 'image', 'audio', 'video', 'pdf'];
 
 type Translate = ReturnType<typeof useT>;
-type OpenPriceEditor = (model: string) => void;
+type OpenPriceEditor = (target: ModelPricingTarget) => void;
 
 function manufacturerLabel(manufacturer: ModelManufacturer, t: Translate): string {
   return manufacturer.name || t(manufacturer.id === 'multiple' ? 'models.multiple_makers' : 'models.unknown_maker');
@@ -168,28 +171,48 @@ interface PriceControlProps {
   onOpenNames: () => void;
 }
 
+function rateLabel(price: ModelPrice): string {
+  return `${formatRatePer1M(price.prompt_price_per_1m)} / ${formatRatePer1M(price.completion_price_per_1m)}`;
+}
+
 /**
  * The price-book rate for a scope's one exact name, or why there is no single rate to show.
  *
- * Several names never share a rate here: each has its own price row, so the control opens them.
+ * A price belongs to the channel and upstream model a name routes to, never to the name itself.
+ * Several names, or one name reaching several targets, never share a rate here: the control
+ * opens the list where each target has its own price action.
  */
 const PriceControl: React.FC<PriceControlProps> = ({ names, scope, ledger, onSetPrice, onOpenNames }) => {
   const t = useT();
   if (names.length === 0) return <span className={styles['price-state']}>{t(scope === 'global' ? 'models.no_global_name' : 'models.no_scoped_name')}</span>;
   if (names.length > 1) return <button type="button" className={styles['price-button']} onClick={onOpenNames}>{t('models.per_name_prices')}</button>;
   const [name] = names;
-  const { price } = ledger.entryFor(name);
+  const { price, pricingTargets } = ledger.entryFor(name);
+  if (pricingTargets.length > 1) return <button type="button" className={styles['price-button']} data-price-model={name} onClick={onOpenNames}>{t('models.per_target_prices')}</button>;
   if (price.status === 'unknown') return <span className={styles['price-state']}>{t('models.price_unavailable')}</span>;
-  const label = price.status === 'priced' ? `${formatRatePer1M(price.price.prompt_price_per_1m)} / ${formatRatePer1M(price.price.completion_price_per_1m)}` : t('pricing.set_price');
-  if (!onSetPrice) return <span className={styles['price-state']}>{price.status === 'priced' ? label : t('models.unpriced')}</span>;
+  const [target] = pricingTargets;
+  if (!onSetPrice || !target) return <span className={styles['price-state']}>{price.status === 'priced' ? rateLabel(price.price) : t('models.unpriced')}</span>;
   return <button
     type="button"
     className={clsx(styles['price-button'], price.status === 'unpriced' && styles['set-price'])}
     data-price-model={name}
-    onClick={() => onSetPrice(name)}
+    onClick={() => onSetPrice(target)}
     aria-label={t(price.status === 'unpriced' ? 'models.set_price_for' : 'models.edit_price_for', { model: name })}
     title={t('models.rate_legend')}
-  >{label}</button>;
+  >{price.status === 'priced' ? rateLabel(price.price) : t('pricing.set_price')}</button>;
+};
+
+/** One price action per routed target of a name that reaches several. */
+const TargetPrices: React.FC<{ name: string; targets: readonly ModelPricingTarget[]; onSetPrice?: OpenPriceEditor }> = ({ name, targets, onSetPrice }) => {
+  const t = useT();
+  return <span className={styles['client-actions']}>
+    {targets.map(target => {
+      const label = `${target.price ? rateLabel(target.price) : t('models.unpriced')} · ${target.channelLabel || target.channel || target.model} · ${target.model}`;
+      return onSetPrice
+        ? <button key={JSON.stringify([target.channel, target.model])} type="button" className={clsx(styles['price-button'], !target.price && styles['set-price'])} data-price-model={name} data-price-target={target.channel ?? ''} onClick={() => onSetPrice(target)} title={t('models.rate_legend')}>{label}</button>
+        : <span key={JSON.stringify([target.channel, target.model])} className={styles['price-state']}>{label}</span>;
+    })}
+  </span>;
 };
 
 function connectionLabel(connection: ModelConnection, t: Translate): string {
@@ -247,7 +270,7 @@ function inputBadges(card: ModelCard, t: Translate): string[] {
   if (card.isMixed) return [t('models.mixed_models')];
   const inputs = card.reference?.modalities.input;
   if (!inputs?.length) return [t('models.reference_unknown')];
-  return inputs.map(value => (KNOWN_MODALITIES.includes(value) ? t(`models.input_badge.${value}`) : value));
+  return inputs.map(value => (KNOWN_MODALITIES.includes(value) ? translateOr(t, `models.input_badge.${value}`, value) : value));
 }
 
 interface ModelCardItemProps {
@@ -299,7 +322,7 @@ const ModelProfile: React.FC<{ identity: string; metadata?: ModelReference }> = 
   const unknown = <span className={styles['is-absent']}>{t('models.unknown')}</span>;
   const text = (value?: string) => value || unknown;
   const limit = (value?: number) => value ? value.toLocaleString() : unknown;
-  const modalities = (values?: string[]) => values?.length ? values.map(value => (KNOWN_MODALITIES.includes(value) ? t(`models.modality.${value}`) : value)).join(' · ') : unknown;
+  const modalities = (values?: string[]) => values?.length ? values.map(value => (KNOWN_MODALITIES.includes(value) ? translateOr(t, `models.modality.${value}`, value) : value)).join(' · ') : unknown;
   const flag = (value?: boolean) => {
     if (value === undefined) return unknown;
     return value
@@ -376,12 +399,14 @@ const ClientNames: React.FC<ClientNamesProps> = ({ card, title, names, empty, le
     <h3>{title}</h3>
     {names.length === 0 ? <p className={styles['is-absent']}>{empty}</p> : <ul>
       {names.map(alias => {
-        const { recentRequests } = ledger.entryFor(alias);
+        const { recentRequests, pricingTargets } = ledger.entryFor(alias);
         return <li key={alias} data-client-name={alias}>
           <NameGroup alias={alias} className={styles['client-name']}><code>{alias}</code></NameGroup>
           <span className={styles['client-scope']}>{scopeText(alias)}</span>
           <span className={styles['client-actions']}>
-            <PriceControl names={[alias]} scope="global" ledger={ledger} onSetPrice={onSetPrice} onOpenNames={() => undefined} />
+            {pricingTargets.length > 1
+              ? <TargetPrices name={alias} targets={pricingTargets} onSetPrice={onSetPrice} />
+              : <PriceControl names={[alias]} scope="global" ledger={ledger} onSetPrice={onSetPrice} onOpenNames={() => undefined} />}
             <span className={styles['client-requests']}>{t('models.requests_24h')}: {recentRequests === undefined ? <span className={styles['is-absent']}>{t('models.unknown')}</span> : recentRequests.toLocaleString()}</span>
             <Link className={styles['requests-link']} to={modelRequestsLink(alias)}>{t('models.view_requests')}<RightOutlined /></Link>
           </span>
@@ -438,7 +463,7 @@ interface Panel { cardKey: string; view: PanelView; connectionKey?: string; back
 
 export const ModelSquarePage: React.FC = () => {
   const t = useT();
-  const [params, setParams] = useSearchParams();
+  const [params, setParams] = useViewSearchParams();
   const search = params.get('q') ?? '';
   const manufacturerId = params.get('maker') ?? '';
   const providerId = params.get('provider') ?? '';
@@ -473,8 +498,11 @@ export const ModelSquarePage: React.FC = () => {
     staleTime: 30_000,
     retry: false,
   });
-  const ledger = React.useMemo(() => buildModelLedger(cards.flatMap(card => card.aliases), pricing.data, requests.data), [cards, pricing.data, requests.data]);
-  const openPriceEditor = useOpenPriceEditor() ?? undefined;
+  const ledger = React.useMemo(() => buildModelLedger(cards.flatMap(card => card.aliases), pricing.data, requests.data, directory.data?.routes), [cards, pricing.data, requests.data, directory.data?.routes]);
+  const openEditor = useOpenPriceEditor();
+  const openPriceEditor = React.useMemo<OpenPriceEditor | undefined>(() => openEditor
+    ? target => openEditor(target.model, { channel: target.channel, channelLabel: target.channelLabel })
+    : undefined, [openEditor]);
   const refresh = () => { void directory.refetch(); void pricing.refetch(); void requests.refetch(); };
 
   const pageCount = Math.max(1, Math.ceil(views.length / PAGE_SIZE));
@@ -493,11 +521,12 @@ export const ModelSquarePage: React.FC = () => {
     return [{ value: '', label: t('models.all_connections') }, ...options];
   }, [providers, cards, t]);
 
-  const updateParams = (change: (next: URLSearchParams) => void) => {
+  const updateParams = (change: (next: URLSearchParams) => void, options?: ViewChangeOptions) => {
     setPage(1);
-    setParams(current => { const next = new URLSearchParams(current); change(next); return next; }, { replace: true });
+    setParams(current => { const next = new URLSearchParams(current); change(next); return next; }, options);
   };
-  const setParam = (name: string, value: string) => updateParams(next => { if (value) next.set(name, value); else next.delete(name); });
+  // Typing a search is one step of Back; choosing a maker or connection is another.
+  const setParam = (name: string, value: string) => updateParams(next => { if (value) next.set(name, value); else next.delete(name); }, name === 'q' ? { coalesce: 'q' } : undefined);
   const isFiltered = search !== '' || manufacturerId !== '' || providerId !== '';
   const clearFilters = () => updateParams(next => { next.delete('q'); next.delete('maker'); next.delete('provider'); });
 
@@ -506,10 +535,8 @@ export const ModelSquarePage: React.FC = () => {
   }, []);
   const selectedIndex = panel ? views.findIndex(view => view.card.key === panel.cardKey) : -1;
   const selectedCard = panel ? cards.find(card => card.key === panel.cardKey) : undefined;
-  // A refresh can remove the open card. The drawer and its history entry then close together,
-  // so Back is never spent on a hidden overlay, and the card cannot reappear on a later read.
+  // A refresh can remove the open card. The drawer then closes, and the card cannot reappear on a later read.
   const isDetailsOpen = selectedCard !== undefined;
-  useOverlayHistory({ isOpen: isDetailsOpen, onClose: closeDetails });
   React.useEffect(() => { if (panel && !isDetailsOpen) setPanel(undefined); }, [panel, isDetailsOpen]);
   // Rows the filters leave; a card the filters no longer show keeps all of its own.
   const selectedRows = selectedIndex >= 0 ? views[selectedIndex].connections : selectedCard?.connections ?? [];
@@ -563,10 +590,10 @@ export const ModelSquarePage: React.FC = () => {
         {isFiltered && <Button type="link" size="small" className={styles['clear-filters']} onClick={clearFilters}>{t('models.clear_filters')}</Button>}
       </Toolbar>
       <div className={clsx(styles['chip-group'], styles['maker-strip'])} role="group" aria-label={t('models.filter_makers')}>
-        <button type="button" className={styles['chip']} aria-pressed={manufacturerId === ''} onClick={() => setParam('maker', '')}>
+        <button type="button" className={clsx(styles['chip'], selectionStyles['selection-control'])} aria-pressed={manufacturerId === ''} onClick={() => setParam('maker', '')}>
           {t('common.all')}<Count size="small">{unmade.length}</Count>
         </button>
-        {makers.map(({ manufacturer, count }) => <button key={manufacturer.id} type="button" className={styles['chip']} data-maker={manufacturer.id} aria-pressed={manufacturerId === manufacturer.id} onClick={() => setParam('maker', manufacturerId === manufacturer.id ? '' : manufacturer.id)}>
+        {makers.map(({ manufacturer, count }) => <button key={manufacturer.id} type="button" className={clsx(styles['chip'], selectionStyles['selection-control'])} data-maker={manufacturer.id} aria-pressed={manufacturerId === manufacturer.id} onClick={() => setParam('maker', manufacturerId === manufacturer.id ? '' : manufacturer.id)}>
           <ManufacturerMark manufacturer={manufacturer} size={14} />
           {manufacturerLabel(manufacturer, t)}<Count size="small">{count}</Count>
         </button>)}

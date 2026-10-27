@@ -2,9 +2,8 @@
 .dashboard-alert { margin-bottom: 16px; }
 .dashboard-section { margin-bottom: 32px; }
 .section-heading { margin-bottom: 12px; }
-.status-pip { width: 7px; height: 7px; border-radius: var(--radius-xs); background: var(--success); }
+.status-pip { width: 7px; height: 7px; border-radius: 999px; background: var(--success); }
 /* ── Dashboard Providers Section ─────────────────────────────────────────── */
-.dashboard-providers-section { margin-bottom: 32px; }
 .provider-list-panel {
   display: flex;
   flex-direction: column;
@@ -81,7 +80,7 @@
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  border: 1px solid var(--surface);
+  border: 1px solid var(--bg);
 }
 .status-pip.is-active { background: var(--success); }
 .status-pip.is-disabled { background: var(--danger); }
@@ -151,13 +150,24 @@
   }
 }
 .empty-copy { color: var(--muted); font-size: var(--text-md); }
-/* ── dashboard tiles: six cards in two rows, flat by design.md ─────────────── */
+/* ── dashboard board: every widget on one four-column grid ───────────────────
+   The operator arranges the board (see `web/src/types/dashboardLayout.ts`): each widget is one cell,
+   in the stored order, spanning the stored number of columns. Below 1100px the board has two
+   columns, so a quarter stays a half and anything wider takes the whole row. A cell is a flex
+   column so the panel inside it takes the row's full height, which is what lets two panels that
+   share a row - the activity grid and the quota list beside it by default - end on one line. */
 .dashboard-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 16px;
   margin-bottom: 32px;
 }
+.dashboard-cell { display: flex; flex-direction: column; min-width: 0; grid-column: span 1; }
+.dashboard-cell[data-span="2"] { grid-column: span 2; }
+.dashboard-cell[data-span="3"] { grid-column: span 3; }
+.dashboard-cell[data-span="4"] { grid-column: span 4; }
+.dashboard-cell > .dashboard-tile,
+.dashboard-cell > .dashboard-section { flex: 1 1 auto; margin-bottom: 0; }
 .tile-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .tile-placeholder-hero { margin: 14px 0 0; }
 .tile-placeholder-spark { margin-top: 18px; }
@@ -200,7 +210,6 @@
 /* The dashboard's window picker keeps one width across presets, so the header's other
    actions do not shift when the window is changed. */
 .range-trigger { min-width: 138px; }
-.dashboard-secondary { margin-bottom: 32px; }
 .dashboard-footnote {
   display: flex;
   justify-content: space-between;
@@ -213,6 +222,7 @@
 .dashboard-empty { margin-bottom: 16px; padding: 40px 24px; }
 @media (max-width: 1100px) {
   .dashboard-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dashboard-cell[data-span="3"], .dashboard-cell[data-span="4"] { grid-column: span 2; }
 }
 /* A phone keeps two columns. One tile per row spent a screen on three numbers; the small tiles
    are a label, a figure and a sparkline, which half the width holds, and the wide ones still span
@@ -223,35 +233,19 @@
   .tile-label { font-size: var(--text-sm); }
   .tile-split { gap: 10px; padding-left: 10px; }
 }
-.model-trend-card { grid-column: span 2; }
 .model-usage-card {
-  grid-column: span 2;
-  /* Both model cards share one grid row, so the taller trend card stretches the usage card even
-     when its own row is shorter. A flex column lets the body claim that spare height instead of
+  /* The usage card often shares a row with the taller trend card, which stretches it even when
+     its own content is shorter. A flex column lets the body claim that spare height instead of
      leaving the row at the top of the card with an empty strip beneath it. */
   display: flex;
   flex-direction: column;
 }
-/* The trend's key. It wraps rather than scrolls: a legend that scrolls hides the very series the
-   reader is looking for, and six entries in a two-column card is at most two rows. */
-.model-legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 14px;
-  margin: 12px 0 4px;
-  padding: 0;
-  list-style: none;
-}
-.model-legend-item { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
-.model-legend-swatch { width: 8px; height: 8px; border-radius: var(--radius-xs); flex: none; }
-.model-legend-label {
-  color: var(--fg-2);
-  font-size: var(--text-sm);
-  max-width: 180px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+/* The trend's shared chart legend wraps rather than scrolls: a legend that scrolls hides the very
+   series the reader is looking for, and six entries in a two-column card is at most two rows. */
+.model-trend-legend { margin: 12px 0 4px; }
+.model-series-name { display: inline-flex; align-items: center; gap: 7px; min-width: 0; max-width: 100%; }
+.model-series-mark { flex: none; }
+.model-series-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-usage-card .ant-card-body {
   flex: 1 1 auto;
   /* Centre the row in the height the card actually has below its header. Grid centring keeps the
@@ -265,11 +259,13 @@
 .model-usage-body { display: flex; align-items: center; gap: 24px; min-width: 0; }
 @container modelusage (max-width: 500px) {
   .model-usage-body { flex-direction: column; align-items: stretch; gap: 12px; }
-  .model-usage-list { max-height: none; min-width: 0; }
+  .model-usage-list { min-width: 0; }
 }
-/* The ranked list is the ring's legend and its values in one. It takes the remaining width and
-   caps its own height, because a deployment can serve more models than a card can show and the
-   list must not push the card taller than its peer beside it.
+/* The ranked list is the ring's legend and its values in one. It takes the remaining width.
+
+   It is not a scroll container: the read folds every model outside the top five into one group, so a
+   ranking is at most six rows and a taller list is not a state the endpoint answers with. The card
+   takes the height the ranking has.
 
    The columns live on the list, not on each row. Per-row tracks are resolved against that row's
    own content, so a single row whose cost is a character wider - an amount with an extra digit,
@@ -278,8 +274,6 @@
    every row resolve the same tracks, which is what the header's reading order promises. */
 .model-usage-list {
   flex: 1 1 auto;
-  max-height: 220px;
-  overflow-y: auto;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -305,19 +299,41 @@
   grid-template-columns: subgrid;
   grid-column: 1 / -1;
   align-items: center;
-  padding: 7px 0;
+  /* The pill's padding and hairline are its hit area, not the row's rhythm: the row pads 4px around
+     a control that carries its own air, so six rows fit the card without a scrollbar. */
+  padding: 4px 0;
   border-bottom: 1px solid var(--border-soft);
   font-variant-numeric: tabular-nums;
 }
 .model-usage-row:last-child { border-bottom: none; }
-.model-usage-swatch { width: 8px; height: 8px; border-radius: var(--radius-xs); }
+.model-usage-swatch { width: 8px; height: 8px; border-radius: 999px; }
 .model-usage-name {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
   color: var(--fg);
   font-size: var(--text-md);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
+.model-usage-name-button {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  padding: 3px 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--text-md);
+  text-align: left;
+  cursor: pointer;
+  transition: color var(--motion-fast) var(--ease-standard), background-color var(--motion-fast) var(--ease-standard);
+}
+.model-usage-name-button:hover { background: color-mix(in srgb, var(--fg) 6%, transparent); }
+.model-usage-name-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.model-usage-name-button[data-dimmed='true'] { opacity: 0.42; }
 .model-usage-tokens { color: var(--muted); font-size: var(--text-sm); white-space: nowrap; }
 .model-usage-share { color: var(--fg-2); font-size: var(--text-sm); white-space: nowrap; text-align: right; }
 /* The cost cell follows the name, so it is left-aligned against it rather than against the right
@@ -335,12 +351,6 @@
 .model-empty { margin: 16px 0 0; }
 .model-chart-skeleton { height: 220px; }
 .model-alert, .model-stale-alert { margin-top: 12px; }
-@media (max-width: 1100px) {
-  .model-trend-card, .model-usage-card { grid-column: span 2; }
-}
-@media (max-width: 640px) {
-  .model-trend-card, .model-usage-card { grid-column: span 2; }
-}
 /* ── token heatmap: a DOM grid, not a chart mark ────────────────────────────
    A contribution graph: seven weekday rows by a year of week columns. The panel shows as many of
    the newest weeks as fit at `--heatmap-cell-target` and stretches them to reach its edge, so the
@@ -351,14 +361,7 @@
    The component writes the fitted size as `--heatmap-cell`. Until it has measured - and whenever
    the whole year fits - the tracks are `minmax(--heatmap-min-cell, 1fr)`, which divides the
    panel exactly with no rounding seam. */
-/* ── dashboard activity & credential health row ────────────────────────────── */
-.dashboard-activity-row {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
-  margin-bottom: 32px;
-  align-items: stretch;
-}
+/* ── dashboard activity & credential health ───────────────────────────────── */
 /* Both panels stretch to the row's height and lay their content out as a column, so whichever
    is shorter spends the difference above its footer instead of ending early. */
 .heatmap-panel, .credential-quota-panel { margin-bottom: 0; min-width: 0; }
@@ -448,7 +451,9 @@
 .quota-alert { margin-top: 12px; }
 .quota-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; margin-top: 14px; }
 .quota-all-disabled { margin-top: 14px; }
-@media (max-width: 900px) {
+/* Below 1100px the board gives every half-width panel a row of its own, so there is no neighbour to
+   take a height from and the list sets its own. */
+@media (max-width: 1100px) {
   .quota-list { flex: none; min-height: 0; max-height: calc(var(--quota-row-height) * 4.5); }
 }
 @media (max-width: 640px) {
@@ -460,7 +465,6 @@
   }
 }
 @media (max-width: 900px) {
-  .dashboard-activity-row { grid-template-columns: 1fr; }
   /* A phone shows fewer weeks either way; the smaller target keeps a quarter in view. */
   .heatmap-scroll { --heatmap-cell-target: 14px; --heatmap-gap: 3px; }
 }
@@ -508,7 +512,7 @@
   left: 0;
   /* Above the hovered cell's lifted mark. */
   z-index: 2;
-  background: var(--surface);
+  background: var(--bg);
 }
 .heatmap-month-track, .heatmap-grid {
   display: grid;
@@ -544,7 +548,7 @@
   bottom: 0;
   left: 100%;
   width: 14px;
-  background: linear-gradient(to right, var(--surface), transparent);
+  background: linear-gradient(to right, var(--bg), transparent);
   pointer-events: none;
   opacity: 0;
 }
@@ -560,11 +564,9 @@
   width: 100%;
   border: 0;
   border-radius: var(--radius-xs);
-  /* One step down from the panel it sits on, not a step up. The panel's own background is
-     `--surface`, and in the dark theme the obvious choice for an empty cell (`--border-soft`)
-     *is* `--surface`: every empty day would blend into the panel and the grid would read as a
-     scatter of isolated marks. `--bg` is the inset step in both themes, which is the same
-     token the hover states use for the same reason. */
+  /* An empty day is a quiet step off the card, which sits on the page's own ground: the
+     recorded-zero step is the border ink and the unrecorded one the soft divider, so both stay
+     visible as slots without competing with a measured day. */
   background: var(--heatmap-zero-recorded);
   padding: 0;
 }
@@ -743,7 +745,7 @@
   .heatmap-cell::after { content: ''; position: absolute; inset: -1px; }
   .heatmap-head { align-items: flex-start; }
 }
-@media (prefers-reduced-motion: reduce) {
+:root[data-reduced-motion='true'] {
   .heatmap-progress::after { animation: none; width: 100%; opacity: 0.6; }
   /* Keep the acknowledgement, drop the movement: the ring still marks the cell under the pointer. */
   .heatmap-cell-mark { transition: none; }
@@ -753,6 +755,6 @@
   .provider-jump-arrow { opacity: .5; transform: none; }
 }
 @media (max-width: 640px) {
-  .dashboard-grid { gap: 8px; margin-bottom: 12px; }
+  .dashboard-grid { gap: 12px; margin-bottom: 12px; }
   .dashboard-key-filter { min-width: 0; width: 100%; max-width: none; }
 }

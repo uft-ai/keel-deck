@@ -5,6 +5,7 @@ import { resolveApiTarget } from '../scripts/api-target.mjs';
 import { syncLobeIcons } from '../scripts/sync-lobe-icons.mjs';
 import { bundleGraphPlugin } from '../scripts/bundle-graph.mjs';
 import { bareBaseRedirectPlugin } from '../scripts/dev-base-redirect.mjs';
+import { compactEnglishCatalogPlugin } from '../scripts/compact-locales.mjs';
 
 const repoRoot = path.resolve(__dirname, '..');
 
@@ -21,6 +22,7 @@ export default defineConfig(({ command }) => ({
     react(),
     bundleGraphPlugin(repoRoot),
     bareBaseRedirectPlugin(),
+    compactEnglishCatalogPlugin(repoRoot),
   ],
   // Development has one browser entry at /omc/ (the bare /omc redirects to it);
   // Vite proxies only API calls to Go. Production output stays relative so Go can embed it at any subpath.
@@ -28,6 +30,11 @@ export default defineConfig(({ command }) => ({
   resolve: {
     alias: [
       { find: '@', replacement: path.resolve(__dirname, './src') },
+      // The official renderer mounts its own inspector widget in development builds. It is a
+      // third-party overlay in the corner the composer's controls use (and the browser checks
+      // click in), so the package resolves to a component that draws nothing; a production build
+      // drops the import entirely.
+      { find: '@openuidev/devtools', replacement: path.resolve(__dirname, './src/agent/openui/inspectorOff.tsx') },
       {
         find: /^monaco-editor$/,
         replacement: path.resolve(__dirname, './node_modules/monaco-editor/esm/vs/editor/editor.api.js'),
@@ -41,6 +48,9 @@ export default defineConfig(({ command }) => ({
   // The worker imports CommonJS dependencies that the page's entry graph never visits.
   // Prebundle its dependency graph so development workers are as offline-safe as built ones.
   optimizeDeps: {
+    // Optimizing the icon import map promotes thousands of lazy icons into shared
+    // eager chunks. Keep this ESM map native so a workspace loads only its icons.
+    exclude: ['lucide-react/dynamicIconImports.mjs'],
     include: [
       'monaco-yaml > @vscode/l10n',
       'monaco-yaml > jsonc-parser',
@@ -89,19 +99,16 @@ export default defineConfig(({ command }) => ({
         manualChunks: (id) => {
           // Vite's shared preload helper is called by every `React.lazy` route, so
           // wherever it lands becomes an eager dependency of the entry. Left to
-          // Rollup it was merged into vendor-charts, which dragged the whole chart
+          // Rollup it can be merged into a chart chunk, dragging the whole chart
           // runtime into the entry graph and modulepreloaded it on every route -
           // exactly the eager load the lazy import below is meant to avoid. Pinning
           // it to its own tiny chunk keeps the entry's static graph free of charts.
           if (id.includes('vite/preload-helper')) {
             return 'vendor-preload';
           }
-          if (
-            id.includes('node_modules/@antv/') ||
-            id.includes('node_modules/@ant-design/charts') ||
-            id.includes('node_modules/@ant-design/plots')
-          ) {
-            return 'vendor-charts';
+          // The SVG runtime shared by the dashboard and Insights stays lazy (ADR 0106).
+          if (id.includes('node_modules/echarts/') || id.includes('node_modules/zrender/')) {
+            return 'vendor-echarts';
           }
           if (
             id.includes('node_modules/react/') ||
@@ -120,6 +127,14 @@ export default defineConfig(({ command }) => ({
           }
           if (id.includes('node_modules/@tanstack/react-query')) {
             return 'vendor-query';
+          }
+          // A deferred catalog keeps its language's name: the acceptance probes fail one language's
+          // chunk by that name, which a shared `index-*` name cannot express.
+          if (id.includes('/i18n/locales/zh-Hant/')) {
+            return 'zh-Hant';
+          }
+          if (id.includes('/i18n/locales/ms/')) {
+            return 'ms';
           }
         },
       },

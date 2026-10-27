@@ -122,7 +122,16 @@ async function startLocalDemo() {
         },
       });
       response.writeHead(workerResponse.status, Object.fromEntries(workerResponse.headers));
-      response.end(await workerResponse.text());
+      // Streamed rather than buffered: the live usage stream stays open for minutes, and
+      // a buffered copy would hold the console's EventSource without ever delivering it.
+      if (!workerResponse.body) {
+        response.end();
+        return;
+      }
+      const reader = workerResponse.body.getReader();
+      response.on('close', () => void reader.cancel().catch(() => {}));
+      for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) response.write(chunk.value);
+      response.end();
       return;
     }
 
@@ -237,7 +246,9 @@ async function main() {
           await page.getByTestId('agent-demo-example').click();
           const turn = page.getByTestId('agent-turn');
           await turn.waitFor({ state: 'visible', timeout: REPLAY_TIMEOUT_MS });
-          await turn.getByTestId('agent-view').waitFor({ state: 'visible', timeout: NAVIGATION_TIMEOUT_MS });
+          // The recorded answer is an OpenUI program: the built bundle must draw it with the
+          // official renderer and the replay's lazy chunk, not only restore the text around it.
+          await turn.getByTestId('agent-openui').waitFor({ state: 'visible', timeout: NAVIGATION_TIMEOUT_MS });
           if (await page.getByTestId('agent-rejected').count() > 0) throw new Error('the demonstration refused its own example question');
         }
         if (route.path === '/playground') {

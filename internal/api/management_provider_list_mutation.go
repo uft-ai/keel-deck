@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"github.com/oh-my-cpa/oh-my-cpa/internal/cpa/management"
 )
@@ -36,12 +37,12 @@ func (h *Handler) appendOpenAICompatibilityGated(
 // console's provider write window. They are family-agnostic on purpose: the
 // family is a runtime value, so a new credential list needs no new code path.
 
-// appendConfigKeyProvider adds one credential to the family list.
-func (h *Handler) appendConfigKeyProvider(
+// appendConfigKeyProviders saves every submitted credential in one write window.
+func (h *Handler) appendConfigKeyProviders(
 	ctx context.Context,
 	client *management.Client,
 	spec providerConfigFamilySpec,
-	entry management.ConfigAPIKey,
+	entries []management.ConfigAPIKey,
 	afterUpdate func(context.Context, []management.ConfigAPIKey) error,
 ) ([]management.ConfigAPIKey, error) {
 	var updated []management.ConfigAPIKey
@@ -50,10 +51,13 @@ func (h *Handler) appendConfigKeyProvider(
 			return client.EditableConfigAPIKeys(ctx, spec.Family)
 		},
 		func(ctx context.Context, list []management.ConfigAPIKey) error {
-			return client.UpdateConfigAPIKeys(ctx, spec.Family, list)
+			return updateConfigKeysAndVerifyVertexPolicy(ctx, client, spec.Family, list)
 		},
 		func(list *[]management.ConfigAPIKey) error {
-			updated = append(append([]management.ConfigAPIKey{}, *list...), entry)
+			if err := verifyConfigProviderKeys(*list, entries, -1); err != nil {
+				return err
+			}
+			updated = append(append([]management.ConfigAPIKey{}, *list...), entries...)
 			*list = updated
 			return nil
 		},
@@ -61,30 +65,41 @@ func (h *Handler) appendConfigKeyProvider(
 	return updated, err
 }
 
-// mutateConfigKeyProvider edits one credential at index. The list is read inside
-// the write window, so the edit cannot be applied to a stale snapshot.
-func (h *Handler) mutateConfigKeyProvider(
+// mutateConfigKeyProviders keeps the edited row's position and appends its new
+// credentials. Appending leaves every neighbouring positional identity intact.
+func (h *Handler) mutateConfigKeyProviders(
 	ctx context.Context,
 	client *management.Client,
 	spec providerConfigFamilySpec,
 	index int,
-	apply func(*management.ConfigAPIKey) error,
-	afterUpdate func(context.Context, []management.ConfigAPIKey) error,
+	apply func(management.ConfigAPIKey) ([]management.ConfigAPIKey, error),
+	afterUpdate func(context.Context, []management.ConfigAPIKey, int) error,
 ) error {
+	added := 0
 	return gatedProviderListWrite(h, ctx,
 		func(ctx context.Context) ([]management.ConfigAPIKey, error) {
 			return client.EditableConfigAPIKeys(ctx, spec.Family)
 		},
 		func(ctx context.Context, list []management.ConfigAPIKey) error {
-			return client.UpdateConfigAPIKeys(ctx, spec.Family, list)
+			return updateConfigKeysAndVerifyVertexPolicy(ctx, client, spec.Family, list)
 		},
 		func(list *[]management.ConfigAPIKey) error {
 			if index >= len(*list) {
 				return newProviderWriteError(http.StatusNotFound, "provider index out of bounds")
 			}
-			return apply(&(*list)[index])
+			entries, err := apply((*list)[index])
+			if err != nil {
+				return err
+			}
+			if err := verifyConfigProviderKeys(*list, entries, index); err != nil {
+				return err
+			}
+			(*list)[index] = entries[0]
+			*list = append(*list, entries[1:]...)
+			added = len(entries) - 1
+			return nil
 		},
-		afterUpdate)
+		func(ctx context.Context, list []management.ConfigAPIKey) error { return afterUpdate(ctx, list, added) })
 }
 
 // deleteConfigKeyProvider removes one credential at index.
@@ -100,7 +115,7 @@ func (h *Handler) deleteConfigKeyProvider(
 			return client.EditableConfigAPIKeys(ctx, spec.Family)
 		},
 		func(ctx context.Context, list []management.ConfigAPIKey) error {
-			return client.UpdateConfigAPIKeys(ctx, spec.Family, list)
+			return updateConfigKeysAndVerifyVertexPolicy(ctx, client, spec.Family, list)
 		},
 		func(list *[]management.ConfigAPIKey) error {
 			if index >= len(*list) {
@@ -110,4 +125,35 @@ func (h *Handler) deleteConfigKeyProvider(
 			return nil
 		},
 		afterUpdate)
+}
+
+// Vertex routing policies retain explicit false and alias-specific inheritance.
+// Verify the stored configuration, not runtime inference or model-name detection.
+func updateConfigKeysAndVerifyVertexPolicy(ctx context.Context, client *management.Client, family management.ConfigKeyFamily, requested []management.ConfigAPIKey) error {
+	if err := client.UpdateConfigAPIKeys(ctx, family, requested); err != nil {
+		return err
+	}
+	if family != management.ConfigFamilyVertex {
+		return nil
+	}
+	current, err := client.EditableConfigAPIKeys(ctx, family)
+	failed := func() error {
+		return newProviderWriteError(http.StatusBadGateway, "Vertex OpenAPI settings could not be verified; reload before retrying")
+	}
+	if err != nil || len(current) != len(requested) {
+		return failed()
+	}
+	for index, expected := range requested {
+		actual := current[index]
+		if actual.APIKey != expected.APIKey || !equalOptionalBool(actual.OpenAPI, expected.OpenAPI) || strings.TrimSpace(actual.OpenAPILocation) != strings.TrimSpace(expected.OpenAPILocation) || len(actual.Models) != len(expected.Models) {
+			return failed()
+		}
+		for position, model := range expected.Models {
+			observed := actual.Models[position]
+			if observed.Name != model.Name || observed.Alias != model.Alias || !equalOptionalBool(observed.OpenAPI, model.OpenAPI) {
+				return failed()
+			}
+		}
+	}
+	return nil
 }

@@ -43,7 +43,7 @@ by opening a management page.
 5. The default page groups models vertically by maker and offers search. One card
    describes one resolved model; client names join it only through an equal known
    reference, and unresolved or mixed names keep their own card.
-   A Back-aware Drawer shows facts and explicit models.dev, OpenRouter and pi.dev
+   A Drawer shows facts and explicit models.dev, OpenRouter and pi.dev
    navigation. External references open only on user action with opener/referrer
    protection; all icon artwork is local.
 

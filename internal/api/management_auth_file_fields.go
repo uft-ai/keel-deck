@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
 	"github.com/oh-my-cpa/oh-my-cpa/internal/cpa/management"
+	"github.com/oh-my-cpa/oh-my-cpa/internal/security"
 )
 
 // errAuthFileFieldsNotVerified reports a field write whose persisted state could not be confirmed.
@@ -29,13 +31,19 @@ var errAuthFileIdentityStale = errors.New("auth file changed; reload and try aga
 // name reused by a replacement would otherwise be patched first and reported as a
 // mismatch afterwards.
 func (h *Handler) applyManagementAuthFileFields(ctx context.Context, client *management.Client, name, authIndex string, fields map[string]any) (map[string]any, error) {
-	if strings.TrimSpace(authIndex) != "" {
+	if strings.TrimSpace(authIndex) != "" || hasVertexOpenAPIField(fields) || hasCredentialScopedPolicyField(fields) {
 		current, err := client.AuthFiles(ctx)
 		if err != nil {
 			return nil, err
 		}
-		if _, ok := findManagementAuthFile(current.Files, name, authIndex); !ok {
+		if _, ok := findManagementAuthFile(current.Files, name, authIndex); !ok && strings.TrimSpace(authIndex) != "" {
 			return nil, errAuthFileIdentityStale
+		}
+		if err := requireCredentialScopedPolicyTarget(current.Files, name, authIndex, fields); err != nil {
+			return nil, err
+		}
+		if err := requireVertexOpenAPITarget(current.Files, name, authIndex, fields); err != nil {
+			return nil, err
 		}
 	}
 	if _, err := client.PatchAuthFileFields(ctx, name, fields); err != nil {
@@ -140,6 +148,14 @@ func (h *Handler) patchManagementAuthFileFields(writer http.ResponseWriter, requ
 			writeError(writer, http.StatusBadGateway, err.Error())
 			return
 		}
+		if errors.Is(err, errAuthFileFieldNotApplicable) {
+			writeError(writer, http.StatusBadRequest, err.Error())
+			return
+		}
+		if errors.Is(err, errManagementAuthFileNotFound) {
+			writeError(writer, http.StatusNotFound, err.Error())
+			return
+		}
 		writeCPAFacadeError(writer, err)
 		return
 	}
@@ -154,7 +170,7 @@ func managementAuthFileNeedsSafeReadback(fields map[string]any) bool {
 	for key := range fields {
 		switch key {
 		case "prefix", "proxy_url", "expired", "disable_cooling", "websockets", "using_api", "excluded_models",
-			"request_retry", "request_scoped_errors", "model_aliases":
+			"request_retry", "request_scoped_errors", "model_aliases", "use_siwc", "openapi", "openapi_location", "openapi_models":
 			return true
 		}
 	}
@@ -173,6 +189,11 @@ func projectManagementAuthFileSafeFields(name string, data []byte) (managementAu
 		return managementAuthFileSafeFields{}, errors.New("auth file must contain one JSON object")
 	}
 	fields := managementAuthFileSafeFields{Name: name}
+	if strings.EqualFold(stringValue(source["type"]), "codex") {
+		if useSIWC, ok := source["use_siwc"].(bool); ok {
+			fields.UseSIWC = &useSIWC
+		}
+	}
 	if priority, ok := source["priority"]; ok {
 		parsed := intValue(priority)
 		fields.Priority = &parsed
@@ -192,6 +213,7 @@ func projectManagementAuthFileSafeFields(name string, data []byte) (managementAu
 	fields.RequestRetry = projectCredentialRequestRetry(source)
 	fields.ErrorRules = projectCredentialErrorRules(source)
 	fields.ModelAliases = projectCredentialModelAliases(source)
+	projectVertexOpenAPIFields(source, &fields)
 	return fields, nil
 }
 
@@ -217,6 +239,11 @@ func managementAuthFileFieldMismatch(requested map[string]any, file management.A
 		case "websockets":
 			if boolValue(raw) != safe.Websockets {
 				return "websockets"
+			}
+		case "use_siwc":
+			// CPA persists an explicit false. Missing metadata on older gateways cannot prove a write succeeded.
+			if safe.UseSIWC == nil || raw != *safe.UseSIWC || raw != file.UseSIWC {
+				return "use_siwc"
 			}
 		case "using_api":
 			if boolValue(raw) != safe.UsingAPI {
@@ -249,6 +276,10 @@ func managementAuthFileFieldMismatch(requested map[string]any, file management.A
 		case "note":
 			if stringValue(raw) != boundedText(file.Note, managementAuthFileFieldLimit) {
 				return "note"
+			}
+		case "openapi", "openapi_location", "openapi_models":
+			if vertexOpenAPIFieldMismatch(key, raw, safe) {
+				return key
 			}
 		}
 	}
@@ -296,6 +327,7 @@ func normalizeManagementAuthFileFields(raw map[string]json.RawMessage) (map[stri
 		"disable-cooling": "disable_cooling",
 		"websockets":      "websockets",
 		"using_api":       "using_api",
+		"use_siwc":        "use_siwc",
 		"using-api":       "using_api",
 		"note":            "note",
 		"excluded_models": "excluded_models",
@@ -309,6 +341,11 @@ func normalizeManagementAuthFileFields(raw map[string]json.RawMessage) (map[stri
 		"request-scoped-errors": "request_scoped_errors",
 		"model_aliases":         "model_aliases",
 		"model-aliases":         "model_aliases",
+		"openapi":               "openapi",
+		"openapi_location":      "openapi_location",
+		"openapi-location":      "openapi_location",
+		"openapi_models":        "openapi_models",
+		"openapi-models":        "openapi_models",
 	}
 	fields := make(map[string]any, len(raw))
 	seen := make(map[string]string, len(raw))
@@ -342,7 +379,20 @@ func normalizeManagementAuthFileField(name string, value any) (any, error) {
 		return nil, nil
 	}
 	switch name {
-	case "prefix", "proxy_url", "note":
+	case "proxy_url":
+		proxyURL := strings.TrimSpace(value.(string))
+		parsed, _ := url.Parse(proxyURL)
+		hasMaskedUserinfo := false
+		if parsed != nil && parsed.User != nil {
+			password, hasPassword := parsed.User.Password()
+			hasMaskedUserinfo = parsed.User.Username() == security.RedactedValue ||
+				(hasPassword && strings.Contains(password, security.RedactedValue))
+		}
+		if strings.Contains(proxyURL, security.RedactedValue) || hasMaskedUserinfo {
+			return nil, errors.New("re-enter the complete proxy URL to replace masked authentication")
+		}
+		return proxyURL, nil
+	case "prefix", "note":
 		return strings.TrimSpace(value.(string)), nil
 	case "priority":
 		number, err := numberInt64(value)
@@ -366,6 +416,8 @@ func normalizeManagementAuthFileField(name string, value any) (any, error) {
 		return credentialErrorRulesWire(value)
 	case "model_aliases":
 		return credentialModelAliasesWire(value)
+	case "openapi", "openapi_location", "openapi_models":
+		return normalizeVertexOpenAPIField(name, value), nil
 	case "excluded_models":
 		raw := value.([]any)
 		seen := make(map[string]struct{}, len(raw))
@@ -391,7 +443,8 @@ func normalizeManagementAuthFileField(name string, value any) (any, error) {
 func validateManagementAuthFileField(name string, value any) error {
 	if value == nil {
 		switch name {
-		case "prefix", "proxy_url", "headers", "priority", "weight", "note", "expired", "request_retry":
+		case "prefix", "proxy_url", "headers", "priority", "weight", "note", "expired", "request_retry",
+			"openapi", "openapi_location", "openapi_models":
 			return nil
 		default:
 			return fmt.Errorf("field %q cannot be null", name)
@@ -429,7 +482,7 @@ func validateManagementAuthFileField(name string, value any) error {
 		if _, err := credentialModelAliasesWire(value); err != nil {
 			return err
 		}
-	case "disable_cooling", "websockets", "using_api":
+	case "disable_cooling", "websockets", "using_api", "use_siwc":
 		if _, ok := value.(bool); !ok {
 			return fmt.Errorf("field %q must be boolean", name)
 		}
@@ -444,6 +497,8 @@ func validateManagementAuthFileField(name string, value any) error {
 				return errors.New("headers must contain short string keys and values")
 			}
 		}
+	case "openapi", "openapi_location", "openapi_models":
+		return validateVertexOpenAPIField(name, value)
 	case "excluded_models":
 		models, ok := value.([]any)
 		if !ok || len(models) > 256 {
@@ -539,6 +594,9 @@ func credentialModelAliasesWire(value any) ([]any, error) {
 		}
 		seenAliases[aliasKey] = struct{}{}
 		item := map[string]any{"name": name, "alias": alias}
+		if entry.OpenAPI != nil {
+			item["openapi"] = *entry.OpenAPI
+		}
 		if entry.Fork {
 			item["fork"] = true
 		}
@@ -556,7 +614,13 @@ func credentialModelAliasesWire(value any) ([]any, error) {
 func projectCredentialModelAliases(source map[string]any) []managementOAuthModelAlias {
 	for _, key := range []string{"model_aliases", "model-aliases"} {
 		if value, ok := source[key]; ok {
-			return projectModelAliasList(value)
+			aliases := projectModelAliasList(value)
+			if !strings.EqualFold(stringValue(source["type"]), "vertex") {
+				for index := range aliases {
+					aliases[index].OpenAPI = nil
+				}
+			}
+			return aliases
 		}
 	}
 	return nil
@@ -584,7 +648,7 @@ func projectModelAliasList(value any) []managementOAuthModelAlias {
 			Alias:        boundedText(alias, managementAuthFileFieldLimit),
 			Fork:         boolValue(entry["fork"]),
 			DisplayName:  boundedText(strings.TrimSpace(stringValue(entry["display-name"])), managementAuthFileFieldLimit),
-			ForceMapping: boolValue(entry["force-mapping"]),
+			ForceMapping: boolValue(entry["force-mapping"]), OpenAPI: vertexOpenAPIBool(entry["openapi"]),
 		})
 		if len(aliases) == maxCredentialModelAliases {
 			break
@@ -597,15 +661,7 @@ func projectModelAliasList(value any) []managementOAuthModelAlias {
 }
 
 func equalCredentialModelAliases(left, right []managementOAuthModelAlias) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for position := range left {
-		if left[position] != right[position] {
-			return false
-		}
-	}
-	return true
+	return managementOAuthModelAliasesEqual(left, right)
 }
 
 func projectCredentialRequestRetry(source map[string]any) *int {

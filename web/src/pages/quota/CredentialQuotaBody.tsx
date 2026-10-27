@@ -4,10 +4,11 @@ import { Button } from 'antd';
 import { SyncOutlined, ThunderboltOutlined } from '../../components/icons';
 import { useT } from '../../i18n';
 import type { QuotaItem } from '../../types/quota';
-import { formatGmtOffsetLabel, formatObservedAgo, formatSnapshotRenewalBound, formatTimeWithCountdown, quotaEmptyStateKey } from './quotaFormat';
+import { formatGmtOffsetLabel, formatObservedAgo, formatQuotaMoney, formatSnapshotRenewalBound, formatTimeWithCountdown, quotaEmptyStateKey } from './quotaFormat';
 import { QuotaProgressBar } from './QuotaProgressBar';
 import { orderQuotaWindows } from './quotaWindowSelection';
 import { quotaStatusTag } from './quotaStatusTag';
+import { outlivedResetLine, refreshFailureLine } from './quotaAttempt';
 import styles from './QuotaPresentation.module.css';
 import { Notice } from '../../components/feedback';
 import { SectionHeading } from '../../components/common/SectionHeading';
@@ -27,8 +28,8 @@ interface CredentialQuotaBodyProps {
 /**
  * The native quota reading: every window the provider published, in group order, with plan,
  * credits, cooldown, per-window reset actions and the raw diagnostics. The Drawer's quota tab
- * renders it. A list row renders `CompactQuotaView` instead, because a row answers a smaller
- * question and must stay the height of one credential.
+ * renders it. A list row renders one cell per quota column of its provider section instead,
+ * because a row answers a smaller question and must stay the height of one credential.
  */
 export const CredentialQuotaBody: React.FC<CredentialQuotaBodyProps> = ({
   item,
@@ -50,6 +51,9 @@ export const CredentialQuotaBody: React.FC<CredentialQuotaBodyProps> = ({
     ? t('quota.credits_unlimited')
     : item.plan?.credits?.balance;
   const applicableCredits = item.reset_credits?.applicable_available_count ?? 0;
+  const extraUsage = item.plan?.extra_usage;
+  const balances = item.plan?.balances ?? [];
+  const usageBreakdown = item.plan?.usage_breakdown ?? [];
   const creditRows = (item.reset_credits?.credits ?? [])
     .filter((credit) => credit.expires_at_ms)
     .sort((left, right) => (left.expires_at_ms ?? 0) - (right.expires_at_ms ?? 0));
@@ -71,7 +75,12 @@ export const CredentialQuotaBody: React.FC<CredentialQuotaBodyProps> = ({
   };
   const hasDiagnostics = Object.keys(rawSignals).length > 0
     || Object.keys(item.model_quotas ?? {}).length > 0
-    || Boolean(item.error);
+    || Boolean(item.error)
+    || Boolean(item.last_refresh);
+  // The attempt is what explains a status the reading alone cannot: the reason and when it
+  // happened, printed once above the numbers rather than left to the toast that announced it.
+  const failureLine = refreshFailureLine(item, nowMS, t);
+  const staleLine = outlivedResetLine(item, t);
 
   // Grant scope identifiers are upstream window ids, not display text: known
   // ones resolve to the localized window labels, anything upstream adds
@@ -134,15 +143,30 @@ export const CredentialQuotaBody: React.FC<CredentialQuotaBodyProps> = ({
         )}
       </div>
 
-      {item.error && (
+      {failureLine ? (
+        <Notice
+          tone="error"
+          description={failureLine}
+          className={styles['quota-diagnostic-alert']}
+        />
+      ) : item.error ? (
+        // A reading that carries a reason but no recorded attempt is one the console has not
+        // stored an attempt for yet - a refresh response merged ahead of the read that serves it.
+        // Its own words are still what the operator should read.
         <Notice
           tone="error"
           description={item.error}
           className={styles['quota-diagnostic-alert']}
         />
-      )}
+      ) : staleLine ? (
+        <Notice
+          tone="warning"
+          description={staleLine}
+          className={styles['quota-diagnostic-alert']}
+        />
+      ) : null}
 
-      {(item.plan?.plan_label || item.plan?.expires_at_ms || creditBalanceText || item.reset_credits) && (
+      {(item.plan?.plan_label || item.plan?.expires_at_ms || creditBalanceText || item.reset_credits || extraUsage) && (
         <div className={styles['meta-row']}>
           {item.plan?.plan_label && (
             <span className={styles['meta-item']}>
@@ -179,6 +203,28 @@ export const CredentialQuotaBody: React.FC<CredentialQuotaBodyProps> = ({
             <span className={styles['meta-item']} data-credit-balance="true">
               <span className={styles['meta-label']}>{t('quota.col_credit_balance')}</span>
               <span className={styles['meta-value']}>{creditBalanceText}</span>
+            </span>
+          )}
+          {extraUsage && (
+            <span className={styles['meta-item']} data-extra-usage={extraUsage.is_enabled ? 'on' : 'off'}>
+              <span className={styles['meta-label']}>{t('quota.col_extra_usage')}</span>
+              <span className={styles['meta-value']}>
+                {extraUsage.is_enabled
+                  ? t('quota.extra_usage_spent', {
+                    used: formatQuotaMoney(extraUsage.used_credits_cents / 100, extraUsage.currency),
+                    limit: formatQuotaMoney(extraUsage.monthly_limit_cents / 100, extraUsage.currency),
+                  })
+                  : t('quota.extra_usage_off')}
+              </span>
+              {extraUsage.spend_limit_reached && (
+                <span className={styles['meta-tag']}>{t('quota.extra_usage_limit_reached')}</span>
+              )}
+              {extraUsage.user_disabled && (
+                <span className={styles['meta-tag']}>{t('quota.extra_usage_user_disabled')}</span>
+              )}
+              {extraUsage.disabled_reason && (
+                <span className={styles['meta-tag']} title={t('quota.extra_usage_reason')}>{extraUsage.disabled_reason}</span>
+              )}
             </span>
           )}
           {item.reset_credits && (
@@ -256,6 +302,26 @@ export const CredentialQuotaBody: React.FC<CredentialQuotaBodyProps> = ({
         </div>
       )}
 
+      {balances.length > 0 && (
+        <div className={styles.section} data-quota-balances="true">
+          <SectionHeading level="label" as="div" title={t('quota.balances_title')} />
+          <div className={styles['reset-list']}>
+            {balances.map((balance) => (
+              <div className={styles['reset-row']} key={balance.id}>
+                <span className={styles['meta-label']} title={balance.id}>
+                  {balance.id === 'iguana_necktie' ? t('quota.balance_cloud_session_credits') : balance.id}
+                </span>
+                <span className={styles['meta-value']}>
+                  {t('quota.balance_remaining', { amount: formatQuotaMoney(balance.remaining_usd) })}
+                  {` · ${t('quota.balance_spent', { used: formatQuotaMoney(balance.used_usd), limit: formatQuotaMoney(balance.limit_usd) })}`}
+                  {balance.reset_at_ms ? ` · ${formatTimeWithCountdown(balance.reset_at_ms, nowMS, t)}` : ''}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className={styles.section}>
         <SectionHeading level="label" as="div" title={t('quota.windows_title')} />
         <div className={styles['windows-list']}>
@@ -272,10 +338,36 @@ export const CredentialQuotaBody: React.FC<CredentialQuotaBodyProps> = ({
         )}
       </div>
 
+      {usageBreakdown.length > 0 && (
+        <div className={styles.section} data-quota-usage-breakdown="true">
+          <SectionHeading level="label" as="div" title={t('quota.usage_breakdown_title')} />
+          <div className={styles['reset-list']}>
+            {usageBreakdown.map((share, index) => (
+              <div className={styles['reset-row']} key={`${share.name}-${index}`}>
+                <span className={styles['meta-label']}>{share.name}</span>
+                <span className={styles['meta-value']}>
+                  {share.share_percent == null ? t('quota.usage_share_unavailable') : `${Math.round(share.share_percent * 10) / 10}%`}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {hasDiagnostics && (
         <details className={styles['quota-diagnostics']}>
           <summary>{t('omc.quota_diagnostics')}</summary>
           {item.error && <div className={styles['diagnostic-line']}>{item.error}</div>}
+          {item.last_refresh && (
+            <div className={styles['diagnostic-line']}>
+              <span className={styles['meta-label']}>{t('quota.last_refresh_at')}</span>
+              <span>
+                {formatObservedAgo(item.last_refresh.attempted_at_ms, nowMS, t)}
+                {' · '}
+                {t(item.last_refresh.outcome === 'failed' ? 'quota.last_refresh_outcome_failed' : 'quota.last_refresh_outcome_succeeded')}
+              </span>
+            </div>
+          )}
           {Object.entries(rawSignals).map(([key, value]) => (
             <div className={styles['diagnostic-line']} key={`signal-${key}`}>
               <span className={styles['meta-label']}>{key}</span>

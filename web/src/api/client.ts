@@ -1,6 +1,8 @@
+import type { InsightsCubeResponse, InsightsRhythmResponse } from '../types/insights';
 import type { WarmupCredential, WarmupPolicy, WarmupResult, WarmupSettings } from '../types/warmup';
 import type { ModelSquareDirectory } from '../types/modelSquare';
 import type { CustomIcon } from '../types/customIcons';
+import type { InstalledFont } from '../types/fonts';
 import { getAppConfig } from '../types/config';
 import { isDemoMode } from '../types/demoMode';
 import {
@@ -42,7 +44,7 @@ import {
 } from '../types/configManagement';
 import { ClientAPIKeyItem, ClientKeyUsageItem, ProviderItem, ProviderModelPull, SaveProviderPayload } from '../types/providers';
 import { GatewayModelItem } from '../types/gatewayModels';
-import { OAuthProviderItem, StartOAuthResponse, OAuthStatusResponse, OAuthCallbackResponse, OAuthCancelResponse } from '../types/oauth';
+import { OAuthProviderItem, StartOAuthResponse, OAuthStatusResponse, OAuthCallbackResponse, OAuthCancelResponse, SIWCBindingStart, SIWCBindingStatus } from '../types/oauth';
 import { QuotaOverviewResponse, CredentialQuotaDetailResponse, QuotaItem } from '../types/quota';
 import {
   SystemInfoResponse,
@@ -90,6 +92,7 @@ export interface LogsStatus {
   logging_to_file: boolean;
   request_log: boolean;
 }
+import type { UsageRoutingResponse } from '../types/usageRouting';
 import { UsageEventPage, UsageEventDetail, UsageFacetsResponse, parseUsageIngestRefresh, type UsageIngestRefresh } from '../types/usageEvents';
 
 export class ApiError extends Error {
@@ -371,6 +374,23 @@ export const api = {
   async deleteCustomIcon(id: string): Promise<void> {
     return request(`/custom-icons/${encodeURIComponent(id)}`, { method: 'DELETE' });
   },
+  async getFonts(): Promise<InstalledFont[]> {
+    const response = await request<{ fonts: InstalledFont[] }>('/fonts');
+    return response.fonts;
+  },
+  /** The server downloads the family and stores it; the browser never contacts Google. */
+  async installGoogleFont(family: string, signal?: AbortSignal): Promise<InstalledFont> {
+    return request('/fonts/google', { method: 'POST', body: JSON.stringify({ family }), signal });
+  },
+  async uploadFont(files: File[], family?: string): Promise<InstalledFont> {
+    const formData = new FormData();
+    if (family) formData.append('family', family);
+    files.forEach((file) => formData.append('file', file, file.name));
+    return request('/fonts/upload', { method: 'POST', body: formData });
+  },
+  async deleteFont(id: string): Promise<void> {
+    return request(`/fonts/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  },
   customIconURL(id: string, revision: number): string {
     return `${getAppConfig().apiBaseUrl}/custom-icons/${encodeURIComponent(id)}/content?revision=${revision}`;
   },
@@ -651,6 +671,20 @@ export const api = {
     );
   },
 
+  /**
+   * getInsightsCube reads one window of the Insights page whole: every dimension tuple's usage per
+   * bucket, plus the comparison period's totals. The page pivots it in the browser, so its filters and
+   * groupings never read again (`pages/insights/insightsCube.ts`).
+   */
+  async getInsightsCube(query: string): Promise<InsightsCubeResponse> {
+    return request<InsightsCubeResponse>(`/management/insights/cube?${query}`, { method: 'GET' });
+  },
+
+  /** getInsightsRhythm reads a window's usage by local weekday and hour, narrowed by the page's filters. */
+  async getInsightsRhythm(query: string): Promise<InsightsRhythmResponse> {
+    return request<InsightsRhythmResponse>(`/management/insights/rhythm?${query}`, { method: 'GET' });
+  },
+
   async getClientKeyUsage(
     query: string,
   ): Promise<{ window: { from: number; to: number }; usage: ClientKeyUsageItem[] }> {
@@ -671,15 +705,15 @@ export const api = {
    * The create response names the row it added: positions are assigned
    * server-side, so the console cannot key a per-row override without it.
    */
-  async createManagementProvider(payload: SaveProviderPayload): Promise<{ status: string; family: string; id: string }> {
-    return request<{ status: string; family: string; id: string }>('/management/providers', {
+  async createManagementProvider(payload: SaveProviderPayload): Promise<{ status: string; family: string; id: string; ids?: string[] }> {
+    return request<{ status: string; family: string; id: string; ids?: string[] }>('/management/providers', {
       method: 'POST',
       body: JSON.stringify(payload),
     });
   },
 
-  async updateManagementProvider(id: string, payload: SaveProviderPayload): Promise<{ status: string; id: string }> {
-    return request<{ status: string; id: string }>(`/management/providers/${encodeURIComponent(id)}`, {
+  async updateManagementProvider(id: string, payload: SaveProviderPayload): Promise<{ status: string; id: string; ids?: string[] }> {
+    return request<{ status: string; id: string; ids?: string[] }>(`/management/providers/${encodeURIComponent(id)}`, {
       method: 'PUT',
       body: JSON.stringify(payload),
     });
@@ -818,6 +852,14 @@ export const api = {
 
   async getUsageFacets(query: string): Promise<UsageFacetsResponse> {
     return request<UsageFacetsResponse>(`/usage/facets${query ? `?${query}` : ''}`, { method: 'GET' });
+  },
+
+  /**
+   * getUsageRouting reads the live routing window: the whole minute, or with
+   * `after` only the attempts recorded since that record.
+   */
+  async getUsageRouting(after?: number): Promise<UsageRoutingResponse> {
+    return request<UsageRoutingResponse>(`/usage/routing${after ? `?after=${after}` : ''}`, { method: 'GET' });
   },
 
   async getUsageIngestStatus(): Promise<unknown> {
@@ -1026,10 +1068,28 @@ export const api = {
     return request<{ providers: OAuthProviderItem[] }>('/management/oauth/providers', { method: 'GET' });
   },
 
-  async startOAuthFlow(provider: string): Promise<StartOAuthResponse> {
+  async bindSIWC(target: { name: string; auth_index: string; rebind: boolean }): Promise<SIWCBindingStart> {
+    return request<SIWCBindingStart>('/management/oauth/siwc/bind', { method: 'POST', body: JSON.stringify(target) });
+  },
+
+  async getSIWCBindingStatus(state: string): Promise<SIWCBindingStatus> {
+    return request<SIWCBindingStatus>(`/management/oauth/siwc/status?state=${encodeURIComponent(state)}`, { method: 'GET' });
+  },
+
+  async submitSIWCCallback(state: string, redirectUrl: string): Promise<OAuthCallbackResponse> {
+    return request<OAuthCallbackResponse>(`/management/oauth/siwc/callback?state=${encodeURIComponent(state)}`, {
+      method: 'POST', body: JSON.stringify({ redirect_url: redirectUrl }),
+    });
+  },
+
+  async cancelSIWCBinding(state: string): Promise<OAuthCancelResponse> {
+    return request<OAuthCancelResponse>(`/management/oauth/siwc/session?state=${encodeURIComponent(state)}`, { method: 'DELETE' });
+  },
+
+  async startOAuthFlow(provider: string, proxyUrl?: string): Promise<StartOAuthResponse> {
     return request<StartOAuthResponse>('/management/oauth/start', {
       method: 'POST',
-      body: JSON.stringify({ provider }),
+      body: JSON.stringify({ provider, ...(proxyUrl?.trim() ? { proxy_url: proxyUrl.trim() } : {}) }),
     });
   },
 
@@ -1231,12 +1291,14 @@ export const api = {
     return request<{ models: UpstreamModel[] }>('/pricing/catalog', { method: 'GET' });
   },
 
-  async getPricingModel(model: string): Promise<PricingModelDetail> {
-    return request<PricingModelDetail>(`/pricing/models/${encodeURIComponent(model)}`, { method: 'GET' });
+  async getPricingModel(model: string, channel?: string): Promise<PricingModelDetail> {
+    const scope = channel ? `?${new URLSearchParams({ channel })}` : '';
+    return request<PricingModelDetail>(`/pricing/models/${encodeURIComponent(model)}${scope}`, { method: 'GET' });
   },
 
-  async updatePricingModel(model: string, payload: PricingModelUpdate): Promise<{ price: ModelPrice }> {
-    return request<{ price: ModelPrice }>(`/pricing/models/${encodeURIComponent(model)}`, {
+  async updatePricingModel(model: string, payload: PricingModelUpdate, channel?: string): Promise<{ price: ModelPrice }> {
+    const scope = channel ? `?${new URLSearchParams({ channel })}` : '';
+    return request<{ price: ModelPrice }>(`/pricing/models/${encodeURIComponent(model)}${scope}`, {
       method: 'PUT',
       body: JSON.stringify(payload),
     });
@@ -1249,8 +1311,9 @@ export const api = {
     });
   },
 
-  async deletePricingModel(model: string): Promise<{ deleted: boolean }> {
-    return request<{ deleted: boolean }>(`/pricing/models/${encodeURIComponent(model)}`, {
+  async deletePricingModel(model: string, channel?: string): Promise<{ deleted: boolean }> {
+    const scope = channel ? `?${new URLSearchParams({ channel })}` : '';
+    return request<{ deleted: boolean }>(`/pricing/models/${encodeURIComponent(model)}${scope}`, {
       method: 'DELETE',
     });
   },

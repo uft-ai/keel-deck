@@ -32,7 +32,10 @@
  *   label/value list;
  * - `Pagination` is refused outside `components/common/Pager`, which hides itself on one page and
  *   never offers a page-size menu;
- * - `Progress` is refused everywhere, because `components/common/Meter` draws a reading.
+ * - `Progress` is refused everywhere, because `components/common/Meter` draws a reading;
+ * - `Tooltip` is refused outside `components/common/Tooltip`, which opens a hint only when the
+ *   reader asks for it (`tooltipIntent.ts`), and the two popups that hold their own anchor - the
+ *   request list's delegated cell popup and the heatmap's selected cell.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -52,6 +55,11 @@ const PRIMITIVE_OWNERS = {
   'raw-popconfirm': ['web/src/components/common/ConfirmAction.tsx'],
   'raw-card': ['web/src/components/common/Panel.tsx'],
   'raw-pagination': ['web/src/components/common/Pager.tsx'],
+  'raw-tooltip': [
+    'web/src/components/common/Tooltip.tsx',
+    'web/src/components/usage/RequestTooltip.tsx',
+    'web/src/components/dashboard/TokenHeatmap.tsx',
+  ],
 };
 
 function lineOf(source, index) {
@@ -87,6 +95,8 @@ export function findViolations(source) {
       violations.push({ line, rule: 'raw-pagination', message: 'import `Pager` from components/common/Pager instead of antd `Pagination`' });
     } else if (kind === 'Progress') {
       violations.push({ line, rule: 'raw-progress', message: 'import `Meter` from components/common/Meter instead of antd `Progress`' });
+    } else if (kind === 'Tooltip') {
+      violations.push({ line, rule: 'raw-tooltip', message: 'import `Tooltip` from components/common/Tooltip instead of antd' });
     } else if (kind === 'Drawer') {
       violations.push({ line, rule: 'raw-drawer', message: 'import `AppDrawer` from components/common/AppDrawer instead of antd `Drawer`' });
     } else if (kind === 'message' || kind === 'notification') {
@@ -120,7 +130,7 @@ export function findViolations(source) {
   }
 
   function memberKind(owner, name) {
-    if (owner === 'antd' && ['Modal', 'App', 'Alert', 'Switch', 'Empty', 'Tag', 'Drawer', 'Popconfirm', 'Card', 'Descriptions', 'Pagination', 'Progress', 'message', 'notification'].includes(name)) return name;
+    if (owner === 'antd' && ['Modal', 'App', 'Alert', 'Switch', 'Empty', 'Tag', 'Drawer', 'Popconfirm', 'Card', 'Descriptions', 'Pagination', 'Progress', 'Tooltip', 'message', 'notification'].includes(name)) return name;
     if (owner === 'app') {
       if (name === 'modal') return 'Modal';
       if (name === 'message' || name === 'notification') return name;
@@ -187,10 +197,10 @@ function walkSourceFiles(directory, found = []) {
   return found;
 }
 
-export function runCheck({ projectRoot = DEFAULT_ROOT, output = console } = {}) {
+export function runCheck({ projectRoot = DEFAULT_ROOT, output = console, files } = {}) {
   const sourceRoot = path.join(projectRoot, 'web', 'src');
   const failures = [];
-  for (const file of walkSourceFiles(sourceRoot)) {
+  for (const file of files ? files.map(file => path.join(projectRoot, file)).filter(file => fs.existsSync(file)) : walkSourceFiles(sourceRoot)) {
     const relative = path.relative(projectRoot, file).split(path.sep).join('/');
     if (relative.startsWith(FEEDBACK_MODULE)) continue;
     for (const violation of findViolations(fs.readFileSync(file, 'utf8'))) {
@@ -204,12 +214,12 @@ export function runCheck({ projectRoot = DEFAULT_ROOT, output = console } = {}) 
       output.error(`  ${failure.file}:${failure.line} [${failure.rule}] ${failure.message}`);
     }
   } else {
-    output.log('Feedback surfaces: every toast and inline notice goes through components/feedback, and every switch, tag, empty state, panel, fact list, pager, meter, side panel and anchored confirmation through its shared component.');
+    output.log(files ? `Feedback surfaces: ${files.length} changed source(s) checked.` : 'Feedback surfaces: every toast and inline notice goes through components/feedback, and every switch, tag, empty state, panel, fact list, pager, meter, side panel, anchored confirmation and tooltip through its shared component.');
   }
   return failures;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const failures = runCheck();
+  const failures = runCheck({ files: process.argv[2] === '--files' ? process.argv.slice(3) : undefined });
   if (failures.length > 0) process.exitCode = 1;
 }

@@ -1,11 +1,9 @@
 /**
  * The motion budget, enforced.
  *
- * docs/design.md §7 states one budget three times - its token table, the Ant Design motion tokens in
- * `themeConfig.ts`, and the `--motion-*` variables in `index.css` - and the stylesheet had drifted
- * from the other two (100ms/150ms against a documented 50ms/100ms) for long enough that call sites
- * written as `var(--motion-fast, 50ms)` were paying double the budget they named. `test-theme-presets`
- * pins the variables to the tokens; this checker pins the *call sites* to the variables.
+ * docs/design.md §7 defines the motion roles; themeConfig.ts projects runtime
+ * tokens and index.css declares CSS tokens. Call sites must use declared tokens
+ * so their timing remains a shared design decision rather than a local literal.
  *
  * Four rules, all of them objective:
  *
@@ -19,11 +17,12 @@
  *      including the layout ones. §7 rule 1's list; the exceptions are disclosures and the bar whose
  *      width positions its own label. An exception is keyed by file, selector and property, and it
  *      must carry a reason - an unexplained exception is how a budget disappears.
- *   3. **Every keyframe animation has a reduced-motion counterpart.** §7's override is a promise, and
- *      a keyframe cannot be reached by a media query written after the fact: the counterpart has to
- *      exist next to the motion. Scope note: transitions are not checked here, because the console
- *      kills them per-rule where the motion is intrusive (the heatmap mark scales, so its colour fade
- *      would smear) and a blanket requirement would flag every 50ms hover.
+ *   3. **Every keyframe animation has a reduced-motion counterpart.** A keyframe must have an
+ *      explicit settled state under the console's resolved motion policy; the library motion
+ *      provider completes focus and unmount without waiting for a CSS lifecycle fade.
+ *      Scope note: transitions are not checked
+ *      here, because the console kills them per-rule where the motion is intrusive (the heatmap mark
+ *      scales, so its colour fade would smear) and a blanket requirement would flag every 50ms hover.
  *   4. **A hover may transition colour only within the fast token.** §7 rule 7 was written as a ban
  *      after Ant Design's 0.3s drag; the console's own hovers are 50ms, which is three frames, and
  *      banning them would rewrite hover behaviour on every page for no measurable gain. See ADR 0009.
@@ -93,13 +92,6 @@ const EXCEPTIONS = [
   {
     kind: 'duration',
     file: 'components/workspace/Workspace.module.css',
-    selector: '.generation-loader-cell',
-    property: 'animation',
-    why: 'The generation loader\u2019s lit run travels its nine cells for as long as work is running; 2700ms is the cycle, not a transition between two states, and reduced motion freezes it (ADR 0080).',
-  },
-  {
-    kind: 'duration',
-    file: 'components/workspace/Workspace.module.css',
     selector: '.stream-caret',
     property: 'animation',
     why: 'The caret at the end of arriving text pulses while the stream is open; 1200ms is the pulse period, not a state transition, and reduced motion freezes it (ADR 0080).',
@@ -119,11 +111,32 @@ const EXCEPTIONS = [
     why: 'A spinning refresh icon is the same kind of indeterminate loop as the heatmap bar above: 900ms is one rotation, not a transition between two states, and §7 freezes it under reduced motion rather than shortening it.',
   },
   {
+    kind: 'duration',
+    file: 'components/dashboard/routing/RoutingPanel.module.css',
+    selector: '.edge-flow-on',
+    property: 'animation',
+    why: 'A routing lane flows for as long as a request travels it or waits at its end; 540ms is one dash period of the flow, not a transition between two states (docs/design.md §7 rule 9).',
+  },
+  {
     kind: 'layout',
     file: 'components/config/config.css',
     selector: '.settings-tls-body',
     property: 'grid-template-rows',
     why: 'A disclosure. Expanding and collapsing an accordion reflows by definition, and the grid 0fr/1fr technique is the least costly form of it; the alternative is an accordion that snaps open, which reads as broken.',
+  },
+  {
+    kind: 'layout',
+    file: 'components/common/Fold.module.css',
+    selector: '.fold',
+    property: 'grid-template-rows',
+    why: 'The shared disclosure body: a provider\u2019s keys and models, the editor\u2019s sections and the configuration panel\u2019s cards unfold from a height known only once drawn. The grid 0fr/1fr technique is the least costly form of that reflow, as `.settings-tls-body` does, and reduced motion removes it.',
+  },
+  {
+    kind: 'layout',
+    file: 'components/common/Fold.module.css',
+    selector: '.fold[data-open]',
+    property: 'grid-template-rows',
+    why: 'The open state of the same disclosure, which states its own transition so the fade can run on a different clock in each direction.',
   },
   {
     kind: 'layout',
@@ -251,12 +264,13 @@ function parseStylesheet(css) {
       const body = source.slice(start, index);
       const selector = stack.pop() ?? '';
       const media = stack.filter((entry) => entry.startsWith('@media')).join(' ');
+      const isReduced = isReducedMedia(media) || stack.some(entry => entry.includes("data-reduced-motion='true'"));
       const frame = stack.find((entry) => entry.startsWith('@keyframes'));
       if (frame) {
         // Inside a keyframe block: these declarations say what the motion animates.
         keyframes.push({ selector, media, declarations: declarations(body), frame });
       } else if (selector && !selector.startsWith('@')) {
-        rules.push({ selector, media, declarations: declarations(body) });
+        rules.push({ selector, media, isReduced, declarations: declarations(body) });
       }
       start = index + 1;
     } else if (char === ';' && stack.length === 0) {
@@ -386,13 +400,13 @@ for (const { absolute, file, text } of sources) {
   // match depend on their formatting.
   const reducedKills = new Set(
     rules
-      .filter((rule) => isReducedMedia(rule.media))
+      .filter((rule) => rule.isReduced)
       .filter((rule) => /^none\b/.test(rule.declarations.find((entry) => entry.property === 'animation')?.value ?? ''))
-      .flatMap((rule) => selectorList(rule.selector)),
+      .flatMap((rule) => selectorList(rule.selector).map(entry => entry.replace(/^&/, '').trim())),
   );
 
   for (const rule of rules) {
-    const isReducedBlock = isReducedMedia(rule.media);
+    const isReducedBlock = rule.isReduced;
     const transition = rule.declarations.find(
       (entry) => entry.property === 'transition' || entry.property === 'transition-duration',
     );
@@ -444,7 +458,7 @@ for (const { absolute, file, text } of sources) {
       );
       const killed = selectorList(rule.selector).every((entry) => reducedKills.has(entry));
       if (animates && !killed) {
-        record('animates with no `prefers-reduced-motion` counterpart', file, rule.selector, 'animation');
+        record('animates with no reduced-motion counterpart', file, rule.selector, 'animation');
       }
     }
   }
@@ -483,10 +497,10 @@ for (const violation of violations) {
 if (violations.length === 0) {
   output.log(`Sources checked: ${filesScanned} (stylesheets and inline transition strings)`);
   output.log(`Motion exceptions in use: ${usedExceptions.size} of ${exceptions.length}`);
-  output.log('Every duration is a token, no transition animates layout, and every keyframe honours reduced motion.');
+  output.log('Every duration is a token, no transition animates layout, and every keyframe animation is reduced-motion safe.');
 } else {
   output.error(`\n${violations.length} motion violation(s) across ${filesScanned} files.`);
-  output.error('Every duration must be a --motion-* token, and every layout exception must be listed in EXCEPTIONS with a reason.');
+  output.error('Every duration must be a --motion-* token, and every exception must be listed in EXCEPTIONS with a reason.');
 }
 
 return { filesScanned, violations };

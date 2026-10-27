@@ -2,6 +2,7 @@ import React from 'react';
 import { Popconfirm } from 'antd';
 import type { ButtonProps, PopconfirmProps } from 'antd';
 import { useT } from '../../i18n';
+import { Tooltip } from './Tooltip';
 
 export interface ConfirmActionProps
   extends Omit<PopconfirmProps, 'okText' | 'cancelText' | 'okButtonProps' | 'okType'> {
@@ -13,6 +14,12 @@ export interface ConfirmActionProps
   isConfirming?: boolean;
   /** Further attributes for the confirming button, such as an accessible name. */
   confirmButtonProps?: ButtonProps;
+  /**
+   * The trigger's own tooltip. It is held here rather than wrapped around the trigger by the
+   * caller because it must step aside while the confirmation is open: left up, it sat over the
+   * confirmation's buttons, and over Cancel when both open above the trigger.
+   */
+  tooltip?: React.ReactNode;
 }
 
 /**
@@ -27,18 +34,32 @@ export function ConfirmAction({
   isDanger = false,
   isConfirming = false,
   confirmButtonProps,
+  tooltip,
   children,
+  open,
+  onOpenChange,
   ...rest
 }: ConfirmActionProps) {
   const t = useT();
+  const [isOwnOpen, setIsOwnOpen] = React.useState(false);
+  const isOpen = open ?? isOwnOpen;
   return (
     <Popconfirm
       {...rest}
+      open={open}
+      onOpenChange={(next: boolean) => {
+        setIsOwnOpen(next);
+        onOpenChange?.(next);
+      }}
       okText={confirmLabel ?? t('common.confirm')}
       cancelText={t('common.cancel')}
       okButtonProps={{ ...confirmButtonProps, danger: isDanger, loading: isConfirming || undefined }}
     >
-      {children}
+      {tooltip === undefined ? children : (
+        <Tooltip title={tooltip} open={isOpen ? false : undefined}>
+          {children}
+        </Tooltip>
+      )}
     </Popconfirm>
   );
 }

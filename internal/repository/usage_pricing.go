@@ -3,6 +3,8 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -12,21 +14,22 @@ import (
 
 // lockedPrice is what the insert transaction stores beside a usage event.
 type lockedPrice struct {
-	cost           *int64
-	version        *int64
-	channelVersion *int64
-	tier           *int64
-	status         string
+	cost              *int64
+	version           *int64
+	channelVersion    *int64
+	tier              *int64
+	status            string
+	serviceTier       string
+	serviceTierSource string
 }
 
-// queryer is satisfied by both *sql.Tx and *sql.DB, so the lock and the read-time
-// breakdown load versions through the same statements.
-type queryer interface {
-	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+// rowScanner is a single row or the current row of a result set.
+type rowScanner interface {
+	Scan(dest ...any) error
 }
 
 const priceVersionSelect = `SELECT id, available, effective_from_ms, model, prompt_price_per_1m, completion_price_per_1m,
- cache_read_price_per_1m, cache_write_price_per_1m, price_multiplier, source, tiers_json, upstream_id
+ cache_read_price_per_1m, cache_write_price_per_1m, price_multiplier, source, tiers_json, upstream_id, channel
  FROM model_price_versions`
 
 // PriceVersion is one immutable price snapshot. Price carries only what a version
@@ -52,12 +55,12 @@ type VersionPrice struct {
 // prices as invalid rather than failing the insert.
 var errCorruptTiers = errors.New("stored price tiers are unreadable")
 
-func scanPriceVersion(row *sql.Row) (PriceVersion, error) {
+func scanPriceVersion(row rowScanner) (PriceVersion, error) {
 	var version PriceVersion
 	var tiers string
 	p := &version.Price
 	if err := row.Scan(&version.ID, &version.Available, &version.EffectiveFromMS, &p.Model, &p.PromptPricePer1M, &p.CompletionPer1M,
-		&p.CacheReadPer1M, &p.CacheWritePer1M, &p.PriceMultiplier, &p.Source, &tiers, &p.UpstreamID); err != nil {
+		&p.CacheReadPer1M, &p.CacheWritePer1M, &p.PriceMultiplier, &p.Source, &tiers, &p.UpstreamID, &p.Channel); err != nil {
 		return version, err
 	}
 	var err error
@@ -76,7 +79,7 @@ type ChannelVersion struct {
 	Multiplier      float64 `json:"multiplier"`
 }
 
-func scanChannelVersion(row *sql.Row) (ChannelVersion, error) {
+func scanChannelVersion(row rowScanner) (ChannelVersion, error) {
 	var version ChannelVersion
 	err := row.Scan(&version.ID, &version.Channel, &version.Available, &version.EffectiveFromMS, &version.Multiplier)
 	return version, err
@@ -84,13 +87,113 @@ func scanChannelVersion(row *sql.Row) (ChannelVersion, error) {
 
 const channelVersionSelect = `SELECT id, channel, available, effective_from_ms, multiplier FROM pricing_channel_versions`
 
+// priceBook answers the price lookups of one insert transaction. modernc's SQLite
+// parses a statement on every execution, prepared or not, so three lookups per event
+// cost more than the insert itself; the book reads each (channel, model) history and
+// each channel's multipliers once and chooses by request time in memory. The insert
+// transaction writes no versions, so the history it read stays the one in effect.
+type priceBook struct {
+	tx       *sql.Tx
+	prices   map[[2]string][]bookedPrice
+	channels map[string][]ChannelVersion
+}
+
+// bookedPrice keeps a row whose tier list cannot be read: it still decides the
+// lookup, as an invalid price, exactly as a direct read of that row would.
+type bookedPrice struct {
+	version PriceVersion
+	err     error
+}
+
+func newPriceBook(tx *sql.Tx) *priceBook {
+	return &priceBook{tx: tx, prices: map[[2]string][]bookedPrice{}, channels: map[string][]ChannelVersion{}}
+}
+
+// price is the version of model on channel in effect at atMS: the latest
+// effective_from_ms not after it, the highest id among equals. It returns
+// sql.ErrNoRows when there is none.
+func (book *priceBook) price(ctx context.Context, channel, model string, atMS int64) (PriceVersion, error) {
+	key := [2]string{channel, model}
+	history, ok := book.prices[key]
+	if !ok {
+		rows, err := book.tx.QueryContext(ctx, priceVersionSelect+`
+ WHERE channel = ? AND model = ? ORDER BY effective_from_ms DESC, id DESC`, channel, model)
+		if err != nil {
+			return PriceVersion{}, err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			version, errScan := scanPriceVersion(rows)
+			if errScan != nil && !errors.Is(errScan, errCorruptTiers) {
+				return PriceVersion{}, errScan
+			}
+			history = append(history, bookedPrice{version: version, err: errScan})
+		}
+		if err := rows.Err(); err != nil {
+			return PriceVersion{}, err
+		}
+		book.prices[key] = history
+	}
+	for _, entry := range history {
+		if entry.version.EffectiveFromMS <= atMS {
+			return entry.version, entry.err
+		}
+	}
+	return PriceVersion{}, sql.ErrNoRows
+}
+
+// channel is the multiplier version of channel in effect at atMS, by the same rule.
+func (book *priceBook) channel(ctx context.Context, channel string, atMS int64) (ChannelVersion, error) {
+	history, ok := book.channels[channel]
+	if !ok {
+		rows, err := book.tx.QueryContext(ctx, channelVersionSelect+`
+ WHERE channel = ? ORDER BY effective_from_ms DESC, id DESC`, channel)
+		if err != nil {
+			return ChannelVersion{}, err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			version, errScan := scanChannelVersion(rows)
+			if errScan != nil {
+				return ChannelVersion{}, errScan
+			}
+			history = append(history, version)
+		}
+		if err := rows.Err(); err != nil {
+			return ChannelVersion{}, err
+		}
+		book.channels[channel] = history
+	}
+	for _, version := range history {
+		if version.EffectiveFromMS <= atMS {
+			return version, nil
+		}
+	}
+	return ChannelVersion{}, sql.ErrNoRows
+}
+
 // lockUsagePrice runs inside the event insert transaction. Both the price and
 // the channel multiplier are selected by request time, not ingestion time, so
 // delayed queue delivery cannot reprice an older request. A tombstone stops a
 // removed price from leaking forward; a missing or tombstoned channel is 1x.
-func lockUsagePrice(ctx context.Context, tx *sql.Tx, event usage.Event) (lockedPrice, error) {
-	version, err := scanPriceVersion(tx.QueryRowContext(ctx, priceVersionSelect+`
- WHERE model = ? AND effective_from_ms <= ? ORDER BY effective_from_ms DESC, id DESC LIMIT 1`, event.Model, event.TimestampMS))
+func lockUsagePrice(ctx context.Context, book *priceBook, event usage.Event) (lockedPrice, error) {
+	serviceTier, source := pricing.ResolveServiceTier(event.Provider, event.ExecutorType, event.ResponseServiceTier, event.ServiceTier, event.EffectiveServiceTier)
+	locked, err := lockUsageCost(ctx, book, event, serviceTier)
+	locked.serviceTier, locked.serviceTierSource = serviceTier, source
+	return locked, err
+}
+
+func lockUsageCost(ctx context.Context, book *priceBook, event usage.Event, serviceTier string) (lockedPrice, error) {
+	// A supplied but unresolved partition cannot be turned into a billable one by
+	// guessing its dialect. Legacy records retain the established raw-count policy.
+	if event.Accounting != nil && event.Accounting.Status != "complete" {
+		return lockedPrice{status: "unpriced"}, nil
+	}
+	version, err := book.price(ctx, event.Provider, event.Model, event.TimestampMS)
+	// A channel tombstone restores the shared price effective at the request time.
+	if event.Provider != "" && (errors.Is(err, sql.ErrNoRows) || err == nil && !version.Available) {
+		version, err = book.price(ctx, "", event.Model, event.TimestampMS)
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return lockedPrice{status: "unpriced"}, nil
 	}
@@ -111,8 +214,7 @@ func lockUsagePrice(ctx context.Context, tx *sql.Tx, event usage.Event) (lockedP
 	locked := lockedPrice{version: &version.ID}
 	multiplier := 1.0
 	if event.Provider != "" {
-		channel, err := scanChannelVersion(tx.QueryRowContext(ctx, channelVersionSelect+`
- WHERE channel = ? AND effective_from_ms <= ? ORDER BY effective_from_ms DESC, id DESC LIMIT 1`, event.Provider, event.TimestampMS))
+		channel, err := book.channel(ctx, event.Provider, event.TimestampMS)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 		case err != nil:
@@ -122,7 +224,7 @@ func lockUsagePrice(ctx context.Context, tx *sql.Tx, event usage.Event) (lockedP
 			locked.channelVersion = &channel.ID
 		}
 	}
-	breakdown, err := pricing.Quote(version.Price.ModelPrice, multiplier, eventTokens(event.InputTokens, event.OutputTokens, event.CacheReadTokens, event.CacheCreationTokens), event.TimestampMS)
+	breakdown, err := pricing.Quote(version.Price.ModelPrice, multiplier, eventTokens(event.InputTokens, event.OutputTokens, event.CacheReadTokens, event.CacheCreationTokens), event.TimestampMS, serviceTier)
 	// Invalid or overflowing prices must not lose usage telemetry or look free.
 	if err != nil {
 		locked.channelVersion = nil
@@ -204,14 +306,18 @@ func UnpricedReason(status string, generate bool, tokensReported *bool, tokens p
 // A disagreement would mean the pricing rules changed after the request was
 // stored, which the stored amount survives unchanged.
 type RequestCostBreakdown struct {
-	Status            string             `json:"status"`
-	StoredNanos       *int64             `json:"stored_nanos,omitempty"`
-	StoredTier        *int64             `json:"stored_tier,omitempty"`
-	Version           *PriceVersion      `json:"price_version,omitempty"`
-	Channel           *ChannelVersion    `json:"channel,omitempty"`
-	Quote             *pricing.Breakdown `json:"quote,omitempty"`
-	RecomputedMatches bool               `json:"recomputed_matches"`
-	InvalidReason     string             `json:"invalid_reason,omitempty"`
+	AccountingStatus  string                 `json:"accounting_status"`
+	Accounting        *usage.TokenAccounting `json:"token_accounting,omitempty"`
+	Status            string                 `json:"status"`
+	StoredNanos       *int64                 `json:"stored_nanos,omitempty"`
+	StoredTier        *int64                 `json:"stored_tier,omitempty"`
+	ServiceTier       string                 `json:"service_tier,omitempty"`
+	ServiceTierSource string                 `json:"service_tier_source,omitempty"`
+	Version           *PriceVersion          `json:"price_version,omitempty"`
+	Channel           *ChannelVersion        `json:"channel,omitempty"`
+	Quote             *pricing.Breakdown     `json:"quote,omitempty"`
+	RecomputedMatches bool                   `json:"recomputed_matches"`
+	InvalidReason     string                 `json:"invalid_reason,omitempty"`
 	// UnpricedReason says why an unpriced request was not priced: no_price,
 	// not_generated, usage_missing, usage_unknown or usage_incomplete. It is derived from the
 	// stored row on read; the stored status itself never changes.
@@ -230,16 +336,27 @@ func (r *Repository) GetUsageEventCostBreakdown(ctx context.Context, id int64) (
 	var timestampMS int64
 	var input, output, cacheRead, cacheWrite, total int64
 	var generate int
+	var requestedTier, responseTier string
+	var billedTier, billedTierSource, accounting sql.NullString
 	err := r.SQL().QueryRowContext(ctx, `SELECT pricing_status, cost_nanos, price_version_id, channel_version_id, price_tier,
- timestamp_ms, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, total_tokens, generate, tokens_reported
+ timestamp_ms, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, total_tokens, generate, tokens_reported,
+ service_tier, response_service_tier, billed_service_tier, billed_service_tier_source, token_accounting
  FROM usage_events WHERE id = ?`, id).Scan(
 		&result.Status, &storedNanos, &versionID, &channelID, &storedTier, &timestampMS, &input, &output, &cacheRead, &cacheWrite,
-		&total, &generate, &tokensReported)
+		&total, &generate, &tokensReported, &requestedTier, &responseTier, &billedTier, &billedTierSource, &accounting)
 	if errors.Is(err, sql.ErrNoRows) {
 		return result, ErrNotFound
 	}
 	if err != nil {
 		return result, fmt.Errorf("read request cost: %w", err)
+	}
+	result.Accounting, err = decodeStoredTokenAccounting(accounting)
+	result.AccountingStatus = "legacy"
+	if result.Accounting != nil {
+		result.AccountingStatus = result.Accounting.Status
+	}
+	if err != nil {
+		return result, err
 	}
 	if storedNanos.Valid {
 		result.StoredNanos = &storedNanos.Int64
@@ -249,6 +366,14 @@ func (r *Repository) GetUsageEventCostBreakdown(ctx context.Context, id int64) (
 	}
 	result.UnpricedReason = UnpricedReason(result.Status, generate != 0, reportedTokens(tokensReported),
 		eventTokens(input, output, cacheRead, cacheWrite), total)
+	// NULL marks records predating the selection snapshot. Their explanation
+	// retains the original policy, even when current observability resolves a
+	// Codex request differently. Empty non-NULL is a recorded selection of none.
+	if billedTier.Valid {
+		result.ServiceTier, result.ServiceTierSource = billedTier.String, billedTierSource.String
+	} else {
+		result.ServiceTier, result.ServiceTierSource = pricing.BilledServiceTier(responseTier, requestedTier)
+	}
 	if !versionID.Valid {
 		return result, nil
 	}
@@ -276,7 +401,7 @@ func (r *Repository) GetUsageEventCostBreakdown(ctx context.Context, id int64) (
 		result.Channel = &channel
 		multiplier = channel.Multiplier
 	}
-	quote, err := pricing.Quote(version.Price.ModelPrice, multiplier, eventTokens(input, output, cacheRead, cacheWrite), timestampMS)
+	quote, err := pricing.Quote(version.Price.ModelPrice, multiplier, eventTokens(input, output, cacheRead, cacheWrite), timestampMS, result.ServiceTier)
 	if err != nil {
 		result.InvalidReason = err.Error()
 		return result, nil
@@ -288,14 +413,18 @@ func (r *Repository) GetUsageEventCostBreakdown(ctx context.Context, id int64) (
 
 // ListModelPriceVersions returns a model's price history, newest first,
 // tombstones included.
-func (r *Repository) ListModelPriceVersions(ctx context.Context, model string, limit int) ([]PriceVersion, error) {
+func (r *Repository) ListModelPriceVersions(ctx context.Context, model string, limit int, channels ...string) ([]PriceVersion, error) {
 	if err := r.requirePricingSchema(ctx); err != nil {
 		return nil, err
 	}
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	rows, err := r.SQL().QueryContext(ctx, priceVersionSelect+` WHERE model = ? ORDER BY effective_from_ms DESC, id DESC LIMIT ?`, model, limit)
+	channel := ""
+	if len(channels) > 0 {
+		channel = channels[0]
+	}
+	rows, err := r.SQL().QueryContext(ctx, priceVersionSelect+` WHERE channel = ? AND model = ? ORDER BY effective_from_ms DESC, id DESC LIMIT ?`, channel, model, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list price versions: %w", err)
 	}
@@ -306,7 +435,7 @@ func (r *Repository) ListModelPriceVersions(ctx context.Context, model string, l
 		var tiers string
 		p := &version.Price
 		if err := rows.Scan(&version.ID, &version.Available, &version.EffectiveFromMS, &p.Model, &p.PromptPricePer1M, &p.CompletionPer1M,
-			&p.CacheReadPer1M, &p.CacheWritePer1M, &p.PriceMultiplier, &p.Source, &tiers, &p.UpstreamID); err != nil {
+			&p.CacheReadPer1M, &p.CacheWritePer1M, &p.PriceMultiplier, &p.Source, &tiers, &p.UpstreamID, &p.Channel); err != nil {
 			return nil, fmt.Errorf("scan price version: %w", err)
 		}
 		if p.Tiers, err = pricing.DecodeTiers(tiers); err != nil {
@@ -315,4 +444,32 @@ func (r *Repository) ListModelPriceVersions(ctx context.Context, model string, l
 		versions = append(versions, version)
 	}
 	return versions, rows.Err()
+}
+
+type tokenAccountingValue struct{ accounting *usage.TokenAccounting }
+
+func encodeTokenAccounting(accounting *usage.TokenAccounting) tokenAccountingValue {
+	return tokenAccountingValue{accounting: accounting}
+}
+
+func (value tokenAccountingValue) Value() (driver.Value, error) {
+	if value.accounting == nil {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(value.accounting)
+	if err != nil {
+		return nil, err
+	}
+	return string(encoded), nil
+}
+
+func decodeStoredTokenAccounting(stored sql.NullString) (*usage.TokenAccounting, error) {
+	if !stored.Valid {
+		return nil, nil
+	}
+	var accounting usage.TokenAccounting
+	if err := json.Unmarshal([]byte(stored.String), &accounting); err != nil {
+		return nil, fmt.Errorf("read stored token accounting: %w", err)
+	}
+	return &accounting, nil
 }

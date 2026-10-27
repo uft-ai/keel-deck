@@ -1,3 +1,4 @@
+import type { TokenAccounting, TokenAccountingStatus } from './tokenAccounting';
 /**
  * Pricing types: the price book the server keeps per CPA model, priced from
  * OpenRouter by default, plus the per-channel multipliers. Rates are USD per 1M
@@ -14,14 +15,17 @@ export type PricingMode = 'auto' | 'linked' | 'custom';
 export type PricingMatchKind = '' | 'exact' | 'canonical' | 'normalized' | 'date_stripped' | 'alias' | 'linked';
 
 /**
- * One conditional rate override. It applies when every condition it carries holds: a prompt of at
- * least `min_prompt_tokens` (cached tokens included) and/or a request stamped inside the window
+ * One conditional rate override. It applies when every condition it carries holds: a request billed
+ * on one of `service_tiers`, a prompt of at least `min_prompt_tokens` (cached tokens included)
+ * and/or a request stamped inside the window
  * `[utc_start, utc_end)` in HHMM, which wraps past midnight when the end is not after the start.
  * The window is read on the `time_zone` clock - the vendor's billing clock - and on UTC when the
  * tier names none; the field names are the ones OpenRouter publishes UTC windows under.
  * A rate left out inherits the base price.
  */
 export interface PriceTier {
+  /** Upstream service tiers the tier is limited to, lowercase, such as ["priority", "fast"]. */
+  service_tiers?: string[];
   min_prompt_tokens?: number;
   utc_start?: number;
   utc_end?: number;
@@ -35,6 +39,7 @@ export interface PriceTier {
 
 export interface ModelPrice {
   model: string;
+  channel?: string;
   prompt_price_per_1m: number;
   completion_price_per_1m: number;
   cache_read_price_per_1m: number;
@@ -127,6 +132,7 @@ export interface PricingProvider {
 }
 
 export interface PricingResponse {
+  channel_models?: ModelPrice[];
   providers?: PricingProvider[];
   source: string;
   models: PricedModel[];
@@ -168,6 +174,8 @@ export interface TokenProfile {
 
 export interface PricingModelDetail {
   model: string;
+  channel?: string;
+  is_inherited?: boolean;
   price: ModelPrice | null;
   /** What auto mode would price the model at; null when nothing matches automatically. */
   automatic: { model: UpstreamModel; match_kind: PricingMatchKind } | null;
@@ -200,6 +208,7 @@ export interface BreakdownBucket {
 
 /** The request lock's own computation, re-run from the versions it locked. */
 export interface CostQuote {
+  service_tier?: string;
   tier_index?: number;
   tier?: PriceTier;
   buckets: BreakdownBucket[];
@@ -221,9 +230,14 @@ export interface ChannelVersion {
  * says whether re-running the lock from its versions agrees with it.
  */
 export interface RequestCostBreakdown {
+  accounting_status?: TokenAccountingStatus;
+  token_accounting?: TokenAccounting | null;
   status: 'priced' | 'unpriced' | 'legacy_unpriced' | 'invalid_price';
   stored_nanos?: number;
   stored_tier?: number;
+  /** The service tier the request was billed on, and whether the outbound request, client request or response named it. */
+  service_tier?: string;
+  service_tier_source?: 'request' | 'response' | 'outbound';
   price_version?: PriceVersion;
   channel?: ChannelVersion;
   quote?: CostQuote;

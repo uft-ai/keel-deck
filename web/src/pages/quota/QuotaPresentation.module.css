@@ -58,7 +58,7 @@
   font-size: var(--text-xs);
   background: var(--hover-inset);
   border: 1px solid var(--border-soft);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
 }
 
 .windows-list {
@@ -187,7 +187,7 @@
 .rec-banner {
   background: var(--hover-inset);
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   padding: 8px 10px;
   font-size: var(--text-xs);
   display: flex;
@@ -204,12 +204,16 @@
   color: var(--fg-2);
   line-height: 1.4;
   flex: 1;
+  /* A provider's own reason can be one long token; the banner wraps it instead of pushing the
+   * refresh beside it out of the row. */
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .banner-dot {
   width: 7px;
   height: 7px;
-  border-radius: var(--radius-xs);
+  border-radius: 999px;
   flex-shrink: 0;
 }
 
@@ -296,156 +300,5 @@
 .progress-reset {
   white-space: normal;
   overflow-wrap: anywhere;
-}
-
-.compact {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-  justify-content: center;
-}
-
-.head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  line-height: 1.2;
-  min-width: 0;
-}
-
-.head :global(.tag) {
-  height: 20px;
-  padding: 0 6px;
-  border-radius: var(--radius-xs);
-  font-size: var(--text-xs);
-  font-weight: 550;
-}
-
-.plan {
-  color: var(--fg-2);
-  background: var(--hover-inset);
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius-xs);
-  padding: 1px 6px;
-  font-size: var(--text-2xs);
-  font-weight: 550;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* A banked credit is a held entitlement, not a degraded state: the amber health token would
-   make a healthy row read as a warning beside the quota tag. Accent keeps it legible as an
-   affordance (the button beside it opens a confirmation) without borrowing health semantics. */
-.credit {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--accent);
-  font-family: var(--font-mono);
-  font-size: var(--text-2xs);
-  background: var(--hover-inset);
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius-xs);
-  padding: 1px 5px;
-}
-
-.observed {
-  margin-left: auto;
-  color: var(--meta);
-  font-family: var(--font-mono);
-  font-size: var(--text-2xs);
-  white-space: nowrap;
-}
-
-.windows {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
-  gap: 6px 16px;
-  min-width: 0;
-}
-
-.window {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  line-height: 1.2;
-  min-width: 0;
-}
-
-.window-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 6px;
-  line-height: 1.2;
-  min-width: 0;
-}
-
-.window-label {
-  color: var(--fg-2);
-  font-size: var(--text-xs);
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.window-value {
-  flex: none;
-  color: var(--fg);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-
-.window-foot {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 6px;
-  min-width: 0;
-}
-
-/* A clipped figure reads as a different, smaller number. Long full-digit estimates
-   must wrap within their own window, while short readings retain the single-line footer. */
-.window-capacity {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow-wrap: anywhere;
-  color: var(--fg-2);
-  font-family: var(--font-mono);
-  font-size: var(--text-2xs);
-  line-height: 1.2;
-  font-variant-numeric: tabular-nums;
-  white-space: normal;
-}
-
-.window-reset {
-  min-width: 0;
-  color: var(--meta);
-  font-family: var(--font-mono);
-  font-size: var(--text-2xs);
-  line-height: 1.2;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.empty {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  border: 1px dashed var(--border-soft);
-  border-radius: var(--radius-xs);
-  color: var(--meta);
-  font-size: var(--text-xs);
-  background: var(--hover-inset);
-  min-height: 38px;
 }
 

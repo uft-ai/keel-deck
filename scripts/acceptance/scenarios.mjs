@@ -1,8 +1,9 @@
 import { modelSquare, modelSquareFixtures, modelSquareLedgerFixtures } from './probes/modelSquare.mjs';
 import { requestInspectorResponse } from './request-inspector-fixture.mjs';
 import { mobileConsole } from './probes/mobileConsole.mjs';
+import { insights, insightsFixtures, insightsPhone } from './probes/insights.mjs';
 import { routeRenderError, routeLazyError } from './probes/routeError.mjs';
-import { agentWorkspace, agentExternal, agentFailureCopy, agentStream, agentNarrow, agentLive, agentQuestion, agentViews, agentReplace, agentAttach, agentFixtures } from './probes/agent.mjs';
+import { agentWorkspace, agentExternal, agentFailureCopy, agentStream, agentNarrow, agentLive, agentQuestion, agentAsk, agentViews, agentReplace, agentAttach, agentFollowUps, agentFixtures } from './probes/agent.mjs';
 import { playground, playgroundFixtures, playgroundNarrow } from './probes/playground.mjs';
 /**
  * The browser probe scenarios, as a registry rather than a script.
@@ -45,15 +46,19 @@ import {
   dashboardTokenHeatmapMobile,
   dashboardTokenHeatmapPruned,
 } from './probes/dashboardTokenHeatmap.mjs';
+import { dashboardLayout } from './probes/dashboardLayout.mjs';
 import { omcSettings } from './probes/omcSettings.mjs';
+import { sidebarNavCustomization } from './probes/sidebarNav.mjs';
+import { fontLibrary } from './probes/fontLibrary.mjs';
 import { auditTrail, auditTrailNarrow, logsFixtures, logsSources } from './probes/logsPage.mjs';
+import { routingFixtures, routingMap, routingNarrow } from './probes/routingMap.mjs';
 import {
   providerRateMarks,
   providerRateOverview,
   providerRateProviders,
   providerRateTraffic,
 } from './probes/providerRateMarks.mjs';
-import { overlayBackDismisses } from './probes/overlayHistory.mjs';
+import { browserNavigation } from './probes/browserNavigation.mjs';
 import { phoneListRendering } from './probes/phoneLists.mjs';
 import { pluginManagement, pluginManagementFixtures, pluginManagementNarrow } from './probes/pluginManagement.mjs';
 import { pricingBook, pricingFixtures, pricingFromRequestList } from './probes/pricingBook.mjs';
@@ -102,6 +107,8 @@ const pluginManagementWrites = [];
 const pricingBookWrites = [];
 const configBackupsLog = [];
 const modelSquareState = {};
+/** The live routing scenario's fixture, which the probe tells when a request is stored. */
+const routingLive = routingFixtures();
 
 const routeErrorFixtures = () => [
   [(url) => url.pathname.endsWith('/dashboard'), () => chartDashboard],
@@ -188,16 +195,18 @@ export const SCENARIOS = [
   },
   { id: 'agent', name: 'Agent opens on a centred composer, names its model there, authorizes inline, remembers its target and recovers the server conversation', options: { routes: agentFixtures() }, run: agentWorkspace },
   { id: 'agent-external', name: 'an external agent\'s approval link opens a standalone consent screen, and Agent shows how to connect one over MCP', options: { routes: agentFixtures() }, run: agentExternal },
-  { id: 'agent-question', name: 'Agent asks a question in the composer and continues once it is answered', options: { routes: agentFixtures() }, run: agentQuestion },
+  { id: 'agent-question', name: 'Agent asks with an inline OpenUI form and continues once it is submitted', options: { routes: agentFixtures() }, run: agentQuestion },
+  { id: 'agent-followups', name: 'Agent returns to the newest end when a suggestion sends on a phone', options: { routes: agentFixtures() }, run: agentFollowUps },
+  { id: 'agent-ask', name: 'Agent asks in its own panel, which takes the composer and answers in one decision', options: { routes: agentFixtures() }, run: agentAsk },
   { id: 'agent-live', name: 'Agent shows a sent message at once, queues the next one and keeps its reasoning', options: { routes: agentFixtures() }, run: agentLive },
-  { id: 'agent-views', name: 'Agent draws a canvas from frozen rows, fills the viewport with it and saves it as an image', options: { routes: agentFixtures() }, run: agentViews },
+  { id: 'agent-views', name: 'Agent draws an OpenUI program that reads conversation rows and runs an approved change', options: { routes: agentFixtures() }, run: agentViews },
   { id: 'agent-replace', name: 'Agent retries or edits the newest turn in place, unless that turn changed something', options: { routes: agentFixtures() }, run: agentReplace },
   { id: 'agent-attach', name: 'Agent takes text files and images with a message and refuses what is neither', options: { routes: agentFixtures() }, run: agentAttach },
   { id: 'agent-failure', name: 'Agent hands a refused message back and reports a failure as a sentence, not a code', options: { routes: agentFixtures() }, run: agentFailureCopy },
   { id: 'agent-stream', name: 'Agent coalesces tokens and follows live reasoning through Markdown layout changes', options: { routes: agentFixtures() }, run: agentStream },
-  { id: 'agent-narrow', name: 'Agent keeps its model named in the composer and its drawer follows native Back on phones', options: { routes: agentFixtures(), viewport: { width: 320, height: 850 } }, run: agentNarrow },
+  { id: 'agent-narrow', name: 'Agent keeps its model named in the composer and its drawer fits phones', options: { routes: agentFixtures(), viewport: { width: 320, height: 850 } }, run: agentNarrow },
   { id: 'playground', name: 'ephemeral multimodal playground streams and inspects safe requests', options: { routes: playgroundFixtures() }, run: playground },
-  { id: 'playground-narrow', name: 'playground settings follow native Back and fit a phone', options: { routes: playgroundFixtures(), viewport: { width: 320, height: 850 } }, run: playgroundNarrow },
+  { id: 'playground-narrow', name: 'playground settings fit a phone', options: { routes: playgroundFixtures(), viewport: { width: 320, height: 850 } }, run: playgroundNarrow },
   {
     id: 'omc-settings',
     name: 'OMC settings and the unit style it governs',
@@ -209,6 +218,25 @@ export const SCENARIOS = [
       ],
     },
     run: omcSettings,
+  },
+  {
+    // The rail is the shell's, and this scenario drives it from the settings page inside that
+    // shell: the panel that lists the entries, the rail it redraws, the group headings it must
+    // not leave empty and the phone sheet are four renderings of one choice, and no single
+    // component test can see them agree. The same panel arranges the entries inside their groups,
+    // which is a second claim about the shell rather than about the dialog.
+    id: 'sidebar-customization',
+    name: 'the rail shows the entries the operator keeps, in the order they arranged, and every page stays reachable',
+    // The rail is driven from the settings page, and one of the claims opens a hidden destination
+    // directly: the logs page's own reads are declared so that navigation is a page rather than a
+    // fixture the harness has to report.
+    options: { routes: logsFixtures([]) },
+    run: sidebarNavCustomization,
+  },
+  {
+    id: 'font-library',
+    name: 'typeface roles repaint the console, library families load from this origin, and the choice paints the first frame',
+    run: fontLibrary,
   },
   {
     id: 'column-alignment',
@@ -301,6 +329,22 @@ export const SCENARIOS = [
       ],
     },
     run: dashboardChartMarks,
+  },
+  {
+    // The board is the page's, so the scenario loads the dashboard with the chart fixtures and drives
+    // the arrangement editor on top of it: the board, the editor and the stored document are three
+    // renderings of one choice that no component test can see agree.
+    id: 'dashboard-layout',
+    name: 'the operator orders, sizes and hides dashboard widgets, and the board keeps the arrangement',
+    options: {
+      routes: [
+        [(url) => url.pathname.endsWith('/dashboard'), () => chartDashboard],
+        [(url) => url.pathname.endsWith('/dashboard/tail'), () => chartDashboard],
+        [(url) => url.pathname.endsWith('/dashboard/token-heatmap'), () => chartTokenHeatmap],
+        [(url) => url.pathname.endsWith('/dashboard/models'), () => chartDashboardModels],
+      ],
+    },
+    run: dashboardLayout,
   },
   {
     id: 'provider-rate-marks',
@@ -536,23 +580,10 @@ export const SCENARIOS = [
       assert('the search box raises no page error', errors.length === 0, errors.join(' | '));
     },
   },
-  /**
-   * The platform's Back button, which is the only dismissal a phone has that is always in reach.
-   *
-   * The fixtures are the minimum each surface needs. The dashboard appears because the probe
-   * arrives at every route through a real in-app navigation - a reload replaces the history
-   * entry rather than adding one, and Back would then have nowhere to go - and the dashboard is
-   * the hop that needs the most of its own data to render. Everything else is one request record
-   * for the list and one provider for its editor; a richer fixture would not change what is
-   * asserted, which is about the history entry an overlay pushed.
-   */
   {
-    id: 'overlay-back',
-    name: "overlays answer the platform's Back",
+    id: 'browser-navigation',
+    name: 'browser Back follows page history with overlays open',
     options: {
-      // A phone, because that is where the claim comes from: the hardware Back button and the
-      // edge gesture are the dismissals a phone always has in reach. The navigation sheet is a
-      // phone-only surface anyway, so a desktop viewport could not test it at all.
       viewport: { width: 390, height: 844 },
       routes: [
         [(url) => url.pathname.endsWith('/dashboard'), () => chartDashboard],
@@ -570,34 +601,16 @@ export const SCENARIOS = [
         ],
         [(url) => url.pathname.endsWith('/management/providers'), () => ({ providers: [pickerProvider], total: 1 })],
         ...oauthManagementFixtures.routes,
-        /* The key page's own data, so its add dialog is reachable: the dialog is the Modal-class
-           overlay this scenario covers. */
-        [(url) => url.pathname.endsWith('/management/api-keys'), () => ({
-          keys: [
-            { index: 0, key: 'omc-fixture-key-aaaaaaaaaaaaaaaa', fingerprint: 'fp-1', usage_fingerprint: 'ufp-1', length: 30, alias: 'Primary caller', alias_version: 1 },
-          ],
-          total: 1,
-        })],
-        [(url) => url.pathname.endsWith('/management/client-key-usage'), () => ({
-          window: { from: Date.now() - 86_400_000, to: Date.now() },
-          usage: [{ key_fingerprint: 'ufp-1', requests: 1284, failed: 3, total_tokens: 918_000, last_used_ms: Date.now() - 60_000 }],
-        })],
-        [(url) => url.pathname.endsWith('/management/config'), () => ({
-          scalars: {},
-          supported_keys: [],
-          revision: 'fixture-r1',
-          safe_yaml: 'access:\n  api-keys:\n    - omc-fixture-key-aaaaaaaaaaaaaaaa\n',
-        })],
       ],
     },
-    run: overlayBackDismisses,
+    run: browserNavigation,
   },
   /**
    * The console's touch rules, on a context that has a coarse pointer and no hover.
    *
    * `hasTouch` is the whole point of this scenario: the rules live in `@media (pointer: coarse)`
    * and `@media (hover: none)`, so on an ordinary context they are never exercised and the
-   * scenario would pass while testing nothing. See `createProbePage` for why it is `hasTouch`
+   * scenario would pass while testing nothing. The context sets `hasTouch`
    * without Playwright's `isMobile`.
    */
   {
@@ -703,7 +716,10 @@ export const SCENARIOS = [
     options: {
       routes: [
         ...systemFixtures(),
-        [(url) => url.pathname.endsWith('/usage/facets'), () => alignmentFacets],
+        [(url) => url.pathname.endsWith('/usage/facets'), () => ({ facets: {
+          ...alignmentFacets,
+          resolved_service_tiers: [{ value: 'priority', requests: 125 }],
+        } })],
         [
           (url) => /\/usage\/events\/\d+$/.test(url.pathname),
           (url) => interactionRecordDetail(Number(url.pathname.split('/').pop())),
@@ -776,9 +792,7 @@ export const SCENARIOS = [
   },
   {
     id: 'request-list-touch',
-    // Asserts motion frame by frame; a sibling context on the same CPU drops frames (ADR 0095).
-    shouldRunAlone: true,
-    name: 'on a phone the request list is the only scroller, and a finger folds and unfolds its header',
+    name: 'on a phone the browser scrolls the request list, the only scroller, under a finger',
     options: {
       // A phone short enough that the unfolded header leaves the list less than half the screen.
       viewport: { width: 390, height: 664 },
@@ -817,6 +831,18 @@ export const SCENARIOS = [
     name: 'the audit page lists the trail as sentences on the shared list surface, opens an entry in a drawer, counts it from the summary and filters on the server',
     options: { routes: logsFixtures(auditRequests) },
     run: (context) => auditTrail({ ...context, auditRequests }),
+  },
+  {
+    id: 'dashboard-routing',
+    name: 'the dashboard\'s live routing map joins its rows, and a request stored while it is open travels it unless motion is reduced',
+    options: { routes: [...routingLive.routes, ...routeErrorFixtures()] },
+    run: (context) => routingMap({ ...context, fixtures: routingLive }),
+  },
+  {
+    id: 'dashboard-routing-narrow',
+    name: 'a phone dashboard leaves out the live routing panel and its live stream',
+    options: { routes: [...routingFixtures().routes, ...routeErrorFixtures()], viewport: { width: 360, height: 800 } },
+    run: routingNarrow,
   },
   {
     id: 'audit-trail-narrow',
@@ -869,14 +895,26 @@ export const SCENARIOS = [
     run: (context) => configBackups({ ...context, log: configBackupsLog }),
   },
   {
+    id: 'insights',
+    name: 'Insights stands its tiles in one row, paints the trend in series tokens in both modes, commits a dragged window and narrows from a ranking',
+    options: { routes: insightsFixtures() },
+    run: insights,
+  },
+  {
+    id: 'insights-phone',
+    name: 'Insights fits a phone with two tiles per row and leaves out the flow figure and the matrix',
+    options: { routes: insightsFixtures(), viewport: { width: 390, height: 844 }, hasTouch: true },
+    run: insightsPhone,
+  },
+  {
     id: 'model-square',
-    name: 'advertised models form maker sections with copyable call names, price and request linkage, details and native Back',
+    name: 'advertised models form maker sections with copyable call names, price and request linkage, and details',
     options: { routes: [...modelSquareFixtures(modelSquareState), ...modelSquareLedgerFixtures()] },
     run: (context) => modelSquare({ ...context, state: modelSquareState }),
   },
   {
     id: 'mobile-console',
-    name: 'every console route fits phones and the shared tools follow native Back',
+    name: 'every console route fits phones and the shared tools are reachable',
     options: {
       viewport: { width: 390, height: 844 },
       hasTouch: true,

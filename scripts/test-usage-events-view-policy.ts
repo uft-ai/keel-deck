@@ -17,6 +17,7 @@ import assert from 'node:assert/strict';
 import {
   applyTimeWindow,
   clearAllFilters,
+  isSearchOnlyChange,
   mergeFilters,
   replaceFilters,
   viewPreferenceFromUrl,
@@ -29,7 +30,6 @@ import {
   isListStale,
   isViewChange,
   pendingArrivalCount,
-  shouldPoll,
 } from '../web/src/components/usage/pollingPolicy.ts';
 import {
   presetKeys,
@@ -97,6 +97,14 @@ test('a filter edit never touches the pagination cursor it is about to invalidat
   // result set cannot be reused), not something a filter rewrite does silently.
   const before = new URLSearchParams('preset=1h&cursor=abc&model=o3');
   assert.equal(replaceFilters(before, { provider: ['openai'] }).get('cursor'), 'abc');
+});
+
+test('a search is a coalesced history step even when other filters stay applied', () => {
+  assert.equal(isSearchOnlyChange({ model: ['linked-model'] }, { model: ['linked-model'], q: ['first'] }), true);
+  assert.equal(isSearchOnlyChange({ model: ['linked-model'], q: ['first'] }, { model: ['linked-model'], q: ['second'] }), true);
+  assert.equal(isSearchOnlyChange({ model: ['linked-model'], q: ['first'] }, { model: ['linked-model'] }), true);
+  assert.equal(isSearchOnlyChange({ model: ['linked-model'] }, { model: ['other'], q: ['first'] }), false);
+  assert.equal(isSearchOnlyChange({}, {}), false);
 });
 
 // ---------------------------------------------------------------------------
@@ -397,34 +405,6 @@ test('a disposed controller commits nothing', () => {
   // nothing will cancel.
   search.change('after-dispose', (value) => commits.push(value));
   assert.equal(clock.pendingCount(), 0);
-});
-
-// ---------------------------------------------------------------------------
-// The polling decision
-// ---------------------------------------------------------------------------
-
-test('a tick runs only when the switch is on, the tab is visible and nothing else is reading', () => {
-  assert.equal(
-    shouldPoll({ isAutoRefresh: true, isVisible: true, isFetching: false, isSyncing: false }),
-    true,
-  );
-});
-
-test('every reason to skip a tick is honoured', () => {
-  const base = { isAutoRefresh: true, isVisible: true, isFetching: false, isSyncing: false };
-  assert.equal(shouldPoll({ ...base, isAutoRefresh: false }), false, 'off means no ticks');
-  assert.equal(shouldPoll({ ...base, isVisible: false }), false, 'a hidden tab has no reader');
-  assert.equal(shouldPoll({ ...base, isFetching: true }), false, 'a slow query cannot stack reads');
-  assert.equal(shouldPoll({ ...base, isSyncing: true }), false, 'a sync owns the next refresh');
-});
-
-test('the cadence is not a round-trip afterthought', () => {
-  // The tick fires on the interval regardless of how long the previous read took;
-  // the in-flight guard skips a tick rather than delaying the schedule. That is
-  // the difference between a 10s cadence and "10s after the last response".
-  const base = { isAutoRefresh: true, isVisible: true, isSyncing: false };
-  assert.equal(shouldPoll({ ...base, isFetching: true }), false, 'a busy read skips this tick');
-  assert.equal(shouldPoll({ ...base, isFetching: false }), true, 'the next tick still runs on schedule');
 });
 
 test('a poll is not a view change, but moving to another page or filter set is', () => {

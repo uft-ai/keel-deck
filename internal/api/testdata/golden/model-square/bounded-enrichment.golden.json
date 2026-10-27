@@ -1,0 +1,90 @@
+{
+  "metadata_updated_at": "2026-10-05",
+  "model_info": {},
+  "models": [
+    {
+      "call_point": "scale-free",
+      "id": "scale-free",
+      "vision": "unknown"
+    },
+    {
+      "call_point": "scale-inline",
+      "id": "scale-inline",
+      "vision": "unknown"
+    },
+    {
+      "call_point": "scale-paid",
+      "id": "scale-paid",
+      "vision": "unknown"
+    },
+    {
+      "call_point": "team/scale-native",
+      "id": "team/scale-native",
+      "vision": "unknown"
+    }
+  ],
+  "partial": [
+    "routes"
+  ],
+  "providers": [
+    {
+      "family": "codex",
+      "id": "oauth:codex",
+      "is_oauth": true,
+      "name": "codex"
+    },
+    {
+      "family": "grok",
+      "id": "oauth:grok",
+      "is_oauth": true,
+      "name": "grok"
+    },
+    {
+      "family": "openai-compatibility",
+      "id": "openai-compat-0",
+      "is_oauth": false,
+      "name": "relay"
+    }
+  ],
+  "routes": [
+    {
+      "call_point": "scale-free",
+      "configuration": null,
+      "name_scope": "unknown",
+      "provider_id": "oauth:grok",
+      "reference_id": "",
+      "upstream_model": "scale-free"
+    },
+    {
+      "call_point": "scale-inline",
+      "configuration": null,
+      "name_scope": "unknown",
+      "provider_id": "oauth:codex",
+      "reference_id": "",
+      "upstream_model": "scale-inline"
+    },
+    {
+      "call_point": "team/scale-native",
+      "configuration": {
+        "input_modalities": null,
+        "max_context_length": null,
+        "max_output_tokens": null,
+        "native": null,
+        "operations": null,
+        "output_modalities": null
+      },
+      "name_scope": "provider",
+      "provider_id": "openai-compat-0",
+      "reference_id": "",
+      "upstream_model": "scale-upstream"
+    },
+    {
+      "call_point": "scale-paid",
+      "configuration": null,
+      "name_scope": "unknown",
+      "provider_id": "",
+      "reference_id": "",
+      "upstream_model": ""
+    }
+  ]
+}

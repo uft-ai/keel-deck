@@ -230,6 +230,7 @@ type ThinkingSupport struct {
 }
 
 type ModelAlias struct {
+	OpenAPI          *bool            `json:"openapi,omitempty"`
 	Name             string           `json:"name"`
 	Alias            string           `json:"alias,omitempty"`
 	DisplayName      string           `json:"display-name,omitempty"`
@@ -469,8 +470,10 @@ func pricingEndpointHost(rawURL string) string {
 }
 
 type ConfiguredModelSnapshot struct {
-	Models    map[string]string
-	Providers []ConfiguredModelProvider
+	Models          map[string]string
+	Providers       []ConfiguredModelProvider
+	OAuthAliases    map[string][]OAuthModelAlias
+	HasOAuthAliases bool
 }
 
 func (c *Client) ListConfiguredModelCatalog(ctx context.Context) (map[string]string, error) {
@@ -478,9 +481,29 @@ func (c *Client) ListConfiguredModelCatalog(ctx context.Context) (map[string]str
 	return snapshot.Models, err
 }
 
-// ListConfiguredModelSnapshot reads membership in the same sweep as aliases so
-// console reads never need to fan out across individual credentials.
+// ListConfiguredModelSnapshot is exhaustive and refuses partial results because
+// pricing replaces persisted membership from it. A failed source must not prune rates.
 func (c *Client) ListConfiguredModelSnapshot(ctx context.Context) (ConfiguredModelSnapshot, error) {
+	snapshot, err := c.listConfiguredModelSnapshot(ctx, -1)
+	if err != nil {
+		return ConfiguredModelSnapshot{}, err
+	}
+	return snapshot, nil
+}
+
+// Two waves are enough to enrich small installations without a per-account
+// network cost on larger ones; unknown membership remains explicitly partial.
+const MODEL_PROVENANCE_READ_LIMIT = 8
+
+// ListConfiguredModelProvenance bounds credential lookups for read-only enrichment.
+// It returns known membership even on error; callers must mark it incomplete and
+// must never use this snapshot to replace a persisted catalog. The caller owns
+// the deadline shared with its other enrichment reads.
+func (c *Client) ListConfiguredModelProvenance(ctx context.Context) (ConfiguredModelSnapshot, error) {
+	return c.listConfiguredModelSnapshot(ctx, MODEL_PROVENANCE_READ_LIMIT)
+}
+
+func (c *Client) listConfiguredModelSnapshot(ctx context.Context, maxModelReads int) (ConfiguredModelSnapshot, error) {
 	if c == nil {
 		return ConfiguredModelSnapshot{}, errors.New("CPA client is not initialized")
 	}
@@ -524,6 +547,8 @@ func (c *Client) ListConfiguredModelSnapshot(ctx context.Context) (ConfiguredMod
 		}
 	}
 	var errs []error
+	var oauthAliases map[string][]OAuthModelAlias
+	hasOAuthAliases := false
 
 	if authResp, err := c.AuthFiles(ctx); err != nil {
 		errs = append(errs, fmt.Errorf("auth-files: %w", err))
@@ -538,12 +563,16 @@ func (c *Client) ListConfiguredModelSnapshot(ctx context.Context) (ConfiguredMod
 			if aliasErr != nil {
 				errs = append(errs, fmt.Errorf("oauth model aliases: %w", aliasErr))
 			}
+			hasOAuthAliases = aliasErr == nil
 			break
 		}
-		// Auth-files commonly omits its models. Resolve missing lists in waves
-		// of at most four, not one HTTP call per card/render or unbounded fanout.
+		oauthAliases = aliases
+		// Credential membership can vary with account tier and routing rules, so a
+		// fetched list only describes that credential, never its entire family.
 		resolved := make([][]AuthModel, len(authResp.Files))
 		failures := make([]error, len(authResp.Files))
+		modelReads := 0
+		hasSkippedModels := false
 		for start := 0; start < len(authResp.Files); start += 4 {
 			var wg sync.WaitGroup
 			for i := start; i < min(start+4, len(authResp.Files)); i++ {
@@ -559,6 +588,11 @@ func (c *Client) ListConfiguredModelSnapshot(ctx context.Context) (ConfiguredMod
 					failures[i] = errors.New("auth file is missing its model identity")
 					continue
 				}
+				if ctx.Err() != nil || (maxModelReads >= 0 && modelReads >= maxModelReads) {
+					hasSkippedModels = true
+					continue
+				}
+				modelReads++
 				wg.Add(1)
 				go func(i int, name string) {
 					defer wg.Done()
@@ -573,6 +607,13 @@ func (c *Client) ListConfiguredModelSnapshot(ctx context.Context) (ConfiguredMod
 				}(i, file.Name)
 			}
 			wg.Wait()
+		}
+		if hasSkippedModels {
+			if err := ctx.Err(); err != nil {
+				errs = append(errs, err)
+			} else {
+				errs = append(errs, errors.New("credential model discovery limit reached"))
+			}
 		}
 		for i, models := range resolved {
 			if failures[i] != nil {
@@ -651,15 +692,7 @@ func (c *Client) ListConfiguredModelSnapshot(ctx context.Context) (ConfiguredMod
 		}
 	}
 
-	if len(errs) > 0 {
-		// Refused whole rather than published partially: the pricing service
-		// replaces its model table from this snapshot, so a catalog missing every
-		// provider that failed to read would prune the rates of models that are
-		// still configured (see pricing.Service.refreshModels).
-		return ConfiguredModelSnapshot{}, &catalogError{failures: errs}
-	}
-
-	snapshot := ConfiguredModelSnapshot{Models: modelSet, Providers: make([]ConfiguredModelProvider, 0, len(providers))}
+	snapshot := ConfiguredModelSnapshot{Models: modelSet, Providers: make([]ConfiguredModelProvider, 0, len(providers)), OAuthAliases: oauthAliases, HasOAuthAliases: hasOAuthAliases}
 	for _, provider := range providers {
 		sort.Strings(provider.Models)
 		provider.Models = slices.Compact(provider.Models)
@@ -669,6 +702,9 @@ func (c *Client) ListConfiguredModelSnapshot(ctx context.Context) (ConfiguredMod
 		snapshot.Providers = append(snapshot.Providers, *provider)
 	}
 	sort.Slice(snapshot.Providers, func(i, j int) bool { return snapshot.Providers[i].ID < snapshot.Providers[j].ID })
+	if len(errs) > 0 {
+		return snapshot, &catalogError{failures: errs}
+	}
 	return snapshot, nil
 }
 

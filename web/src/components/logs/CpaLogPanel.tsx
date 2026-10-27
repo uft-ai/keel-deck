@@ -2,7 +2,7 @@ import { useTimeZone } from '../../utils/TimeZoneProvider';
 import { formatGatewayTimestamp } from '../../utils/time';
 import React from 'react';
 import { createPortal } from 'react-dom';
-import { Button, Checkbox, Segmented, Select, Tabs, Tooltip, Typography } from 'antd';
+import { Button, Checkbox, Segmented, Select, Tabs, Typography } from 'antd';
 import {
   ClearOutlined,
   DownloadOutlined,
@@ -60,6 +60,8 @@ import { ConfirmAction } from '../common/ConfirmAction';
 import { Toolbar } from '../common/Toolbar';
 import { Count } from '../common/Count';
 import './logs.css';
+import { Tooltip } from '../common/Tooltip';
+import { TAB_OVERFLOW } from '../common/tabOverflow';
 
 const { Text } = Typography;
 
@@ -434,7 +436,7 @@ export const CpaLogPanel: React.FC = () => {
                   onClick={() => setIsFullscreen(!isFullscreen)}
                 />
               </Tooltip>
-              <RefreshButton isIconOnly label={t('logs.reload')} onRefresh={tail.reload} disabled={!isTail} />
+              <RefreshButton label={t('logs.reload')} onRefresh={tail.reload} disabled={!isTail} />
               {/* Truncating the file is irreversible, so it asks first - in the same popover every
                   other destructive action in the console uses. */}
               <ConfirmAction
@@ -444,10 +446,9 @@ export const CpaLogPanel: React.FC = () => {
                 isConfirming={truncate.isPending}
                 onConfirm={() => truncate.mutate()}
                 disabled={isDemo}
+                tooltip={isDemo ? t('demo.blocked') : t('logs.clear')}
               >
-                <Tooltip title={isDemo ? t('demo.blocked') : t('logs.clear')}>
-                  <Button icon={<ClearOutlined />} disabled={isDemo} aria-label={t('logs.clear')} />
-                </Tooltip>
+                <Button icon={<ClearOutlined />} disabled={isDemo} aria-label={t('logs.clear')} />
               </ConfirmAction>
             </div>
           </Toolbar>
@@ -536,7 +537,7 @@ export const CpaLogPanel: React.FC = () => {
             </div>
           )}
 
-          <Tabs
+          <Tabs more={TAB_OVERFLOW}
             size="small"
             activeKey={tab}
             onChange={(key) => setTab(key as 'tail' | 'errors')}

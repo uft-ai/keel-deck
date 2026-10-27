@@ -1,6 +1,6 @@
 import { useTimeZone } from '../../utils/TimeZoneProvider';
 import React from 'react';
-import { Button, Tooltip, Typography } from 'antd';
+import { Button, Typography } from 'antd';
 import dayjs from '../../utils/time';
 import { PauseCircleOutlined, PlayCircleOutlined } from '../icons';
 import { useT } from '../../i18n';
@@ -14,6 +14,7 @@ import { LoadFailure, Notice } from '../feedback';
 import { SearchInput } from '../common/SearchInput';
 import { Toolbar } from '../common/Toolbar';
 import './logs.css';
+import { Tooltip } from '../common/Tooltip';
 
 const { Text } = Typography;
 
@@ -123,7 +124,7 @@ export const ServiceLogPanel: React.FC = () => {
               aria-label={tail.paused ? t('logs.resume') : t('logs.pause')}
             />
           </Tooltip>
-          <RefreshButton isIconOnly label={t('logs.reload')} onRefresh={tail.reload} />
+          <RefreshButton label={t('logs.reload')} onRefresh={tail.reload} />
         </div>
       </Toolbar>
 

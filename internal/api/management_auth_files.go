@@ -2,9 +2,11 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/oh-my-cpa/oh-my-cpa/internal/cpa/management"
 	"github.com/oh-my-cpa/oh-my-cpa/internal/operations"
+	"github.com/oh-my-cpa/oh-my-cpa/internal/security"
 )
 
 const (
@@ -28,26 +31,31 @@ var errManagementAuthFileNotFound = errors.New("auth file not found")
 // shape. Account, path, token, metadata, and other credential-bearing fields
 // are not part of this DTO; downloads are a separate, explicit admin action.
 type managementAuthFileResponse struct {
-	Name           string                                `json:"name"`
-	AuthIndex      string                                `json:"auth_index,omitempty"`
-	Type           string                                `json:"type,omitempty"`
-	Provider       string                                `json:"provider,omitempty"`
-	Status         string                                `json:"status,omitempty"`
-	StatusMessage  string                                `json:"status_message,omitempty"`
-	Disabled       bool                                  `json:"disabled"`
-	Unavailable    bool                                  `json:"unavailable"`
-	RuntimeOnly    bool                                  `json:"runtime_only"`
-	Email          string                                `json:"email,omitempty"`
-	ProjectID      string                                `json:"project_id,omitempty"`
-	Success        int64                                 `json:"success"`
-	Failed         int64                                 `json:"failed"`
-	RecentRequests []managementAuthFileRequestBucket     `json:"recent_requests,omitempty"`
-	Quota          *managementQuotaObservation           `json:"quota,omitempty"`
-	ModelQuotas    map[string]managementQuotaObservation `json:"model_quotas,omitempty"`
-	Models         []managementAuthFileModel             `json:"models,omitempty"`
-	Priority       int                                   `json:"priority,omitempty"`
-	Weight         int64                                 `json:"weight,omitempty"`
-	Note           string                                `json:"note,omitempty"`
+	SIWCStatus        string                                `json:"siwc_status,omitempty"`
+	SIWCBindSupported bool                                  `json:"siwc_bind_supported"`
+	UseSIWC           bool                                  `json:"use_siwc"`
+	SIWCBound         bool                                  `json:"siwc_bound"`
+	SIWCExpiresAt     string                                `json:"siwc_expires_at,omitempty"`
+	Name              string                                `json:"name"`
+	AuthIndex         string                                `json:"auth_index,omitempty"`
+	Type              string                                `json:"type,omitempty"`
+	Provider          string                                `json:"provider,omitempty"`
+	Status            string                                `json:"status,omitempty"`
+	StatusMessage     string                                `json:"status_message,omitempty"`
+	Disabled          bool                                  `json:"disabled"`
+	Unavailable       bool                                  `json:"unavailable"`
+	RuntimeOnly       bool                                  `json:"runtime_only"`
+	Email             string                                `json:"email,omitempty"`
+	ProjectID         string                                `json:"project_id,omitempty"`
+	Success           int64                                 `json:"success"`
+	Failed            int64                                 `json:"failed"`
+	RecentRequests    []managementAuthFileRequestBucket     `json:"recent_requests,omitempty"`
+	Quota             *managementQuotaObservation           `json:"quota,omitempty"`
+	ModelQuotas       map[string]managementQuotaObservation `json:"model_quotas,omitempty"`
+	Models            []managementAuthFileModel             `json:"models,omitempty"`
+	Priority          int                                   `json:"priority,omitempty"`
+	Weight            int64                                 `json:"weight,omitempty"`
+	Note              string                                `json:"note,omitempty"`
 }
 
 type managementAuthFileRequestBucket struct {
@@ -71,10 +79,34 @@ type managementAuthFilesResponse struct {
 	Total int                          `json:"total"`
 }
 
+// MarshalJSON preserves raw proxy authentication only for server-side write
+// verification. Browser drafts receive a stable route display, so unchanged
+// proxy fields remain absent from patches of other credential settings.
+func (fields managementAuthFileSafeFields) MarshalJSON() ([]byte, error) {
+	type wireFields managementAuthFileSafeFields
+	safe := wireFields(fields)
+	if safe.ProxyURL != "" {
+		parsed, err := url.Parse(safe.ProxyURL)
+		if err != nil || parsed.Scheme == "" || parsed.Hostname() == "" {
+			if !strings.EqualFold(safe.ProxyURL, "direct") && !strings.EqualFold(safe.ProxyURL, "none") {
+				safe.ProxyURL = security.RedactedValue
+			}
+		} else {
+			if parsed.User != nil {
+				parsed.User = url.User(security.RedactedValue)
+			}
+			parsed.RawQuery, parsed.Fragment, parsed.RawFragment = "", "", ""
+			safe.ProxyURL = parsed.String()
+		}
+	}
+	return json.Marshal(safe)
+}
+
 // managementAuthFileSafeFields is the allowlisted subset of an auth file that
 // the edit drawer may read. The raw file is downloaded only inside the Go
 // process; credentials, tokens and free-form metadata never enter the response.
 type managementAuthFileSafeFields struct {
+	UseSIWC        *bool    `json:"use_siwc,omitempty"`
 	Name           string   `json:"name"`
 	Priority       *int     `json:"priority,omitempty"`
 	Weight         *int64   `json:"weight,omitempty"`
@@ -94,6 +126,16 @@ type managementAuthFileSafeFields struct {
 	// ModelAliases are the credential's own aliases, resolved before its
 	// provider's OAuth aliases.
 	ModelAliases []managementOAuthModelAlias `json:"model_aliases,omitempty"`
+	// OpenAPI is nil while a Vertex service account leaves the partner-model
+	// route to CPA's model-name detection; false is an explicit opt-out.
+	OpenAPI *bool `json:"openapi,omitempty"`
+	// OpenAPILocation overrides the credential's location for that route only.
+	OpenAPILocation string   `json:"openapi_location,omitempty"`
+	OpenAPIModels   []string `json:"openapi_models,omitempty"`
+	// OpenAPILegacyModels are names CPA also registers from the credential's
+	// `models` key. The console never writes that key, so they are reported
+	// rather than edited: removing a name from OpenAPIModels does not remove it.
+	OpenAPILegacyModels []string `json:"openapi_legacy_models,omitempty"`
 }
 
 func (h *Handler) listManagementAuthFiles(writer http.ResponseWriter, request *http.Request) {

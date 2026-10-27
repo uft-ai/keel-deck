@@ -23,13 +23,37 @@
  * this code rather than a claim about the environment.
  */
 import { applyQueryFilters } from './filters.mjs';
-import { DATASET, REFERENCE_MS, dashboardPresetOf, responseNameFor } from './routes.mjs';
+import { routingAt, signalInstantsBetween } from './liveRouting.mjs';
+import { DATASET, INSIGHTS_PATH_PREFIX, REFERENCE_MS, dashboardPresetOf, responseNameFor } from './routes.mjs';
 import { rebase } from './time.mjs';
 /** Marker the console reads to render its own demonstration notices. */
 const DEMO_HEADER = 'X-OMCPA-Demo';
 
+/** Code for a read whose filters the dataset holds no capture for. */
+const UNCAPTURED_CODE = 'demo_uncaptured';
+
+/**
+ * The Insights rhythm's filters. The cube is filtered in the browser, so every filter
+ * works on it; the rhythm is filtered on the server, and the dataset holds it for the
+ * whole deployment only, so a filtered ask is told so rather than answered for everyone.
+ */
+const RHYTHM_FILTERS = ['api_key', 'model_alias', 'model', 'provider', 'auth_index'];
+
+const WEEK_MS = 7 * 86_400_000;
+const INSIGHTS_REPLAY_PRESETS = new Set(['24h', '7d', '30d', '90d', 'all']);
+
 /** Refusal code the console renders as "this is disabled in the demonstration". */
 const REFUSED_CODE = 'demo_operation_refused';
+
+/**
+ * How long one live stream runs before it ends and the browser reconnects, and how often
+ * a quiet one says it is still there. Shorter than the gateway's own lifetime: a visitor
+ * is a stranger, and a connection held for nobody costs the same as one held for them.
+ */
+const LIVE_LIFETIME_MS = 120_000;
+const LIVE_HEARTBEAT_MS = 20_000;
+/** The gateway's spacing between two signals to one reader; closer ones merge. */
+const LIVE_MIN_GAP_MS = 250;
 
 const JSON_HEADERS = {
   'Content-Type': 'application/json; charset=utf-8',
@@ -176,7 +200,26 @@ function matchEventIdentity(decoded, pathname, dataset) {
 }
 
 function serve(entry, nowMs, url) {
-  const deltaMs = nowMs - REFERENCE_MS;
+  const isInsights = url.pathname.startsWith(INSIGHTS_PATH_PREFIX);
+  if (isInsights && (url.searchParams.has('from') || url.searchParams.has('to')
+    || !INSIGHTS_REPLAY_PRESETS.has((url.searchParams.get('preset') || '7d').trim().toLowerCase())
+    || !['', 'auto'].includes((url.searchParams.get('bucket') || '').trim().toLowerCase()))) {
+    return new Response(
+      JSON.stringify({ error: 'this Insights window or granularity is not captured in the demonstration', code: UNCAPTURED_CODE }),
+      { status: 404, headers: JSON_HEADERS },
+    );
+  }
+  if (url.pathname === `${INSIGHTS_PATH_PREFIX}rhythm` && RHYTHM_FILTERS.some((name) => url.searchParams.has(name))) {
+    return new Response(
+      JSON.stringify({ error: 'the demonstration holds this view for the whole deployment only', code: UNCAPTURED_CODE }),
+      { status: 404, headers: JSON_HEADERS },
+    );
+  }
+  // Whole weeks preserve local hours, Monday buckets and the rhythm grid
+  // together. Calendar presets need a fresh aggregation, so they are refused above.
+  const deltaMs = isInsights
+    ? Math.trunc((nowMs - REFERENCE_MS) / WEEK_MS) * WEEK_MS
+    : nowMs - REFERENCE_MS;
   let body = entry.body;
   try {
     // The identity is substituted on the capture and then re-based with it, rather than
@@ -193,7 +236,10 @@ function serve(entry, nowMs, url) {
       );
     }
     const decoded = rebase(applyQueryFilters(identity, url, { deltaMs, dataset: DATASET }), deltaMs);
-    const preset = url.searchParams.has('preset') ? dashboardPresetOf(url) : '';
+    // Replays are closed snapshots: their final bucket does not extend to the visitor's now.
+    if (isInsights) decoded.window.open_end = false;
+    // Insights captures are taken by preset name and already carry it.
+    const preset = url.searchParams.has('preset') && !isInsights ? dashboardPresetOf(url) : '';
     body = JSON.stringify(labelPreset(decoded, preset));
   } catch {
     // A body that is not JSON is served as captured. There are none today; this keeps
@@ -202,6 +248,63 @@ function serve(entry, nowMs, url) {
   return new Response(body, {
     status: entry.status,
     headers: { ...JSON_HEADERS, 'Content-Type': entry.content_type },
+  });
+}
+
+/**
+ * The live routing read, answered from the simulated traffic rather than the capture.
+ *
+ * A capture re-based on every read never holds a record newer than the last read's, so
+ * the panel it fed never saw a request land. The simulation is already on the viewer's
+ * clock, so nothing here is re-based.
+ */
+function serveRouting(url, nowMs) {
+  const after = url.searchParams.get('after');
+  const afterId = after !== null && /^\d+$/.test(after) ? Number(after) : undefined;
+  return new Response(JSON.stringify(routingAt(nowMs, afterId, DATASET)), { status: 200, headers: JSON_HEADERS });
+}
+
+/**
+ * The live usage stream: `ready`, then `usage` whenever a simulated attempt is recorded,
+ * framed as the gateway frames it (`internal/api/usage_live.go`). The console reads on
+ * each signal, so the routing panel plays requests as they land instead of polling.
+ */
+function serveLive(nowMs) {
+  const encoder = new TextEncoder();
+  const timers = new Set();
+  const signals = signalInstantsBetween(nowMs, nowMs + LIVE_LIFETIME_MS, DATASET, LIVE_MIN_GAP_MS);
+  const stream = new ReadableStream({
+    start(controller) {
+      const later = (delayMs, run) => {
+        const timer = setTimeout(() => {
+          timers.delete(timer);
+          run();
+        }, Math.max(0, delayMs));
+        timers.add(timer);
+      };
+      const write = (frame) => controller.enqueue(encoder.encode(frame));
+      write('retry: 2000\nevent: ready\ndata: {}\n\n');
+      // The read a signal triggers must find the record, so it fires just after the instant.
+      for (const at of signals) later(at - nowMs + 20, () => write('event: usage\ndata: {}\n\n'));
+      for (let at = LIVE_HEARTBEAT_MS; at < LIVE_LIFETIME_MS; at += LIVE_HEARTBEAT_MS) later(at, () => write(': keepalive\n\n'));
+      later(LIVE_LIFETIME_MS, () => {
+        for (const timer of timers) clearTimeout(timer);
+        timers.clear();
+        controller.close();
+      });
+    },
+    cancel() {
+      for (const timer of timers) clearTimeout(timer);
+      timers.clear();
+    },
+  });
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-store',
+      [DEMO_HEADER]: 'active',
+    },
   });
 }
 
@@ -228,6 +331,8 @@ export default {
     // overview reported the gateway connected. A hand-written response beside a generated
     // dataset is one that drifts from it, and this one drifted immediately.
     const name = responseNameFor(request);
+    if (name === 'usage-routing') return serveRouting(new URL(request.url), Date.now());
+    if (name === 'usage-live') return serveLive(Date.now());
     const entry = name ? DATASET.responses[name] : undefined;
     if (!entry) return notFoundResponse(pathname);
 

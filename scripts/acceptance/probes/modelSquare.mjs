@@ -52,16 +52,26 @@ const priced = (model, prompt, completion, usage30d) => ({
   model, prompt_price_per_1m: prompt, completion_price_per_1m: completion, cache_read_price_per_1m: prompt / 10, cache_write_price_per_1m: prompt * 1.25,
   price_multiplier: 1, tiers: [], source: 'manual', upstream_id: '', match_kind: '', mode: 'custom', synced_at_ms: 0, updated_at_ms: 0, usage_30d: usage30d,
 });
-// Every other advertised name is unpriced, whether the book lists it or not.
+// Prices belong to the routed upstream model, shared or per channel; request counts keep the
+// advertised call names. Each connection has its own channel, so one Gemma connection's price
+// is not its siblings'.
+const channelOf = provider => (provider.is_oauth ? provider.family : `openai-compatible-${provider.id}`);
+const SHARED_PRICES = [priced('gpt-5', 1.25, 10, usage(120, 14.2)), priced('deepseek-r1', 0.55, 2.19, usage(8, 0.4)), priced('deepseek-v4-flash', 0.075, 0.3, usage(3, 0.01))];
 const PRICE_BOOK = {
-  source: 'openrouter', providers: [], channels: [], upstream_count: 0, sync: { known: false, running: false, state: null },
-  models: [priced('gpt-5', 1.25, 10, usage(120, 14.2)), priced('reasoner', 0.55, 2.19, usage(8, 0.4)), priced('deepseek-v4-flash', 0.075, 0.3, usage(3, 0.01)), priced('g0/gemma4', 0.2, 0.8, usage(1, 0.01))],
-  unpriced: [{ model: 'team/fast', usage_30d: usage(12, null), suggestions: [] }],
+  source: 'openrouter',
+  providers: DIRECTORY.providers.map(provider => ({ ...provider,
+    channel: channelOf(provider), priority: 0,
+    models: [...new Set(ROUTES.filter(route => route.provider_id === provider.id).map(route => route.upstream_model))],
+  })),
+  channel_models: [{ ...priced('gemma4', 0.2, 0.8, usage(1, 0.01)), channel: channelOf(GEMMA_CONNECTIONS[0]) }],
+  channels: [], upstream_count: 0, sync: { known: false, running: false, state: null },
+  models: SHARED_PRICES,
+  unpriced: [...new Set(ROUTES.map(route => route.upstream_model))].filter(model => model && !SHARED_PRICES.some(row => row.model === model)).map(model => ({ model, usage_30d: usage(0, null), suggestions: [] })),
 };
 const RECENT_REQUESTS = {
   window: { from: 0, to: 0, bucket_ms: 0 },
   facets: {
-    models: [], providers: [], api_group_keys: [], auth_indexes: [], sources: [], executors: [], auth_types: [], reasoning_efforts: [], service_tiers: [],
+    models: [], providers: [], api_group_keys: [], auth_indexes: [], sources: [], executors: [], auth_types: [], reasoning_efforts: [], service_tiers: [], resolved_service_tiers: [],
     model_aliases: [{ value: 'gpt-5', requests: 1234 }, { value: 'team/fast', requests: 12 }],
   },
 };
@@ -83,7 +93,9 @@ export function modelSquareLedgerFixtures() {
     [(url) => url.pathname.endsWith('/pricing/catalog'), () => ({ models: [] })],
     [(url) => /\/pricing\/models\/[^/]+$/.test(url.pathname), (url) => {
       const model = decodeURIComponent(url.pathname.split('/').at(-1));
-      return { model, price: PRICE_BOOK.models.find(row => row.model === model) ?? null, automatic: null, suggestions: [], candidate: null, versions: [], profile: null };
+      const channel = url.searchParams.get('channel');
+      const rows = channel ? PRICE_BOOK.channel_models.filter(row => row.channel === channel) : PRICE_BOOK.models;
+      return { model, price: rows.find(row => row.model === model) ?? null, automatic: null, suggestions: [], candidate: null, versions: [], profile: null };
     }],
     [(url) => url.pathname.endsWith('/usage/facets'), () => RECENT_REQUESTS],
     [(url) => url.pathname.includes('/usage/events'), () => ({ items: [], has_more: false, limit: 100 })],
@@ -136,7 +148,8 @@ export async function modelSquare({ base, page, context, check, state = {} }) {
   check('a card carries no reference specification', !/1,000,000|Reasoning|Tool calling/.test(deepseekText));
   const gemma = cardOf('Gemma 4 26B');
   check('eight connections preview the first three and count all eight', /8 connections/i.test(await gemma.innerText()) && await gemma.locator('[data-connection]').evaluateAll(rows => rows.map(row => row.innerText.split('\n')[0]).join('|')) === 'Alpha|Bravo|Charlie', await gemma.innerText());
-  check('a scoped connection row shows its own price', (await gemma.locator('[data-connection="openai-compat-10"]').innerText()).includes('$0.20 / $0.80'));
+  check('a scoped connection row shows its own channel price, not a sibling’s', (await gemma.locator('[data-connection="openai-compat-10"]').innerText()).includes('$0.20 / $0.80') && (await gemma.locator('[data-connection="openai-compat-11"]').innerText()).includes('Set price'));
+  check('a shared name reaching several targets offers per-connection prices', await cardOf('team/fast').getByRole('button', { name: 'Per-connection prices' }).count() > 0);
   check('a model without a global name says so instead of borrowing a scoped price', (await gemma.innerText()).includes('No global name') && (await cardOf('GPT-5').innerText()).includes('No global name'));
   check('a shared name says it may reach several models', await cardOf('team/fast').innerText().then(text => text.includes('Mixed models') && /Possible targets/i.test(text)));
   check('a name without provenance stays visible with an unknown reference', await cardOf('runtime-only').innerText().then(text => text.includes('Reference unknown') && text.includes('Unresolved connection')));
@@ -165,8 +178,8 @@ export async function modelSquare({ base, page, context, check, state = {} }) {
 
   await cardOf('GPT-5 mini').getByRole('button', { name: 'Set price for gpt-5-mini' }).click();
   await until(async () => (await drawer.locator('.ant-drawer-title').allInnerTexts()).some(title => title.includes('gpt-5-mini')), { label: 'price editor' });
-  check('Set price opens the shared editor for that exact name alone', await drawer.count() === 1 && !(await drawer.innerText()).includes('Served by'));
-  await page.goBack();
+  check('Set price opens the shared editor for the routed upstream on its connection', await drawer.count() === 1 && !(await drawer.innerText()).includes('Served by') && (await drawer.innerText()).includes('Team Relay'));
+  await drawer.locator('.ant-drawer-close').click();
   await drawer.waitFor({ state: 'hidden' });
 
   const status = page.locator('.model-square-page [role="status"]');
@@ -182,7 +195,17 @@ export async function modelSquare({ base, page, context, check, state = {} }) {
 
   await page.locator('[data-maker="openai"]').click();
   await until(async () => await cards.count() === 2, { label: 'maker filter' });
-  check('a maker filter shows that maker alone, and says how many', await sections.count() === 1 && (await status.innerText()) === `Showing 2 of ${CARD_COUNT}`);
+  check('a maker filter shows that maker alone, and says how many', await sections.count() === 1 && await page.locator('[data-maker="openai"]').getAttribute('aria-pressed') === 'true' && (await status.innerText()) === `Showing 2 of ${CARD_COUNT}`);
+  const makerSelection = await until(() => page.locator('[data-maker="openai"]').evaluate((button) => {
+    const probe = document.createElement('span');
+    probe.style.color = getComputedStyle(document.documentElement).getPropertyValue('--selected-inset').trim();
+    document.body.append(probe);
+    const expected = getComputedStyle(probe).color;
+    probe.remove();
+    const actual = getComputedStyle(button).backgroundColor;
+    return actual === expected ? { actual, expected } : undefined;
+  }), { label: 'maker selection fill', timeoutMs: 2_000 }).catch(() => undefined);
+  check('a selected maker chip takes the shared theme selection fill', makerSelection !== undefined, makerSelection ? makerSelection.actual : 'not selected-inset');
   await titleOf('GPT-5').click();
   await drawer.waitFor({ state: 'visible' });
   const panel = drawer.locator('[data-panel]');
@@ -198,9 +221,9 @@ export async function modelSquare({ base, page, context, check, state = {} }) {
     const [mark, name] = title.children;
     return Boolean(mark && name) && mark.getBoundingClientRect().width >= 20 && name.textContent === 'GPT-5 mini';
   }));
-  await page.goBack();
+  await drawer.locator('.ant-drawer-close').click();
   await drawer.waitFor({ state: 'hidden' });
-  check('one Back dismisses details and keeps the maker filter', new URL(page.url()).searchParams.get('maker') === 'openai' && await cards.count() === 2);
+  check('closing details after stepping keeps the maker filter', new URL(page.url()).searchParams.get('maker') === 'openai' && await cards.count() === 2);
   await page.locator('[data-maker="openai"]').click();
   await until(async () => await cards.count() === CARD_COUNT, { label: 'maker filter released' });
 
@@ -221,15 +244,15 @@ export async function modelSquare({ base, page, context, check, state = {} }) {
   await drawer.getByRole('button', { name: 'Next' }).click();
   await until(async () => (await drawer.locator('.ant-drawer-title').innerText()) === 'Gemma 4 26B', { label: 'next card' });
   check('Previous/Next resets to the neighbour’s global details', await panel.getAttribute('data-panel') === 'global');
-  await page.goBack();
+  await drawer.locator('.ant-drawer-close').click();
   await drawer.waitFor({ state: 'hidden' });
-  check('one Back dismisses the drawer after in-drawer navigation', page.url().endsWith('/model-square'));
+  check('one Close dismisses the drawer after in-drawer navigation', page.url().endsWith('/model-square'));
 
   await gemma.locator('button[class*="served-head"]').click();
   await drawer.waitFor({ state: 'visible' });
   check('the connection header opens the full list first', await panel.getAttribute('data-panel') === 'list' && await drawer.locator('[data-connection]').count() === 8);
   check('same-named connections are told apart', await drawer.locator('[data-connection]').filter({ hasText: 'Echo' }).evaluateAll(rows => new Set(rows.map(row => row.innerText)).size === 2));
-  await page.goBack();
+  await page.keyboard.press('Escape');
   await drawer.waitFor({ state: 'hidden' });
 
   const search = page.getByRole('textbox', { name: 'Search models or makers' });
@@ -241,27 +264,26 @@ export async function modelSquare({ base, page, context, check, state = {} }) {
   const externalLinks = drawer.locator('a[target="_blank"]');
   check('reference navigation uses new-tab links without opener access', await externalLinks.evaluateAll(links => links.length === 6 && links.every(link => link.rel.includes('noopener') && link.rel.includes('noreferrer'))));
   check('pi search uses the canonical model name', await drawer.locator('a[href="https://pi.dev/models?name=gpt-5"]').count() === 1);
-  await page.goBack();
+  await drawer.locator('.ant-drawer-close').click();
   await drawer.waitFor({ state: 'hidden' });
-  check('native Back dismisses details and preserves search', new URL(page.url()).searchParams.get('q') === 'team/fast');
+  check('closing details preserves search', page.url().includes('/model-square') && new URL(page.url()).searchParams.get('q') === 'team/fast');
   await search.fill('');
   await until(async () => await cards.count() === CARD_COUNT, { label: 'full directory' });
   await titleOf('DeepSeek R1').click();
   await drawer.waitFor({ state: 'visible' });
   check('a model with downloadable weights under an open-source license is named an open-source model', (await drawer.innerText()).includes('Open-source model') && (await drawer.innerText()).includes('MIT') && await drawer.locator('a[href="https://huggingface.co/deepseek-ai/DeepSeek-R1"]').count() === 1);
-  await page.goBack();
+  await drawer.locator('.ant-drawer-close').click();
   await drawer.waitFor({ state: 'hidden' });
   await titleOf('runtime-only').click();
   await drawer.waitFor({ state: 'visible' });
   check('an unmatched name keeps explicit unknown data and usable search links', (await drawer.innerText()).includes('No exact metadata match') && await drawer.locator('a[href="https://pi.dev/models?name=runtime-only"]').count() === 1);
-  // A refresh that removes the open card closes its drawer and its history entry together.
+  // A refresh that removes the open card closes its drawer.
   state.directory = { ...DIRECTORY, models: DIRECTORY.models.filter(model => model.id !== 'runtime-only') };
   // The modal drawer covers the page control, so its click is dispatched to it directly.
   await page.locator('.model-square-page').getByRole('button', { name: 'Refresh' }).dispatchEvent('click');
   await until(async () => await cards.count() === CARD_COUNT - 1, { label: 'refreshed directory' });
   await drawer.waitFor({ state: 'hidden' });
-  await until(async () => await page.evaluate(() => window.history.state?.omcOverlay === undefined), { label: 'overlay entry released' });
-  check('a refresh that removes the open card leaves no hidden overlay to consume Back', page.url().endsWith('/model-square'));
+  check('a refresh that removes the open card closes its drawer', page.url().endsWith('/model-square'));
   state.directory = undefined;
   await page.locator('.model-square-page').getByRole('button', { name: 'Refresh' }).click();
   await until(async () => await cards.count() === CARD_COUNT, { label: 'directory restored' });
@@ -299,7 +321,7 @@ export async function modelSquare({ base, page, context, check, state = {} }) {
     const drawerGeometry = await drawer.locator('.ant-drawer-body').evaluate(element => ({ overflow: element.scrollWidth - element.clientWidth, right: element.getBoundingClientRect().right }));
     check(`model details fit the ${width}px drawer`, drawerGeometry.overflow <= 1 && drawerGeometry.right <= width + 1, JSON.stringify(drawerGeometry));
     if (width === 320) await page.screenshot({ path: 'tmp/model-square-preview/details-phone.png', fullPage: true });
-    await page.goBack();
+    await drawer.locator('.ant-drawer-close').click();
     await drawer.waitFor({ state: 'hidden' });
   }
 }

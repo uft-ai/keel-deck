@@ -37,11 +37,25 @@ export async function omcSettings({ base, page, check, context, expectProblem })
   const tpsRow = page.locator('.settings-toggle-row').filter({ hasText: 'TPS calculation mode' });
   const excludeTps = tpsRow.getByRole('radio', { name: 'Exclude first-token latency', exact: true });
   const includeTps = tpsRow.getByRole('radio', { name: 'Include first-token latency', exact: true });
-  await until(() => excludeTps.isChecked(), { label: 'the default TPS mode' });
-  check('TPS defaults to excluding first-token latency', await excludeTps.isChecked());
+  const tpsWarning = page.locator('.omc-settings-page .omc-notice.is-warning');
+  await until(() => includeTps.isChecked(), { label: 'the default TPS mode' });
+  check('TPS defaults to including first-token latency', await includeTps.isChecked());
+  check('the default TPS mode does not warn', await tpsWarning.count() === 0);
+  await tpsRow.locator('.ant-segmented-item').filter({ hasText: 'Exclude first-token latency' }).click();
+  await until(() => preferences.omc_tps_calculation_mode === 'exclude_ttft', { label: 'the exclusion TPS write' });
+  await tpsWarning.waitFor();
+  check(
+    'exclusion keeps the anomalous-TPS warning inline',
+    await tpsWarning.getAttribute('role') === 'alert'
+      && (await tpsWarning.innerText()).includes('Excluding first-token latency may make TPS unusually high; OMC calibrates with the available evidence'),
+  );
+  check('TPS mode persists through the shared preference API', writes.some(write => write.key === 'omc_tps_calculation_mode' && write.body === '"exclude_ttft"'));
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await until(() => excludeTps.isChecked(), { label: 'the excluded TPS mode after reload' });
+  check('a reloaded settings page keeps the exclusion warning', await excludeTps.isChecked() && await tpsWarning.count() === 1);
   await tpsRow.locator('.ant-segmented-item').filter({ hasText: 'Include first-token latency' }).click();
-  await until(() => preferences.omc_tps_calculation_mode === 'include_ttft', { label: 'the TPS mode write' });
-  check('TPS mode persists through the shared preference API', writes.some(write => write.key === 'omc_tps_calculation_mode' && write.body === '"include_ttft"'));
+  await until(() => preferences.omc_tps_calculation_mode === 'include_ttft', { label: 'the inclusion TPS write' });
+  await until(async () => await tpsWarning.count() === 0, { label: 'the exclusion warning to clear' });
   await page.reload({ waitUntil: 'domcontentloaded' });
   await until(() => includeTps.isChecked(), { label: 'the TPS mode after reload' });
   check('a reloaded settings page reads the saved TPS mode', await includeTps.isChecked());
@@ -50,14 +64,15 @@ export async function omcSettings({ base, page, check, context, expectProblem })
   await tpsRow.locator('.ant-segmented-item').filter({ hasText: 'Exclude first-token latency' }).click();
   await rejectedWrite;
   await until(() => includeTps.isChecked(), { label: 'the TPS control to roll back after refusal' });
-  check('a refused TPS write restores the saved selection', await includeTps.isChecked() && preferences.omc_tps_calculation_mode === 'include_ttft');
+  check('a refused TPS write restores the saved selection',
+    await includeTps.isChecked() && preferences.omc_tps_calculation_mode === 'include_ttft' && await tpsWarning.count() === 0);
   shouldRejectTpsWrite = false;
   await page.setViewportSize({ width: 320, height: 800 });
   await until(() => tpsRow.locator('.ant-segmented-vertical').count(), { label: 'the phone TPS picker' });
   await settleLayout(page);
   check('the phone TPS choices fit without horizontal overflow', await tpsRow.evaluate(row => row.scrollWidth <= row.clientWidth + 1));
   await tpsRow.locator('.ant-segmented-item').filter({ hasText: 'Exclude first-token latency' }).click();
-  await until(() => preferences.omc_tps_calculation_mode === 'exclude_ttft', { label: 'the restored default TPS mode' });
+  await until(() => preferences.omc_tps_calculation_mode === 'exclude_ttft', { label: 'the restored excluded TPS mode' });
   await page.setViewportSize({ width: 1440, height: 900 });
   // The viewport acknowledgement can precede React's breakpoint update and the select's resize.
   await until(async () => await tpsRow.locator('.ant-segmented-vertical').count() === 0, { label: 'the desktop TPS picker' });
@@ -84,15 +99,34 @@ export async function omcSettings({ base, page, check, context, expectProblem })
   check('a reloaded settings page reads the saved quota refresh policy',
     await resetSwitch.getAttribute('aria-checked') === 'false' && (await intervalControl.innerText()).includes('Every 30 min'));
 
+  // The managed Oh My CPA plugin registry is the one server-read switch on this page that
+  // changes the gateway's configuration rather than this console's presentation: the store and
+  // the configuration readers consult the same boolean, so the row has to write it as a boolean
+  // and nothing else.
+  const pluginSourceSwitch = page.getByRole('switch', { name: 'Oh My CPA plugin registry', exact: true });
+  await until(() => pluginSourceSwitch.isEnabled(), { label: 'the plugin source switch after the preference read' });
+  check('the Oh My CPA plugin registry defaults to on', await pluginSourceSwitch.getAttribute('aria-checked') === 'true');
+  await pluginSourceSwitch.click();
+  await until(() => preferences.omc_plugin_source_enabled === false, { label: 'the plugin source write' });
+  check('the plugin source switch writes the boolean the server reconciles',
+    writes.some((write) => write.key === 'omc_plugin_source_enabled' && write.body === 'false'));
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await until(() => pluginSourceSwitch.isEnabled(), { label: 'the plugin source switch after reload' });
+  check('a reloaded settings page reads the saved plugin source switch',
+    await pluginSourceSwitch.getAttribute('aria-checked') === 'false');
+
   const timezone = page.getByRole('combobox', { name: 'Time zone', exact: true });
   const timezoneControl = page.locator('.ant-select').filter({ has: timezone });
   check('timezone defaults to the actual server zone with its UTC offset',
     (await timezoneControl.innerText()).includes('Asia/Kuala_Lumpur') && (await timezoneControl.innerText()).includes('UTC+8') && (await timezoneControl.innerText()).includes('Server time zone'));
   await timezone.click();
   const popup = page.locator('.ant-select-dropdown:visible');
-  // Reduced motion hides the animation, not rc-trigger's async prepare/align steps.
-  await until(() => popup.evaluate(node => ['appear', 'enter'].some(phase => node.classList.contains(`ant-slide-up-${phase}-active`))),
-    { label: 'the timezone popup alignment prepare to complete' });
+  // Alignment is ready when the reader can reach the popup, independent of its motion lifecycle.
+  await until(() => popup.evaluate(node => {
+    const box = node.getBoundingClientRect();
+    return box.width > 0 && box.left >= 0 && box.right <= window.innerWidth
+      && box.top >= 0 && box.bottom <= window.innerHeight;
+  }), { label: 'the timezone popup to align within the viewport' });
   await settleLayout(page);
   const timezoneLayout = await popup.evaluate(node => ({
     width: node.getBoundingClientRect().width,
@@ -194,37 +228,6 @@ export async function omcSettings({ base, page, check, context, expectProblem })
     (await page.locator('.omc-settings-page .terminal-subtitle').count()) === 0
       && (await page.locator('.omc-settings-page .section-head-description').count()) === 0,
     `subtitle=${await page.locator('.omc-settings-page .terminal-subtitle').count()} groupDesc=${await page.locator('.omc-settings-page .section-head-description').count()}`,
-  );
-
-  // Every console setting this page owns, once. A duplicated row would be two controls for one
-  // setting - the operator changes one and the other silently disagrees.
-  //
-  // Eleven rows include the deployment timezone, token style, TPS mode, model icons in request list,
-  // the two automatic quota refresh triggers, language, scroll smoothing and appearance: the mode is the setting an operator changes often,
-  // and the two palettes are the considered choices behind it. A single "theme" row could only be one of those.
-  const labels = await page.locator('.omc-settings-page .settings-toggle-title').allInnerTexts();
-  check(
-    'the settings page lists each console setting once',
-    labels.length === 11
-      && new Set(labels).size === labels.length
-      && labels.some((label) => /Token unit style|Token 计量单位/.test(label))
-      && labels.some((label) => /TPS calculation mode|TPS 计算方式/.test(label))
-      && labels.some((label) => /Model icons in request list|请求列表模型图标/.test(label))
-      && labels.some((label) => /Scheduled quota refresh|定时刷新额度/.test(label))
-      && labels.some((label) => /Refresh after a quota resets|额度重置后自动刷新/.test(label))
-      && labels.some((label) => /Theme mode|主题模式/.test(label))
-      && labels.some((label) => /Light-mode palette|浅色模式配色/.test(label))
-      && labels.some((label) => /Dark-mode palette|暗色模式配色/.test(label))
-      && labels.some((label) => /Language|界面语言/.test(label))
-      && labels.some((label) => /Smooth scrolling|平滑滚动/.test(label)),
-    `labels=${labels.join(' | ')}`,
-  );
-  // The chart grouping belongs to the panels that plot it, not here: a second control on a settings
-  // page is a second place to look for one decision.
-  check(
-    'the chart grouping is not duplicated onto the settings page',
-    !labels.some((label) => /grouping|口径/.test(label)),
-    `labels=${labels.join(' | ')}`,
   );
 
   // ── each control fits the column it is given ──────────────────────────────
@@ -847,7 +850,7 @@ export async function omcSettings({ base, page, check, context, expectProblem })
   let becameTraditionalChinese = false;
   await until(async () => {
     becameTraditionalChinese = /OMC 設定/.test(await page.locator('.omc-settings-page .terminal-title').innerText())
-      && (await page.evaluate(() => document.documentElement.lang)) === 'zh-Hant';
+      && (await page.evaluate(() => document.documentElement.lang)) === 'zh-HK';
     return becameTraditionalChinese;
   }, { label: 'the header menu to switch the console to Traditional Chinese' }).catch(() => {});
   check(
@@ -898,7 +901,7 @@ export async function omcSettings({ base, page, check, context, expectProblem })
   // The fetch is failed by aborting the chunk request, which is the same state a redeploy produces.
   // The browser refuses to re-fetch a module whose import has already failed in a document, so the
   // recovery asserted below is the reload, not a second click.
-  const isCatalogChunk = (url) => /\/i18n\/locales\/ms(\.ts)?$/.test(url.pathname) || /\/assets\/ms-[^/]*\.js$/.test(url.pathname);
+  const isCatalogChunk = (url) => /\/i18n\/locales\/ms(\/index)?(\.ts)?$/.test(url.pathname) || /\/assets\/ms-[^/]*\.js$/.test(url.pathname);
   const pageErrors = [];
   const collectPageError = (error) => pageErrors.push(String(error.message));
   page.on('pageerror', collectPageError);

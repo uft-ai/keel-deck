@@ -1,11 +1,13 @@
 import React from 'react';
-import { App as AntdApp } from 'antd';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { usePreference, type PreferenceWrite } from '../src/hooks/usePreference';
-import { I18nProvider } from '../src/i18n';
+import { installOmcApi, json as jsonResponse, type OmcApi } from './support/omcApi';
+import { renderWithOmc } from './support/render';
 import { TokenDisplayProvider, useTokenDisplayStyle } from '../src/types/tokenDisplayContext';
+import { MotionPreferenceSync, MotionProvider, useReducedMotionPreference } from '../src/hooks/useReducedMotionPreference';
+import { usePrefersReducedMotion } from '../src/hooks/usePrefersReducedMotion';
+import { isMotionReduced, REDUCED_MOTION_QUERY } from '../src/utils/motionPreference';
 import { ContextReadout } from '../src/components/workspace/ContextReadout';
 
 function deferred<Value>() {
@@ -15,17 +17,13 @@ function deferred<Value>() {
 }
 
 const parseString = (raw: unknown) => typeof raw === 'string' ? raw : undefined;
-const clients: QueryClient[] = [];
 let writeResults: Promise<PreferenceWrite>[];
-let reads: number;
+let api: OmcApi;
 let isDraining: boolean;
 let stored: Record<string, unknown>;
-let readResponse: Promise<Response> | undefined;
 let writes: { key: string; value: unknown; options: RequestInit; response: ReturnType<typeof deferred<Response>> }[];
 
-function jsonResponse(value: unknown, status = 200) {
-  return new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
-}
+const reads = () => api.requests.filter(request => request.method === 'GET' && request.path === '/preferences').length;
 
 function PreferenceControl({ name, preferenceKey = 'omc_tps_calculation_mode' }: { name: string; preferenceKey?: string }) {
   const preference = usePreference(preferenceKey, 'exclude_ttft', parseString);
@@ -46,14 +44,7 @@ function DisplayControl() {
   </>;
 }
 
-function mount(children: React.ReactNode) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
-  clients.push(client);
-  const view = render(<React.StrictMode><QueryClientProvider client={client}>
-    <I18nProvider><AntdApp>{children}</AntdApp></I18nProvider>
-  </QueryClientProvider></React.StrictMode>);
-  return { ...view, client };
-}
+const mount = (children: React.ReactNode) => renderWithOmc(children, { isStrict: true });
 
 async function completeWrite(index: number, status = 200, error = 'write_busy') {
   const write = writes[index];
@@ -65,27 +56,19 @@ async function completeWrite(index: number, status = 200, error = 'write_busy') 
 }
 
 beforeEach(() => {
-  window.localStorage.setItem('omc-lang', 'en');
   writeResults = [];
-  reads = 0;
   isDraining = false;
-  stored = {};
-  readResponse = undefined;
   writes = [];
-  vi.stubGlobal('fetch', vi.fn(async (input: string, options: RequestInit) => {
-    expect(options.credentials).toBe('same-origin');
-    if (input === '/omc/api/v1/preferences' && options.method === 'GET') {
-      reads += 1;
-      return readResponse ?? jsonResponse({ preferences: stored, time_zone: { server_timezone: 'UTC' } });
-    }
-    if (input.startsWith('/omc/api/v1/preferences/') && options.method === 'PUT') {
-      const response = deferred<Response>();
-      writes.push({ key: input.split('/').pop()!, value: JSON.parse(String(options.body)), options, response });
-      if (isDraining) response.resolve(jsonResponse({ key: writes.at(-1)!.key, value: writes.at(-1)!.value }));
-      return response.promise;
-    }
-    throw new Error(`Unexpected component request: ${options.method} ${input}`);
-  }));
+  api = installOmcApi();
+  // The store itself is what each test seeds and reads back; a write lands in it only
+  // when the test completes that write, so an in-flight write is observable.
+  stored = api.state.preferences;
+  api.on('PUT', /^\/preferences\//, request => {
+    const response = deferred<Response>();
+    writes.push({ key: request.path.split('/').pop()!, value: request.body, options: request.init, response });
+    if (isDraining) response.resolve(jsonResponse({ key: writes.at(-1)!.key, value: writes.at(-1)!.value }));
+    return response.promise;
+  });
 });
 
 afterEach(async () => {
@@ -96,20 +79,18 @@ afterEach(async () => {
     for (const write of writes) write.response.resolve(jsonResponse({ key: write.key, value: write.value }));
     await Promise.all(writeResults);
   });
-  for (const client of clients.splice(0)) client.clear();
 });
 
 describe('real preference hook and cache integration', () => {
   it('waits for a held read, shares one StrictMode query and publishes optimistic updates to both readers', async () => {
-    const read = deferred<Response>();
-    readResponse = read.promise;
+    const read = api.hold('GET', '/preferences');
     mount(<><PreferenceControl name="first" /><PreferenceControl name="second" /></>);
     expect(screen.getByLabelText('first ready').textContent).toBe('false');
     expect(screen.getByLabelText('first loaded').textContent).toBe('false');
     expect(screen.getByLabelText('first value').textContent).toBe('exclude_ttft');
-    await act(async () => { read.resolve(jsonResponse({ preferences: { omc_tps_calculation_mode: 'include_ttft' } })); });
+    await act(async () => { read.release(jsonResponse({ preferences: { omc_tps_calculation_mode: 'include_ttft' } })); });
     await waitFor(() => expect(screen.getByLabelText('second value').textContent).toBe('include_ttft'));
-    expect(reads).toBe(1);
+    expect(reads()).toBe(1);
     expect(screen.getByLabelText('first ready').textContent).toBe('true');
     expect(screen.getByLabelText('first loaded').textContent).toBe('true');
     fireEvent.click(screen.getByRole('button', { name: 'first exclude' }));
@@ -119,7 +100,7 @@ describe('real preference hook and cache integration', () => {
     expect(writes[0].options.keepalive).toBe(true);
     await completeWrite(0);
     expect(await writeResults[0]).toEqual({ ok: true });
-    expect(reads).toBe(1);
+    expect(reads()).toBe(1);
   });
 
   it('rolls back a refused optimistic write, presents the real feedback and permits a subsequent save', async () => {
@@ -139,7 +120,7 @@ describe('real preference hook and cache integration', () => {
     await completeWrite(1);
     expect(await writeResults[1]).toEqual({ ok: true });
     expect(stored.omc_tps_calculation_mode).toBe('exclude_ttft');
-    expect(reads).toBe(1);
+    expect(reads()).toBe(1);
   });
 
   it('serializes a key and never lets an older failure erase a newer optimistic intent', async () => {
@@ -184,17 +165,17 @@ describe('real preference hook and cache integration', () => {
     await completeWrite(0);
     mount(<PreferenceControl name="reopened" />);
     await waitFor(() => expect(screen.getByLabelText('reopened value').textContent).toBe('include_ttft'));
-    expect(reads).toBe(2);
+    expect(reads()).toBe(2);
   });
 
   it('exposes a usable fallback after a failed initial read rather than remaining unready', async () => {
-    readResponse = Promise.resolve(jsonResponse({ error: 'database is unavailable' }, 503));
+    api.on('GET', '/preferences', () => jsonResponse({ error: 'database is unavailable' }, 503));
     mount(<PreferenceControl name="setting" />);
     await waitFor(() => expect(screen.getByLabelText('setting ready').textContent).toBe('true'));
     expect(screen.getByLabelText('setting value').textContent).toBe('exclude_ttft');
     // Usable is not the same as known: a write derived from the stored document must wait.
     expect(screen.getByLabelText('setting loaded').textContent).toBe('false');
-    expect(reads).toBe(1);
+    expect(reads()).toBe(1);
   });
 
   it('keeps object parsing reference-stable when another preference updates', async () => {
@@ -229,6 +210,71 @@ describe('shared provider and real rendered consumer', () => {
     expect(writes[0].value).toBe('full');
     await waitFor(() => expect(meter.getAttribute('aria-valuetext')).toContain('10,000'));
     await act(async () => { stored.omc_token_style = 'full'; writes[0].response.resolve(jsonResponse({ key: 'omc_token_style', value: 'full' })); });
-    expect(reads).toBe(1);
+    expect(reads()).toBe(1);
+  });
+});
+
+
+describe('console motion preference', () => {
+  it('resolves live system changes, explicit overrides, persistence and failed-write rollback for every consumer', async () => {
+    let hasSystemReducedMotion = false;
+    const listeners = new Set<() => void>();
+    const query = {
+      get matches() { return hasSystemReducedMotion; },
+      addEventListener: (_event: string, listener: () => void) => listeners.add(listener),
+      removeEventListener: (_event: string, listener: () => void) => listeners.delete(listener),
+    };
+    const originalMatchMedia = window.matchMedia;
+    vi.spyOn(window, 'matchMedia').mockImplementation(value => value === REDUCED_MOTION_QUERY
+      ? query as unknown as MediaQueryList : originalMatchMedia(value));
+    function Control() {
+      const preference = useReducedMotionPreference();
+      const isReduced = usePrefersReducedMotion();
+      return <>
+        <output aria-label="motion">{String(isReduced)}</output>
+        <output aria-label="motion preference">{preference.value}</output>
+        {(['on', 'system', 'off'] as const).map(value =>
+          <button key={value} onClick={() => { writeResults.push(preference.set(value)); }}>{value}</button>)}
+      </>;
+    }
+    const { unmount } = mount(<MotionProvider><MotionPreferenceSync /><Control /></MotionProvider>);
+    await waitFor(() => expect(reads()).toBe(1));
+    const expectReduced = (isReduced: boolean) => {
+      expect(screen.getByLabelText('motion').textContent).toBe(String(isReduced));
+      expect(document.documentElement.dataset.reducedMotion).toBe(String(isReduced));
+      expect(isMotionReduced()).toBe(isReduced);
+    };
+    expectReduced(false);
+    expect(screen.getByLabelText('motion preference').textContent).toBe('system');
+    const changeSystem = async (isReduced: boolean) => {
+      await act(async () => { hasSystemReducedMotion = isReduced; for (const listener of listeners) listener(); });
+    };
+    await changeSystem(true);
+    expectReduced(true);
+    fireEvent.click(screen.getByRole('button', { name: 'off' }));
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expectReduced(false);
+    expect(writes[0]).toMatchObject({ key: 'omc_reduced_motion', value: 'off' });
+    await completeWrite(0, 500);
+    await waitFor(() => expectReduced(true));
+    await changeSystem(false);
+    fireEvent.click(screen.getByRole('button', { name: 'on' }));
+    await waitFor(() => expect(writes).toHaveLength(2));
+    expectReduced(true);
+    await completeWrite(1);
+    expect(stored.omc_reduced_motion).toBe('on');
+    await changeSystem(true);
+    await changeSystem(false);
+    expectReduced(true);
+    fireEvent.click(screen.getByRole('button', { name: 'off' }));
+    await waitFor(() => expect(writes).toHaveLength(3));
+    await completeWrite(2);
+    await changeSystem(true);
+    expectReduced(false);
+    unmount();
+    expect(listeners.size).toBe(0);
+    mount(<MotionProvider><MotionPreferenceSync /><Control /></MotionProvider>);
+    await waitFor(() => expect(screen.getByLabelText('motion preference').textContent).toBe('off'));
+    expectReduced(false);
   });
 });

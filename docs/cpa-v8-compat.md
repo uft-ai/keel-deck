@@ -7,7 +7,169 @@ decides that a gateway is v8, how it edits the configuration (ADR 0037), which r
 calls, and what remains unverified. Measurements against v7.3.20 below are kept as the record of how v8
 treats a v7 configuration file, which is what an upgraded deployment starts from.
 
-### Codex behavior path compatibility
+## Compression settings (post-baseline source contract)
+
+CPA commit [`064e008b079fae13e58c7d4007322482eb600695`](https://github.com/router-for-me/CLIProxyAPI/commit/064e008b079fae13e58c7d4007322482eb600695)
+defines the five canonical v8 controls below. Verification is limited to pinned
+source: the historical v8.0.2 binary acceptance does not cover these additions,
+and binary write/readback/restart or live HTTP/SSE/WebSocket integration remains
+unverified.
+
+| Canonical YAML path | Editor field | Omitted / effective value | Scope |
+| --- | --- | --- | --- |
+| `server.response-compression.enabled` | `responseCompressionEnabled` | `true` when omitted | Negotiated downstream HTTP response compression, including SSE, using the client's accepted zstd or gzip encoding. WebSocket upgrades are not wrapped. |
+| `server.response-compression.min-bytes` | `responseCompressionMinBytes` | `1024` bytes when omitted or `<= 0` | Minimum non-streaming response size; SSE is not subject to this threshold. |
+| `upstream.codex.upstream-request-compression` | `codexUpstreamRequestCompression` | `false` when omitted | Opt-in zstd request-body compression only for OAuth requests targeting the verified ChatGPT Codex backend (`chatgpt.com/backend-api/codex`). API-key credentials, custom base URLs and SIWC requests are excluded. |
+| `upstream.codex.upstream-request-compression-min-bytes` | `codexUpstreamRequestCompressionMinBytes` | `1024` bytes when omitted or `<= 0` | Minimum eligible request-body size; enabling the switch still requires the backend, credential and compression-benefit checks. |
+| `upstream.codex.websocket-compression` | `codexWebsocketCompression` | `true` when omitted | Controls compressed upstream writes and downstream `permessage-deflate` negotiation, independently of HTTP compression. Upstream negotiation remains enabled even when this switch is `false`. |
+
+These controls use canonical paths and the existing revision-guarded path-level
+save and backup flow. Omitted defaults are displayed without being written by
+unrelated edits; explicit `false`, zero and negative thresholds, and unrelated
+fields are preserved. An older CPA refusing a new path returns `config_rejected`
+when no earlier write landed; otherwise existing partial-application reporting
+applies.
+
+Source verification used the following files at that exact commit:
+
+- [Configuration types and effective defaults](https://github.com/router-for-me/CLIProxyAPI/blob/064e008b079fae13e58c7d4007322482eb600695/internal/config/config_types.go) and [canonical v8 path mapping](https://github.com/router-for-me/CLIProxyAPI/blob/064e008b079fae13e58c7d4007322482eb600695/internal/config/config_v8.go).
+- [HTTP response negotiation and SSE threshold handling](https://github.com/router-for-me/CLIProxyAPI/blob/064e008b079fae13e58c7d4007322482eb600695/internal/api/response_compression.go).
+- [Codex request eligibility and size/benefit gating](https://github.com/router-for-me/CLIProxyAPI/blob/064e008b079fae13e58c7d4007322482eb600695/internal/runtime/executor/codex_executor_request.go).
+- [Upstream WebSocket compression](https://github.com/router-for-me/CLIProxyAPI/blob/064e008b079fae13e58c7d4007322482eb600695/internal/runtime/executor/codex_websockets_connection.go), [downstream WebSocket negotiation](https://github.com/router-for-me/CLIProxyAPI/blob/064e008b079fae13e58c7d4007322482eb600695/sdk/api/handlers/openai/openai_responses_websocket.go) and [configuration reload wiring](https://github.com/router-for-me/CLIProxyAPI/blob/064e008b079fae13e58c7d4007322482eb600695/internal/api/server_reload.go).
+
+## Canonical usage accounting
+
+CPA source contract `8289ec4c71ad914d0612c2776352b76ba3d355a6` preserves
+separate-reasoning and cache-subset semantics while merging Interactions plugin
+executor streams. The usage queue already publishes `accounting_version` and
+`token_breakdown`; this change does not require another endpoint or queue reader.
+OMC validates v2 accounting before using its complete normalized input/output and
+cache buckets for usage and pricing, preserves allowlisted raw-count evidence,
+and exposes the same interpretation through console and Agent/MCP request/cost
+reads. Raw output 30 plus separate reasoning 10 becomes canonical output 40;
+reasoning-inclusive raw output 40 remains 40. Missing evidence retains the legacy
+policy. Unsupported, malformed, inconsistent and unclassified evidence is
+explicit and unpriced. Migration `048_usage_token_accounting.sql` adds evidence
+without reinterpreting historical rows or changing their locked amounts.
+Verification is against pinned CPA source and hermetic decoder, persistence,
+pricing and retained-fact regressions, not measured production traffic.
+
+## Vertex per-model OpenAPI policy
+
+The CPA source contract at `d44f8682bc1438ac0f06159207435bd997bca4c9`
+adds optional `openapi` booleans to Vertex API-key model entries and OAuth
+aliases/settings, and `openapi` / `openapi-location` to Vertex API-key entries.
+OMC edits API-key defaults and model rows in AI Providers, provider-wide OAuth
+aliases in Model Rules, and credential aliases in credential detail. The facade
+keeps unset, explicit false and true distinct; model/alias overrides outrank
+credential defaults, which outrank CPA's automatic model-name detection. Two
+aliases of one upstream model can have different overrides. Clearing an override
+restores inheritance. Renaming one of several same-model aliases preserves its
+policy after unchanged sibling routes are matched; ambiguous simultaneous renames
+are refused before writing. CPA alone selects endpoints and executes requests.
+
+The provider behavior DTO uses `openapi: inherit|enabled|disabled` and optional
+`openapi_location` (empty clears); model options and alias DTOs use optional
+boolean `openapi` (omitted/null inherits). Provider model options state the whole
+model entry; other fields and groups retain their existing preservation contract.
+Writes reuse revision guards, encrypted backups and bounded stored-policy readback.
+OAuth alias replacements and credential-field patches also compare the override
+on readback. Non-Vertex overrides are refused. Existing service-account controls
+remain independent. Agent/MCP uses the existing confirmed provider/alias/credential
+operations with these bounded settings, never raw metadata or inference calls.
+This contract is verified against source and hermetic fixtures, not a live Vertex account.
+
+## SIWC local status and use
+
+The CPA source contract at `06fd5b8bc2807af5fceb6f39d2c5808c52e76034`
+adds `siwc_status: off|valid|invalid` to credential summaries. OMC reads this
+allowlisted enum from the credential list and existing Agent/MCP credential reads.
+Missing or unknown values remain unknown; neither stored expiry nor bound material
+implies validity. CPA evaluates expiry and remembered rejection locally without
+refresh, inference or upstream verification. This is not provider health.
+
+The Codex-only `use_siwc` switch uses the existing credential-field patch endpoint,
+with a unique selector, fail-closed attempt audit and disk/runtime readback. False
+changes only that switch and preserves both credential partitions. True uses an
+already-bound SIWC partition; enabling without bound material is refused, while
+disabling remains available. It neither binds nor establishes validity. Agent/MCP
+uses confirmed `oauth_set_credential_fields`, while authorization stays operator-driven.
+Older gateways without status metadata show unknown and no enabled switch control.
+CPA's credential-status query (`GET /v8/management/oauth/siwc/status?name=...`
+or `auth_index`) is distinct from OMC's binding-session poll at
+`/management/oauth/siwc/status?state=...`; OMC does not call the dedicated query
+because its credential-list read already supplies the local summary.
+
+`use_siwc` does not route every request. CPA v8.0.38
+([`0db19025`](https://github.com/router-for-me/CLIProxyAPI/commit/0db19025)) sends
+ChatGPT Alpha Search through the ordinary OAuth partition, and CPA v8.0.40
+([`d946c4fb`](https://github.com/router-for-me/CLIProxyAPI/commit/d946c4fb)) does the
+same for every request whose User-Agent names a Codex client (`codex-rs`,
+`codex_cli_rs`, `codex-tui`, `codex_exec`, Codex desktop). The console's switch copy
+and the agent capability description say so, because the switch alone would read
+as if those clients used SIWC too.
+
+## Antigravity observation fingerprint
+
+The reviewed CPA source baseline `02e9e85204052dfed9bf73b7075c7b414111a4b3`
+uses Hub 2.24.0 and its verified changelist 1000335682. OMC's fixed quota and
+subscription User-Agent is
+`antigravity/hub/2.24.0 (aidev_client; os_type=darwin; arch=arm64; cl=1000335682)`.
+Update the version and verified changelist together. The daily `loadCodeAssist`
+subscription POST omits `Accept`; quota-summary reads retain `Accept: application/json`.
+Supplemental subscription failure keeps independent quota windows and an unknown plan.
+There is no dynamic vendor-version lookup or new outbound authority.
+
+## Credential-scoped SIWC binding
+
+CPA v8.0.35 adds `POST /v8/management/oauth/siwc/bind` and the Codex
+credential summaries `siwc_bind_supported`, `use_siwc`, `siwc_bound`, and
+optional RFC3339 `siwc_expires_at`. OMC projects these summaries through its
+credential list and the existing Agent/MCP credential read. Missing support
+metadata disables binding. Stored material presence and expiry are not live
+validity checks.
+
+A provider section exposes a SIWC column only when it contains a Codex credential
+with SIWC state. The column carries each eligible row's badge (bind, off, on,
+rebind when CPA reports the token locally invalid, or binding while an attempt is
+pending). The badge and the row menu both open the credential's SIWC dialog. The dialog offers Bind SIWC and an
+explicitly confirmed Rebind SIWC.
+The server resolves a unique credential identity and sends only CPA's managed
+ID/name to the fixed binding endpoint. This is standalone/local-file-only;
+Home mode, non-file backends and older gateways are unavailable. There is no
+fallback to ordinary Codex login. CPA alone preserves the existing credential,
+exchanges tokens, saves the SIWC partition, and publishes it to its auth manager.
+
+Binding sessions are process-local and target-scoped. The browser pastes the
+complete `http://127.0.0.1:1455/auth/callback` URL, including the issued
+`client_id`, even when that page cannot load: this flow starts no loopback
+listener. OMC forwards the URL unchanged after matching its state and redirect
+origin/path, and refuses a URL without `code` and `client_id` (or `error`) with
+`code: siwc_callback_incomplete`, the one mistake the operator can fix by copying
+again after the redirect finishes. Callback values are never stored in preferences or audit records.
+Attempt audits are fail-closed for start, callback and cancellation. Callback
+acceptance remains pending; only completed status followed by safe credential
+readback is success. Readback failure after completion stays in verification
+without offering a second mutation. Cancellation preserves `cancelled:false`.
+Uncompleted attempts expire after five minutes. OMC retains local records for
+ten minutes for terminal reconciliation, without retaining callback values.
+
+Source: [CPA v8.0.35 management contract](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.35/docs/management-api-v8.md).
+
+## OAuth model-exclusion precedence
+
+CPA v8.0.33 is the first release containing
+[the credential exclusion priority change](https://github.com/router-for-me/CLIProxyAPI/commit/69d0ff8e295aea349966b16f20e2966421bfeb18).
+A non-empty credential `excluded_models` list replaces provider
+`oauth.excluded-models`; missing, empty or null inherits current provider rules.
+The v8.0.33 helper stores only credential rules, and the runtime resolves the
+provider fallback. Older supported v8 builds can merge the lists instead; upgrade
+them before relying on credential overrides. This is a feature-specific behavior
+boundary, not a change to OMC's v8.0.0 Management API baseline. The console and
+Agent/MCP guidance state the requirement, and CPA's per-credential model list
+remains authoritative. See [OAuth model rules](operations.md#oauth-model-rules).
+
+## Codex behavior path compatibility
 
 CPA moved the shared Codex, Claude and xAI provider behavior out of
 `oauth.providers.*` to `upstream.*` (the `v8SharedPaths` table in CPA's
@@ -55,7 +217,7 @@ The following measurements and mapping tables retain their CPA v8.0.2 baseline;
 the canonical `upstream.*` / `client.codex.*` paths above supersede the
 corresponding editor locations in that table.
 
-### Configuration option semantics
+## Configuration option semantics
 
 The visual editor uses CPA's runtime defaults for omitted YAML fields, not the
 values shown in its example configuration. In CPA v8.0.16, omitted
@@ -196,7 +358,7 @@ resolved below.
 | `streaming.*` (low confidence) | `requests.streaming.*` | Confirmed |
 | `commercial-mode` (low confidence) | `server.commercial-mode` | Confirmed |
 | `disable-cooling` (low confidence) | `routing.cooldown.disable-cooling` | Confirmed |
-| `quota-exceeded.switch-project`, `switch-preview-model` | Not relocated | They stay under `quota-exceeded` in both layouts. CPA leaves them out of its v8 template as compatibility-only, but `quota-exceeded` is an accepted v8 root, a v8 `PATCH` writes them and the runtime applies them |
+| `quota-exceeded.switch-project`, `switch-preview-model` | Not relocated | They stay under `quota-exceeded` in both layouts. CPA leaves them out of its v8 template as compatibility-only: a v8 `PATCH` still writes them, but as of v8.0.31 nothing in CPA's request path reads them, so the settings page no longer offers them (the source editor keeps them) |
 
 Relocations the brief did not list include `nonstream-keepalive-interval` →
 `requests.nonstream-keepalive-interval`, `ws-auth` → `oauth.providers.aistudio.ws-auth`,
@@ -220,7 +382,7 @@ legacy file. OMC does not carry a copy: its editor schema (`web/src/types/config
 names the v8 column. The last column names the editor field; a `—` means no editor field
 edits that setting.
 
-Every schema path was measured against the v8.0.2 binary (Go build of tag `v8.0.2`,
+Every schema path in this baseline table was measured against the v8.0.2 binary (Go build of tag `v8.0.2`,
 commit `4a2c818`, on 2026-09-29): each one was written with a `PATCH
 /v8/management/config` carrying the field's own default, and then read back out of the
 persisted `config.yaml`. All 36 paths the OAuth-provider, discovery and pprof fields
@@ -237,6 +399,17 @@ Three value ranges in the schema were measured the same way rather than assumed:
 floor is `-1`, not `0`), and `request-retry` has no upper bound in CPA (50 is stored
 unchanged, so the editor sets no maximum).
 
+### Network discovery management advertisement
+
+CPA [commit b214385](https://github.com/router-for-me/CLIProxyAPI/commit/b214385c1cf31b5aee6885b108538663731a2610)
+deprecated `server.discovery.advertise-management`: the draft DNS-SD schema never
+advertises management endpoints. The field remains accepted so existing files load,
+but it has no effect on updated gateways. OMC therefore exposes only discovery's
+enabled, service-name and authentication-required controls. The source editor still
+shows a stored legacy entry; unrelated visual saves neither remove nor rewrite it.
+The v8.0.2 measurements above describe historical acceptance, not current runtime
+support for management advertisement.
+
 ### Settings (leaves)
 
 A leaf is the unit of CPA's precedence rule. "OMC editor field" names the configuration
@@ -245,7 +418,7 @@ page field that edits it.
 | v8 section | Legacy path | v8 path | OMC editor field |
 | --- | --- | --- | --- |
 | `server` | `commercial-mode` | `server.commercial-mode` | `commercialMode` |
-| `server` | `discovery.advertise-management` | `server.discovery.advertise-management` | `discoveryAdvertiseManagement` |
+| `server` | `discovery.advertise-management` | `server.discovery.advertise-management` | — (deprecated; ignored by updated CPA gateways) |
 | `server` | `discovery.auth-required` | `server.discovery.auth-required` | `discoveryAuthRequired` |
 | `server` | `discovery.enabled` | `server.discovery.enabled` | `discoveryEnabled` |
 | `server` | `discovery.interfaces.exclude` | `server.discovery.interfaces.exclude` | — |
@@ -261,6 +434,9 @@ page field that edits it.
 | `server` | `tls.key` | `server.tls.key` | `tlsKey` |
 | `server` | `trusted-proxies` | `server.trusted-proxies` | `trustedProxies` |
 | `client` | — | `client.codex.enable-apply-patch` | `codexEnableApplyPatch` |
+| `client` | — | `client.codex.web-search-result-cache.enabled` | `codexWebSearchCacheEnabled` |
+| `client` | — | `client.codex.web-search-result-cache.limit` | `codexWebSearchCacheLimit` |
+| `client` | — | `client.codex.web-search-result-cache.ttl` | `codexWebSearchCacheTtl` |
 | `management` | `remote-management.allow-remote` | `management.allow-remote` | `rmAllowRemote` |
 | `management` | `remote-management.base-url` | `management.base-url` | `rmBaseUrl` |
 | `management` | `remote-management.disable-auto-update-panel` | `management.disable-auto-update-panel` | `rmDisableAutoUpdatePanel` |
@@ -310,7 +486,7 @@ page field that edits it.
 | `oauth` | `oauth-excluded-models` | `oauth.excluded-models` | — |
 | `oauth` | `oauth-model-alias` | `oauth.model-alias` | — |
 | `oauth` | `ws-auth` | `oauth.providers.aistudio.ws-auth` | `wsAuth` |
-| `oauth` | `quota-exceeded.antigravity-credits` | `oauth.providers.antigravity.antigravity-credits` | `quotaAntigravityCredits` |
+| `oauth` | `quota-exceeded.antigravity-credits` | `oauth.providers.antigravity.antigravity-credits` | `antigravityCredits` |
 | `oauth` | `antigravity.connection-pool.enabled` | `oauth.providers.antigravity.connection-pool.enabled` | `antigravityPoolEnabled` |
 | `oauth` | `antigravity.connection-pool.idle-conn-timeout` | `oauth.providers.antigravity.connection-pool.idle-conn-timeout` | `antigravityPoolIdleConnTimeout` |
 | `oauth` | `antigravity.connection-pool.max-idle-conns-per-host` | `oauth.providers.antigravity.connection-pool.max-idle-conns-per-host` | `antigravityPoolMaxIdleConnsPerHost` |
@@ -411,10 +587,28 @@ list and writes the family back as groups, keeping the operator's grouping (ADR 
 
 `routing.strategy`, `routing.session-affinity`, `routing.session-affinity-ttl`,
 `routing.session-affinity-subagents`, `plugins.*`, `quota-exceeded.switch-project` and
-`quota-exceeded.switch-preview-model` (the last two are absent from CPA's v8 template but
-are written and applied at the same path). All four `routing.*` entries here are edited by
+`quota-exceeded.switch-preview-model` (the last two are absent from CPA's v8 template and
+have no runtime reader, see above). All four `routing.*` entries here are edited by
 the settings page (`routingStrategy`, `routingSessionAffinity`,
 `routingSessionAffinityTTL`, `routingSessionAffinitySubagents`).
+
+### Added after v8.0.16
+
+Settings CPA introduced between v8.0.16 and v8.0.32, all at their v8 path only and all
+edited by the settings page. A gateway older than the release that introduced a setting
+refuses a write to it (`config_rejected`); an untouched setting is never written.
+
+| v8 path | Since | Setting |
+| --- | --- | --- |
+| `server.max-request-body-bytes` | v8.0.26 | `maxRequestBodyBytes`; caps management routes too, which the console reports as `cpa_request_too_large` |
+| `routing.session-affinity-rebind-on` | v8.0.25 | `routingSessionAffinityRebindOn` (`any` or `quota`) |
+| `requests.streaming.send-keepalive-before-ft` | v8.0.27 | `streamingSendKeepaliveBeforeFt` |
+| `requests.tls-handshake-timeout-seconds` | v8.0.29 | `tlsHandshakeTimeoutSeconds` |
+| `upstream.claude.tool-search` | v8.0.24 | `claudeToolSearch` |
+| `upstream.claude.session-date-pin-days` | v8.0.32 | `claudeSessionDatePinDays`; CPA holds it as a pointer, so omitted is its 7 days and an explicit `0` keeps the continuity-scoped pin. The editor defaults to `7` and writes a `0` as a real setting |
+| `upstream.claude.header-defaults.anthropic-beta-strip`, `anthropic-beta-append`, `inject-diagnostics`, `client-request-id` | v8.0.30 | `claudeHeaderAnthropicBetaStrip`, `claudeHeaderAnthropicBetaAppend`, `claudeHeaderInjectDiagnostics`, `claudeHeaderClientRequestId` |
+| `oauth.providers.codex.signin-with-chatgpt-identifier` | v8.0.25 | `codexSigninWithChatgptIdentifier` |
+| `api-keys.claude[].keys[].native-tool-search` | v8.0.24 | The provider editor's per-key "Native tool search" switch |
 
 ## 4. OMC's configuration write path
 
@@ -508,6 +702,7 @@ Every operation is addressed at its `/v8/management` route, with no fallback:
 | --- | --- |
 | Credential files: list, upload, delete, download, models, status, fields | `/credentials`, `/credentials/download`, `/credentials/models`, `/credentials/status`, `/credentials/fields` |
 | OAuth login, status, cancellation, callback | `/oauth/auth-url?provider=`, `/oauth/status`, `/oauth/session`, `/oauth/callback` |
+| SIWC credential binding (shared OAuth status, cancellation and callback) | `/oauth/siwc/bind` |
 | Plugins: list, delete, store, install | `/plugins`, `/plugins/<id>`, `/plugins/store`, `/plugins/store/<id>/install` |
 | Usage queue (HTTP pull) | `/observability/usage/queue` |
 | API-key usage | `/observability/usage/api-keys` |
@@ -517,6 +712,24 @@ Every operation is addressed at its `/v8/management` route, with no fallback:
 | Authenticated upstream call (quota probes) | `/requests/api-call` |
 | Credential cooldown reset | `/routing/cooldown/reset` |
 | Latest release | `/server/latest-version` |
+
+OAuth Connect also accepts optional `proxy_url` in OMC's `POST /management/oauth/start`
+request. A selected proxy is sent only in JSON to CPA's `POST /oauth/auth-url`, with
+mapped `provider` and the provider's existing `is_webui` flag. This capability requires
+upstream commit `27f3abfb70a6d05d4f11b49e5d0bc70c05e1ef14`; an unavailable POST
+returns upgrade guidance without starting through another route. Omitting the proxy
+keeps the existing GET contract and CPA's default routing. CPA owns exchange and
+per-account persistence; no shared proxy configuration is written. HTTP(S) proxies
+allow default ports; SOCKS5(H) proxies require an explicit port. The console accepts
+no proxy query parameters, paths beyond `/`, queries, fragments, or direct/inherit
+keywords. Proxy input stays ephemeral, and the required pre-start audit records only
+the provider, never the proxy. Existing safe credential readback shows the resulting
+routing setting with authentication masked. The credential editor keeps that masked
+value out of unrelated field patches; replacing the route requires the complete proxy
+URL, and submitting masked authentication is refused before reaching CPA. A proxied
+attempt that fails during start or later reports a terminal status error records only
+route intent: Retry and the primary action require a newly entered proxy, while an
+explicit default-route action lets the operator abandon that intent. CPA and audit failures retain their actionable safe error messages.
 
 The shared login endpoint names Claude `claude`, while the console and CPA's credential
 files call it `anthropic`; `OAuthProvider.LoginProvider` carries the difference. Plugin
@@ -577,8 +790,16 @@ flows and the contents of usage records were not exercised against a real binary
   The save's answer re-reads CPA, so the editor shows what CPA holds.
 - **A family is written whole.** CPA has no path for one key of a group, so a provider
   write sends the family's groups back. The provider write gate serialises OMC's own
-  writes; a concurrent writer outside OMC editing the same family between the read and
-  the write is overwritten, as with the v0 list writes before.
+  writes. Against CPA v8.0.31 or later, every write also carries `If-Match` with CPA's
+  entity tag for the file OMC read and backed up just before (the SHA-256 of its exact
+  bytes), and each later request of a change set names the tag CPA reported for its
+  previous save. When a save's answer carries no tag (CPA could not read the file
+  back), the requests after it in that change set are unconditional. A writer outside
+  OMC that saves in between makes CPA answer `412`,
+  which the console reports as `config_conflict` (nothing written) or
+  `config_partially_applied` (an earlier request of the set had landed). Older
+  gateways ignore the header, so there a concurrent writer editing the same family
+  between the read and the write is still overwritten.
 - **Probe cache.** An upgrade from v7 is noticed within `API_UNSUPPORTED_TTL` (fifteen
   seconds); a rollback to v7 is noticed on the first v8 route that answers "missing".
 

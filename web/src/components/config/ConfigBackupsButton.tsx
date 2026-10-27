@@ -1,12 +1,12 @@
+import { prefixedKey } from '../../i18n/catalog';
 import React from 'react';
 
-import { Button, InputNumber, Modal, Table, Tooltip, Typography } from 'antd';
+import { Button, InputNumber, Modal, Table, Typography } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
 
 import { api, apiErrorCode, describeError } from '../../api/client';
 import { useT } from '../../i18n';
-import { useOverlayHistory } from '../../hooks/useOverlayHistory';
 import { isDemoMode } from '../../types/demoMode';
 import { saveBlob } from '../../utils/download';
 import { formatBytes } from '../../utils/format';
@@ -16,28 +16,14 @@ import { useToast } from '../feedback';
 import { describeConfigSaveError } from './configSaveErrors';
 import styles from './ConfigBackupsButton.module.css';
 import { Tag } from '../common/Tag';
+import { ToolButton } from '../common/ToolButton';
 import { ConfirmAction } from '../common/ConfirmAction';
+import { Tooltip } from '../common/Tooltip';
 
 const { Text } = Typography;
 
 const BACKUPS_QUERY_KEY = ['management-config-backups'];
 
-/** Reasons the console names; anything newer than this build reads as a generic write. */
-const KNOWN_REASONS = new Set([
-  'config_changes',
-  'config_source',
-  'provider_keys',
-  'client_keys',
-  'oauth_aliases',
-  'oauth_excluded_models',
-  'plugin_settings',
-  'plugin_install',
-  'plugin_delete',
-  'credential_status',
-  'restore',
-  'manual',
-  'legacy_conversion',
-]);
 
 interface ConfigBackupsButtonProps {
   /**
@@ -63,7 +49,6 @@ export const ConfigBackupsButton: React.FC<ConfigBackupsButtonProps> = ({ isDirt
   const [isOpen, setIsOpen] = React.useState(false);
   const [downloadingID, setDownloadingID] = React.useState<number | null>(null);
   const [retentionDraft, setRetentionDraft] = React.useState<number | null>(null);
-  useOverlayHistory({ isOpen, onClose: () => setIsOpen(false) });
 
   const backupsQuery = useQuery({
     queryKey: BACKUPS_QUERY_KEY,
@@ -128,7 +113,7 @@ export const ConfigBackupsButton: React.FC<ConfigBackupsButtonProps> = ({ isDirt
     }
   };
 
-  const describeReason = (reason: string) => t(KNOWN_REASONS.has(reason) ? `cfg.backups_reason_${reason}` : 'cfg.backups_reason_other');
+  const describeReason = (reason: string) => t(prefixedKey('cfg.backups_reason_', reason) ?? 'cfg.backups_reason_other');
 
   const restoreBlockedReason = (backup: ConfigBackup): string | undefined => {
     if (isDemo) return t('demo.blocked');
@@ -142,9 +127,7 @@ export const ConfigBackupsButton: React.FC<ConfigBackupsButtonProps> = ({ isDirt
 
   return (
     <>
-      <Button size="small" icon={<HistoryOutlined />} onClick={() => setIsOpen(true)}>
-        {t('cfg.backups')}
-      </Button>
+      <ToolButton icon={<HistoryOutlined />} label={t('cfg.backups')} onClick={() => setIsOpen(true)} />
       <Modal
         open={isOpen}
         title={t('cfg.backups_title')}
@@ -234,17 +217,16 @@ export const ConfigBackupsButton: React.FC<ConfigBackupsButtonProps> = ({ isDirt
                       confirmLabel={t('cfg.backups_restore')}
                       disabled={Boolean(blockedReason)}
                       onConfirm={() => restoreMutation.mutateAsync(backup).catch(() => undefined)}
+                      tooltip={blockedReason}
                     >
-                      <Tooltip title={blockedReason}>
-                        <Button
-                          size="small"
-                          icon={<RollbackOutlined />}
-                          disabled={Boolean(blockedReason) || (restoreMutation.isPending && restoreMutation.variables?.id !== backup.id)}
-                          loading={restoreMutation.isPending && restoreMutation.variables?.id === backup.id}
-                        >
-                          {t('cfg.backups_restore')}
-                        </Button>
-                      </Tooltip>
+                      <Button
+                        size="small"
+                        icon={<RollbackOutlined />}
+                        disabled={Boolean(blockedReason) || (restoreMutation.isPending && restoreMutation.variables?.id !== backup.id)}
+                        loading={restoreMutation.isPending && restoreMutation.variables?.id === backup.id}
+                      >
+                        {t('cfg.backups_restore')}
+                      </Button>
                     </ConfirmAction>
                     <Button
                       size="small"

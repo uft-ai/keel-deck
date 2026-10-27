@@ -1,6 +1,6 @@
 # ADR 0046: Wheel and keyboard scrolls glide on every platform
 
-- Status: Accepted
+- Status: Superseded in its motion-preference policy by ADR 0108 (2026-10-27); input classification and glide mechanics remain unchanged.
 - Date: 2026-10-01
 
 ## Context
@@ -57,10 +57,11 @@ animation like the others.
    readers who reported it. The `omc_scroll_smoothing` preference (`on`, `system`, `off`) on the OMC
    settings page lets a reader hand the decision back to the system's setting, or turn the glide
    off.
-6. **Every other motion still honours `prefers-reduced-motion`.** That includes the request list's
-   animated return to the top, which moves the page further than the reader's hand did.
-   Programmatic corrections are never smoothed, and a glide stops as soon as anything else writes
-   its scroller's offset, so a correction always lands.
+6. **Every motion besides the scroll glide and the live routing map's trip still honours
+   `prefers-reduced-motion`.** The routing map is the second scoped exception (ADR 0102). That
+   includes the request list's animated return to the top, which moves the page further than the
+   reader's hand did. Programmatic corrections are never smoothed, and a glide stops as soon as
+   anything else writes its scroller's offset, so a correction always lands.
 
 ## Consequences
 

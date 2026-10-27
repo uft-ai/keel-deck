@@ -34,17 +34,6 @@ func (h *Handler) createProvider(ctx context.Context, client *management.Client,
 		return nil, err
 	}
 
-	firstKey := apiKey
-	firstProxy := ""
-	var firstWeight *int
-	if len(req.Keys) > 0 {
-		if kVal := strings.TrimSpace(req.Keys[0].APIKey); kVal != "" {
-			firstKey = kVal
-		}
-		firstProxy = strings.TrimSpace(req.Keys[0].ProxyURL)
-		firstWeight = req.Keys[0].Weight
-	}
-
 	policyEdit, err := resolveProviderPolicyEdit(family, req)
 	if err != nil {
 		return nil, err
@@ -59,6 +48,7 @@ func (h *Handler) createProvider(ctx context.Context, client *management.Client,
 	// positions are assigned here, and a browser that only knew the display name
 	// would key an override the row's own id key could then shadow.
 	createdID := ""
+	var createdIDs []string
 
 	switch family {
 	case openAICompatibilityFamily:
@@ -109,24 +99,17 @@ func (h *Handler) createProvider(ctx context.Context, client *management.Client,
 		if spec.RequiresBaseURL && baseURL == "" {
 			return nil, newProviderWriteError(http.StatusBadRequest, "base URL is required for this provider family")
 		}
-		newEntry := management.ConfigAPIKey{
-			APIKey:   firstKey,
-			BaseURL:  baseURL,
-			ProxyURL: firstProxy,
-			Prefix:   strings.TrimSpace(req.Prefix),
-			Priority: req.Priority,
-			Weight:   firstWeight,
-			Headers:  req.Headers,
-			Models:   withoutImageFlag(newProviderModels(models)),
-		}
-		if err := policyEdit.applyToConfigKey(&newEntry, req.DisableCooling); err != nil {
+		newEntries, err := editedConfigProviderKeys(req, management.ConfigAPIKey{}, false, models, policyEdit)
+		if err != nil {
 			_ = audit("provider.create", "provider", family, "failure", map[string]any{"error": err.Error()})
 			return nil, err
 		}
-		_, err := h.appendConfigKeyProvider(ctx, client, spec, newEntry, func(ctx context.Context, entries []management.ConfigAPIKey) error {
-			targetID := fmt.Sprintf("%s%d", spec.IDPrefix, len(entries)-1)
-			createdID = targetID
-			return h.applyProviderMetadata(ctx, targetID, name, website, websiteProvided)
+		_, err = h.appendConfigKeyProviders(ctx, client, spec, newEntries, func(ctx context.Context, entries []management.ConfigAPIKey) error {
+			for position := len(entries) - len(newEntries); position < len(entries); position++ {
+				createdIDs = append(createdIDs, fmt.Sprintf("%s%d", spec.IDPrefix, position))
+			}
+			createdID = createdIDs[0]
+			return h.applyProviderMetadataForIDs(ctx, "", createdIDs, name, website, websiteProvided)
 		})
 		if err != nil {
 			h.notifyPricingAfterPartialCommit(err)
@@ -141,17 +124,21 @@ func (h *Handler) createProvider(ctx context.Context, client *management.Client,
 		h.pricing.NotifyModelsChanged()
 	}
 
-	return map[string]any{
-		"status": "ok",
-		"family": family,
-		"id":     createdID,
-	}, nil
+	result := map[string]any{"status": "ok", "family": family, "id": createdID}
+	if len(createdIDs) > 1 {
+		result["ids"] = createdIDs
+	}
+	return result, nil
 }
 
 func (h *Handler) updateProvider(ctx context.Context, client *management.Client, id string, req SaveProviderRequest, audit providerAudit) (map[string]any, error) {
 	family, index, err := parseProviderID(id)
 	if err != nil || index < 0 {
 		return nil, newProviderWriteError(400, "invalid provider id")
+	}
+	targetFamily := strings.ToLower(strings.TrimSpace(req.Family))
+	if targetFamily != "" && targetFamily != family {
+		return h.moveProviderFamily(ctx, client, id, family, targetFamily, index, req, audit)
 	}
 	name := strings.TrimSpace(req.Name)
 	baseURL := strings.TrimSpace(req.BaseURL)
@@ -169,17 +156,6 @@ func (h *Handler) updateProvider(ctx context.Context, client *management.Client,
 		return nil, err
 	}
 
-	firstKey := apiKey
-	firstProxy := ""
-	var firstWeight *int
-	if len(req.Keys) > 0 {
-		if kVal := strings.TrimSpace(req.Keys[0].APIKey); kVal != "" {
-			firstKey = kVal
-		}
-		firstProxy = strings.TrimSpace(req.Keys[0].ProxyURL)
-		firstWeight = req.Keys[0].Weight
-	}
-
 	policyEdit, err := resolveProviderPolicyEdit(family, req)
 	if err != nil {
 		return nil, err
@@ -193,6 +169,7 @@ func (h *Handler) updateProvider(ctx context.Context, client *management.Client,
 	// gateway has accepted the write. The row, the request list's provider label
 	// and the name resolver all read these maps, so an overlay recorded ahead of a
 	// refused write would leave this console naming a provider CPA never accepted.
+	updatedIDs := []string{id}
 	switch family {
 	case openAICompatibilityFamily:
 		if err := gatedProviderListWrite(h, ctx,
@@ -207,6 +184,9 @@ func (h *Handler) updateProvider(ctx context.Context, client *management.Client,
 					return newProviderWriteError(http.StatusNotFound, "provider index out of bounds")
 				}
 				entry := &(*list)[index]
+				if err := (patchProviderStatusRequest{ExpectedName: req.ExpectedName}).verifyName(entry.Name); err != nil {
+					return err
+				}
 				if name != "" {
 					entry.Name = name
 				}
@@ -217,11 +197,11 @@ func (h *Handler) updateProvider(ctx context.Context, client *management.Client,
 					return err
 				}
 				entry.Disabled = req.Disabled
-				models, err := mergeModelEdits(entry.Models, models)
+				mergedModels, err := mergeModelEdits(entry.Models, models)
 				if err != nil {
 					return err
 				}
-				entry.Models = models
+				entry.Models = mergedModels
 				entry.Headers = req.Headers
 
 				if len(req.Keys) > 0 {
@@ -274,27 +254,19 @@ func (h *Handler) updateProvider(ctx context.Context, client *management.Client,
 		if spec.RequiresBaseURL && baseURL == "" {
 			return nil, newProviderWriteError(http.StatusBadRequest, "base URL is required for this provider family")
 		}
-		if err := h.mutateConfigKeyProvider(ctx, client, spec, index, func(entry *management.ConfigAPIKey) error {
-			if err := policyEdit.applyToConfigKey(entry, req.DisableCooling); err != nil {
-				return err
+		if err := h.mutateConfigKeyProviders(ctx, client, spec, index, func(entry management.ConfigAPIKey) ([]management.ConfigAPIKey, error) {
+			if err := (patchProviderStatusRequest{ExpectedAuthIndex: req.ExpectedAuthIndex}).verifyAuthIndex(entry.AuthIndex); err != nil {
+				return nil, err
 			}
-			entry.BaseURL = entry.SubmittedBaseURL(baseURL)
-			if firstKey != "" {
-				entry.APIKey = firstKey
+			return editedConfigProviderKeys(req, entry, true, models, policyEdit)
+		}, func(ctx context.Context, entries []management.ConfigAPIKey, added int) error {
+			for position := len(entries) - added; position < len(entries); position++ {
+				updatedIDs = append(updatedIDs, fmt.Sprintf("%s%d", spec.IDPrefix, position))
 			}
-			entry.ProxyURL = firstProxy
-			entry.Prefix = strings.TrimSpace(req.Prefix)
-			entry.Priority = req.Priority
-			entry.Weight = firstWeight
-			merged, err := mergeModelEdits(entry.Models, models)
-			if err != nil {
-				return err
+			if len(updatedIDs) == 1 {
+				return h.applyProviderMetadata(ctx, id, name, website, websiteProvided)
 			}
-			entry.Models = withoutImageFlag(merged)
-			entry.Headers = req.Headers
-			return nil
-		}, func(ctx context.Context, _ []management.ConfigAPIKey) error {
-			return h.applyProviderMetadata(ctx, id, name, website, websiteProvided)
+			return h.applyProviderMetadataForIDs(ctx, id, updatedIDs, name, website, websiteProvided)
 		}); err != nil {
 			h.notifyPricingAfterPartialCommit(err)
 			_ = audit("provider.update", "provider", id, "failure", map[string]any{"error": err.Error()})
@@ -308,10 +280,11 @@ func (h *Handler) updateProvider(ctx context.Context, client *management.Client,
 		h.pricing.NotifyModelsChanged()
 	}
 
-	return map[string]any{
-		"status": "ok",
-		"id":     id,
-	}, nil
+	result := map[string]any{"status": "ok", "id": id}
+	if len(updatedIDs) > 1 {
+		result["ids"] = updatedIDs
+	}
+	return result, nil
 }
 
 func (h *Handler) deleteProvider(ctx context.Context, client *management.Client, id string, audit providerAudit) (map[string]any, error) {

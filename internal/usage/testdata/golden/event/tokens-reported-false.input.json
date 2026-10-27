@@ -1,0 +1,11 @@
+{
+  "why": "The provider reported no usable counters: the zeros are not counts.",
+  "now_ms": 0,
+  "body": {
+    "record": {
+      "request_id": "missing",
+      "tokens_reported": false,
+      "tokens": {"input_tokens": 0}
+    }
+  }
+}

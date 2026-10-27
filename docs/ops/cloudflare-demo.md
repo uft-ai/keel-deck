@@ -19,6 +19,7 @@ records why that trade was taken and what it costs.
 | Data | `deploy/cloudflare/data/responses.json` | Captured responses generated from the real handlers |
 | Routing | `deploy/cloudflare/routes.mjs` | Which request is answered by which captured response |
 | Time | `deploy/cloudflare/time.mjs` | Moves the captured history onto the viewer's clock |
+| Live traffic | `deploy/cloudflare/liveRouting.mjs` | Simulated gateway traffic that answers the live routing read and drives the live usage stream |
 | Filters | `deploy/cloudflare/filters.mjs` | Applies the audit trail's category, outcome, search and folding rules, and the service log's `after` position, to the one captured page, so those filters work in the demonstration |
 
 Requests to a static asset never invoke the Worker; requests under `/api` always do.
@@ -29,8 +30,8 @@ than relying on a pattern that could also match a console route.
 
 ```
 pnpm demo:generate          # regenerate, then review the diff
-pnpm demo:generate --check  # fail when the committed copy is stale
-pnpm check:demo             # coverage, freshness and privacy
+go test ./internal/api      # fails when the committed copy is stale
+pnpm check:demo             # coverage and privacy
 ```
 
 `internal/api/demo_export_test.go` starts the real handler over a seeded repository and
@@ -39,13 +40,13 @@ value of generating rather than authoring is that every response has been throug
 same DTO projection a self-hosted install produces, so the demonstration cannot show a
 shape the product never emits. The Model Square response captures CPA-advertised IDs, safe routing provenance and
 bundled models.dev reference facts. Its Worker route maps to the generated `model-square`
-dataset entry; `scripts/demo-inputs.mjs` includes the metadata snapshot so updates invalidate
-the capture. External model lookup links are explicit navigation, not Worker forwarding.
+dataset entry, so a metadata snapshot update changes the capture. External model lookup links are explicit navigation, not Worker forwarding.
 The captured Agent session is the same console DTO: it
 excludes private model history, queued model calls and raw database-query results.
 
 The export is reproducible: two runs over unchanged code are byte-identical, on any
-machine and at any time. That is what makes `--check` meaningful: the following
+machine and at any time. That is what makes the freshness comparison in
+`TestExportDemoDataset` meaningful: the following
 invariants must hold rather than approximately hold.
 
 - **The window is closed, on a fixed instant in the past.** A `preset` resolves against
@@ -98,6 +99,39 @@ discarded. `internal/api/demo_export_test.go` asserts that pair on the exported 
 because the console simply keeps its full response when a tail is dropped - nothing visible
 fails.
 
+Insights captures move by whole weeks so local hours, Monday buckets and the fixed
+weekday cells in the rhythm agree. Relative presets and all-time replay
+closed snapshots with explicit bounds. Calendar presets, custom bounds and explicit
+granularities return `demo_uncaptured`: the static capture cannot recompute those
+windows against the visitor's current date. Every supported preset, including `24h`,
+can end up to seven days before the visitor's clock; the response exposes that end
+instead of labeling it as current. Only those five supported presets are exported.
+
+## The live routing panel runs on simulated traffic
+
+Re-basing keeps a report current, but the dashboard's live routing panel is not a report:
+it plays a request when a read returns a record newer than the last one it holds, and a
+capture re-based on every read never has one. So `GET /usage/routing` and
+`GET /usage/live` are the two reads the Worker composes instead of serving from the
+dataset.
+
+`liveRouting.mjs` is a small gateway that is always busy. Its traffic is a pure function
+of the wall clock - each 500 ms slot's request comes from a generator seeded with the
+slot's number - so every read of an instant agrees, and the console's `after` cursor and
+rolling minute work against it as they do against CPA. It calls `claude-opus-5.5`,
+`gpt-6-astra` and `deepseek-v4.1-flash` through five credentials the rest of the dataset
+already lists (`auth-claude-01`, `auth-codex-01`/`02`, `auth-ds-01`/`02`), at roughly one
+request a second with a handful in flight. Now and then an upstream error moves a request
+to the sibling credential, and every two and a half minutes a credential meets a rate
+limit and rests for 28 seconds while its sibling carries the traffic. Record ids lead with
+the instant an attempt finished, which is the order CPA stores them in; the callers' key
+identities are taken from the captured routing read so they match the key table.
+
+The live stream frames its signals as the gateway does - `ready`, then `usage` when an
+attempt is recorded, at most one per 250 ms - and ends after two minutes, when the browser
+reconnects. The captured `usage-live` entry stays the gateway's own demonstration-mode
+answer (204); the Worker does not serve it.
+
 ## Keeping it current is a gate, not a habit
 
 The dataset describes the API, so a changed response shape leaves the served copy behind
@@ -108,12 +142,11 @@ in a way nobody notices: the page renders, showing what the API said last month.
 - a console route has no declared reads, so a new page cannot be added without a dataset
   entry;
 - a declared read has no captured response;
-- a file the dataset is derived from has changed since it was generated;
 - the dataset contains an operator identifier, a credential shape or a deployment
   hostname. The dataset is downloadable by anyone, so this is a leak rather than a defect.
 
-`scripts/check-demo.test.mjs` covers the gate itself, because a check that cannot fail is
-worse than no check.
+Staleness is `go test`'s verdict: `TestExportDemoDataset` regenerates the dataset and
+requires the committed copy to be byte-identical.
 
 **When you change a console page or its API shape:** regenerate with
 `pnpm demo:generate`, read the diff - it is where a changed shape shows up - and commit
@@ -152,7 +185,7 @@ config rather than configured once in the console, which means a deploy from a f
 reproduces the deployed state instead of quietly re-enabling the address that was turned
 off deliberately.
 
-The demonstration deploys from `master` through Cloudflare's Git integration (Workers
+The demonstration deploys from `main` through Cloudflare's Git integration (Workers
 Builds), which builds and deploys on push. **No repository secret is needed**: Cloudflare
 generates and manages the build's API token, which is what made this preferable to a
 GitHub Actions deployment holding a long-lived credential.
@@ -161,7 +194,7 @@ One-time setup, in the Cloudflare console:
 
 1. Install the Cloudflare GitHub integration and grant it access to this repository only.
 2. Create the Worker `oh-my-cpa-demo`, connect it to this repository, and set the
-   production branch to `master`.
+   production branch to `main`.
 3. **Turn off preview builds**, so a pull request deploys nothing. Uncheck **Enable
    Preview Builds** under Settings → Build → Branch control.
 
@@ -174,7 +207,7 @@ One-time setup, in the Cloudflare console:
    `wrangler versions upload` that looks like it should have produced one:
 
    ```
-   echo "Preview builds are disabled for this Worker; it deploys from master only."
+   echo "Preview builds are disabled for this Worker; it deploys from main only."
    ```
 
    Preview URLs are separately guarded by `workers_dev: false`, which disables them by
@@ -213,7 +246,7 @@ plan, whose bundle limit is 64 MiB uncompressed, and it is why the dataset being
 committed costs nothing to serve.
 
 **Rollback:** Cloudflare keeps previous versions, and rolling back restores the Worker and
-its assets together. The corresponding source change should be reverted on `master` too,
+its assets together. The corresponding source change should be reverted on `main` too,
 or the next push will deploy it again. There is no database to roll back, because there
 is none.
 
@@ -274,8 +307,8 @@ fix is an export case in `internal/api/demo_export_test.go` and a regeneration.
 instant rules in `time.mjs` rather than extending the list of captured fields: the
 convention is `*_at_ms`, and a field that does not follow it is worth renaming.
 
-**`pnpm demo:generate --check` fails immediately after a merge.** Someone changed a source
-file the dataset derives from. Regenerate, read the diff, and commit the data with the
+**`TestExportDemoDataset` fails immediately after a merge.** Someone changed what a
+handler answers. Regenerate, read the diff, and commit the data with the
 change - which is exactly what the gate is for. A diff that touches only timestamps or
 runtime facts is not a source change: it means a new field escaped the export's
 determinism rules, and the fix is a rule in `internal/api/demo_export_test.go`, not a
@@ -340,7 +373,6 @@ allowlisted Antigravity Gemini group through `internal/demo/quota.go`. A second 
 credential has a low current five-hour reading and an adjacent prior-cycle observation,
 so the real handlers can show a historical capacity reference from seeded request costs.
 Claude family windows select only their own models; amounts are never hand-authored.
-The freshness digest covers quota parsing, scope/history rules and repository joins.
 The Worker rebases `from_ms`, `to_ms`, `observed_at_ms` and `reset_at_ms` together for
 current usage and previous-cycle references, leaving their amounts and `basis` unchanged.
 
@@ -354,7 +386,7 @@ Runtime numeric measurements are pinned with either JSON decoder mode, using the
 owner shape to preserve seeded request latency and source-file sizes. Runtime text
 stamps use the same minute precision as rebased millisecond stamps; quota observations
 and creation/update metadata on the seeded clock retain their original precision.
-A second generation must match the committed dataset byte for byte (`pnpm demo:generate --check`).
+A second generation must match the committed dataset byte for byte (`TestExportDemoDataset`).
 
 ### OAuth model rules dataset
 
@@ -408,7 +440,7 @@ page lifetime; reload/reset clears it. Public writes remain refused. ADR 0092 is
 traffic, quieter weekends and occasional idle days. The recent-traffic protection compares UTC
 calendar dates, so every hour of the same date stays active through seven days of age; older
 dates may be idle regardless of the reference time of day. `pnpm demo:generate` captures the real
-handler responses; review and commit the responses/provenance diff. Recordings also pass
+handler responses; review and commit the dataset diff. Recordings also pass
 `pnpm check:demo` privacy checks. `pnpm verify:demo` sends both examples in the built console:
 the Agent must settle its generated interface, while the Playground must settle its answer
 content. Agent acceptance uses English copy and locale-independent action selectors; the

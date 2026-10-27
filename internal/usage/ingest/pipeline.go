@@ -19,6 +19,8 @@ type Pipeline struct {
 	store       *repository.Repository
 	// refresh keeps overlapping manual syncs out of the pipeline.
 	refresh refreshLock
+	// changes tells live readers that stored usage data moved.
+	changes *Changes
 }
 
 // PipelineStatus is what the ingest status endpoint reports.
@@ -42,7 +44,21 @@ func NewPipeline(runner *Runner, processor *Processor, maintenance *Maintenance,
 	if store == nil {
 		return nil, errors.New("usage store is required")
 	}
-	return &Pipeline{runner: runner, processor: processor, maintenance: maintenance, store: store}, nil
+	changes := NewChanges()
+	// Capture wakes decode, and decode publishes: a record reaches a live reader
+	// in the time it takes to write and decode it, with no fixed interval between
+	// the gateway and the browser. Error events need no decode, so they publish
+	// straight from capture.
+	processor.SetCommitHandler(changes.Publish)
+	if runner != nil {
+		runner.SetCaptureHandlers(processor.Wake, changes.Publish)
+	}
+	return &Pipeline{runner: runner, processor: processor, maintenance: maintenance, store: store, changes: changes}, nil
+}
+
+// SubscribeChanges attaches a live reader; see Changes.
+func (p *Pipeline) SubscribeChanges() (<-chan struct{}, func(), error) {
+	return p.changes.Subscribe()
 }
 
 // Runner exposes the collector for wiring and tests.
@@ -132,9 +148,8 @@ type RefreshNowResult struct {
 	Mode string `json:"mode,omitempty"`
 	// Captured counts records persisted to the inbox by this pass.
 	Captured int `json:"captured"`
-	// Decoded counts usage events committed from the inbox while this sync ran.
-	// It is a window delta, so it can include a record captured before this pass
-	// whose decode was still outstanding when the pass started.
+	// Decoded counts processed inbox rows within this pass's capture bounds,
+	// including rows decoded before the persistence barrier began.
 	Decoded int `json:"decoded"`
 	// Pending is how many records from this pass were still awaiting decoding
 	// when the wait ended.
@@ -214,18 +229,22 @@ func (p *Pipeline) RefreshNow(ctx context.Context) (RefreshNowResult, error) {
 		result.Error = security.RedactText(err.Error())
 		return result, err
 	}
-	decodedBefore := p.processor.Status().Decoded
 	drain, err := p.processor.Drain(ctx, watermark, refreshDecodeSeconds)
-	result.Decoded = int(p.processor.Status().Decoded - decodedBefore)
 	result.Pending = drain.Pending
 	result.Failed = drain.Failed
 	if err != nil {
 		result.Error = security.RedactText(err.Error())
 		return result, err
 	}
-	// The drain only sees what it discards itself. The background decoder can
-	// give up on one of this pass's records before the drain starts, so the
-	// pass's own rows are counted instead of a before/after difference.
+	// The background decoder can finish this pass's rows before the barrier
+	// begins. Count their persisted outcomes, not a global counter difference
+	// that can miss early work or include another pass.
+	decoded, err := p.store.CountProcessedUsageInboxBetween(ctx, floor, watermark)
+	if err != nil {
+		result.Error = security.RedactText(err.Error())
+		return result, err
+	}
+	result.Decoded = int(decoded)
 	result.Failed, err = p.store.CountUndecodableUsageInboxBetween(ctx, floor, watermark)
 	if err != nil {
 		result.Error = security.RedactText(err.Error())

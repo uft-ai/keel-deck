@@ -37,7 +37,7 @@ reviews:
   # Generated artifacts whose freshness a gate already proves. The README
   # screenshots are binary, so a review can say nothing about them, and the
   # demonstration dataset is regenerated from the real handlers and pinned by
-  # `pnpm check:demo`; the generators and the pages they capture stay in review.
+  # `TestExportDemoDataset`; the generators and the pages they capture stay in review.
   path_filters:
     - '!docs/images/**'
     - '!deploy/cloudflare/data/**'
@@ -50,9 +50,10 @@ reviews:
     # generated docstring would add noise instead of documentation.
     docstrings:
       enabled: false
-    # Unit-test generation stays on. The recipe below is the finishing touch this
-    # repository actually needs: documentation the change invalidates is
-    # updated in the same change.
+    # Admission is risk-driven: the reviewer checks ownership and gaps rather
+    # than generating another suite for every patch.
+    unit_tests:
+      enabled: false
     custom:
       - name: stale context documents
         instructions: >-
@@ -139,8 +140,8 @@ reviews:
     - path: 'web/src/**/*.{ts,tsx}'
       instructions: >-
         React console. User-visible copy is never hardcoded: new strings are
-        `[zh, en]` pairs in `web/src/i18n/index.tsx` plus matching entries in
-        every catalog under `web/src/i18n/locales/`. Requests go through the single
+        typed keys in the matching area file under every language in
+        `web/src/i18n/locales/`. Requests go through the single
         typed client in `web/src/api/client.ts`; a page calling `fetch` directly is
         a defect. Colors come from the resolved palette in
         `web/src/theme/palette.ts` - nine authored tokens with seventeen derived
@@ -193,23 +194,21 @@ reviews:
         them; a rollback is a new migration rather than a manual edit.
     - path: 'scripts/**'
       instructions: >-
-        The verification harness. Two properties are pinned by tests and by
-        `docs/architecture.md`: the affected-check planner and the UI scenario
-        planner must never silently select nothing, and `pnpm test:fast` must
-        never build the SPA, start the product Vite HTTP listener, start Chromium, or
-        start the fake CPA.
-        An assertion may move to a cheaper layer, but it must not disappear
-        without a replacement that makes the same claim. A change to a suite, a
-        harness module, or either planner must keep those negative properties
-        intact.
+        The verification harness. `pnpm test:fast` must never build the SPA, start
+        the product Vite HTTP listener, start Chromium, or start the fake CPA, and a
+        planner that cannot place a change runs everything rather than nothing.
+        Test additions must identify an uncovered product failure mode, their cheapest
+        credible owner and net cost. Prefer a case or replacement to another file or
+        layer; internal refactors need no new tests by default. Flag a new self-test
+        for tooling that does not ship, a skip switch, a retry or a longer wait
+        (AGENTS.md §5).
     - path: '.github/workflows/**'
       instructions: >-
-        `scripts/validate-workflow.mjs` asserts this workflow's shape: the
-        static and browser jobs, the concurrent master browser phases with both
-        exit statuses collected, and the pinned action versions. A change that
-        alters that shape must update the validator in the same change, since a
-        concurrency step whose status is not collected would report a green
-        build for a failed run.
+        Every `uses:` is pinned to a commit SHA and every checkout sets
+        `persist-credentials: false` (`pnpm verify:workflow:lint`). The required
+        `static`, `browser` and `probes` checks are aggregates that must wait on
+        the `changes` job and fail on any lane result other than success or skipped,
+        or a failed scope decision would read as a pass.
     - path: '{Dockerfile,.env.example,deploy/**}'
       instructions: >-
         Deployment surface. The image is one CGO-free binary with the SPA

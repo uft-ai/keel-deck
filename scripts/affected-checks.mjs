@@ -13,9 +13,7 @@
  *    the test harness, or to this file must run the checks that exercise them -
  *    otherwise editing a test to make it pass would be verified by nothing.
  *
- * `planChecks` is exported so its selection can be asserted directly, including
- * the negative property that matters most: ordinary frontend work must never
- * select a build, Vite, Chromium or the fake CPA.
+ * Ordinary frontend work must never select a build, Vite, Chromium or the fake CPA.
  */
 
 /** Every check the planner can select, as a stable identifier. */
@@ -29,17 +27,17 @@ export const CHECK_IDS = [
   'motion',
   'style-tokens',
   'feedback',
+  'openui-prompt',
   'go',
   'docs',
-  'workflow',
   'toolchain',
   'self-tests',
 ];
 
 const WEB_TEST_INFRASTRUCTURE = [
-  'scripts/ts-resolve.mjs',
   'scripts/verify-fast.mjs',
-  'scripts/test-logic.mjs',
+  'scripts/testing/logic.ts',
+  'tsconfig.tooling.json',
 ];
 
 const DEPENDENCY_INPUTS = new Set([
@@ -53,17 +51,23 @@ function planFileChecks(file) {
   const isWebCode = file.startsWith('web/src/') && /\.(?:ts|tsx)$/.test(file);
 
   if (DEPENDENCY_INPUTS.has(file)) return CHECK_IDS;
-  if (file.startsWith('web/tests/') && /\.(?:ts|tsx)$/.test(file)) add('type-check', 'components', 'self-tests');
+  if (/^scripts\/test-[^/]+\.ts$/.test(file)) return ['type-check', 'logic'];
+  if (file.startsWith('internal/agent/openui/')) add('go', 'openui-prompt');
+  if (file.startsWith('web/src/agent/openui/') || file === 'scripts/generate-openui-prompt.ts') add('openui-prompt');
+  if (file.startsWith('web/tests/') && /\.(?:ts|tsx)$/.test(file)) add('type-check', 'components');
+  if (/^web\/src\/i18n\/locales\//.test(file)) return ['type-check', 'i18n'];
   if (isWebCode) add('type-check', 'logic', 'components', 'i18n', 'css-modules', 'feedback');
   if (file.endsWith('.tsx')) add('antd-lint', 'motion', 'css-modules');
   if (file.endsWith('.css')) add('css-modules', 'motion', 'style-tokens');
   if (/^(?:.*\.go|go\.mod|go\.sum)$/.test(file)
       || file.startsWith('migrations/') || file.startsWith('internal/web/')) add('go');
-  // Go tests are also counted by the fixed-wait ratchet, which is a repository self-test.
-  if (file.endsWith('_test.go')) add('self-tests');
   if (file.endsWith('.md')) add('docs');
-  if (file.startsWith('.github/workflows/') || file === 'scripts/validate-workflow.mjs') add('workflow');
+  // Workflows are linted by actionlint in CI; nothing local exercises them.
+  if (file.startsWith('.github/')) return ['docs'];
   if (file.startsWith('scripts/') || file.startsWith('deploy/cloudflare/')) add('self-tests');
+  // allowJs infers exported JS signatures consumed by typed orchestration.
+  if ((/^(?:scripts|deploy\/cloudflare)\//.test(file) && /\.(?:mjs|ts)$/.test(file))
+      || file === 'tsconfig.tooling.json') add('type-check');
   if ((file.startsWith('scripts/') && file.endsWith('.ts'))
       || WEB_TEST_INFRASTRUCTURE.includes(file)) add('logic');
   if (/^web\/(?:vite\.config\.|tsconfig)/.test(file)) add(...FRONTEND_CHECKS, 'self-tests');

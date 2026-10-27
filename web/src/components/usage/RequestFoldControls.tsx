@@ -1,10 +1,11 @@
 import React from 'react';
-import { Button, Tooltip } from 'antd';
+import { Button } from 'antd';
 
 import { useT } from '../../i18n';
 import { FullscreenExitOutlined, FullscreenOutlined, VerticalAlignTopOutlined } from '../icons';
 import { useViewFlag, type ViewFlag } from './viewFlag';
 import './RequestFoldControls.css';
+import { Tooltip } from '../common/Tooltip';
 
 /**
  * The request page's elements that show a scroll-driven flag. Each subscribes to
@@ -25,8 +26,6 @@ export function RequestFoldToggle({ collapse, onToggle }: { collapse: ViewFlag; 
   return (
     <Tooltip title={label}>
       <Button
-        size="small"
-        type="text"
         className="req-expand-toggle-btn"
         aria-label={label}
         icon={isCollapsed ? <FullscreenExitOutlined /> : <FullscreenOutlined />}

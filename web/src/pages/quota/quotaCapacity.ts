@@ -1,3 +1,4 @@
+import type { MessageKey } from '../../i18n/catalog';
 import type { TFunc } from '../../i18n';
 import type { QuotaCapacityUnavailableReason, QuotaWindow } from '../../types/quota';
 import { formatUsd, nanosToUsd } from '../../types/pricingDisplay';
@@ -25,7 +26,7 @@ export function formatCapacityError(errorPercent: number): string {
   return `±${Number(errorPercent.toFixed(1))}%`;
 }
 
-const REASON_KEYS: Record<QuotaCapacityUnavailableReason, string | null> = {
+const REASON_KEYS: Record<QuotaCapacityUnavailableReason, MessageKey | null> = {
   scope_unknown: 'quota.capacity_reason_scope_unknown',
   history_unavailable: 'quota.capacity_reason_history_unavailable',
   usage_unavailable: 'quota.capacity_reason_usage_unavailable',
@@ -108,4 +109,17 @@ export function compactQuotaCapacity(window: CapacityWindow, tokenStyle: TokenNu
     return `${prefix}≈${formatEstimatedUsd(capacity.cost_nanos / 1_000_000_000, capacity.error_percent)}`;
   }
   return `${prefix}≈${t('quota.capacity_tokens', { n: formatTokens(capacity.tokens, tokenStyle) })}`;
+}
+
+/**
+ * The same reading for the row's tooltip, where it is a sentence of its own: the basis names the
+ * estimate once instead of reading "Est. capacity Prev ≈…", and a previous cycle is never called
+ * the current cycle's capacity.
+ */
+export function describeCompactQuotaCapacity(window: CapacityWindow, tokenStyle: TokenNumberStyle, t: TFunc): string | null {
+  const reading = compactQuotaCapacity(window, tokenStyle, t);
+  if (!reading) return null;
+  const isPreviousCycle = window.capacity?.basis === 'previous_cycle';
+  const figure = isPreviousCycle ? reading.slice(`${t('quota.capacity_previous_short')} `.length) : reading;
+  return `${t(isPreviousCycle ? 'quota.capacity_previous' : 'quota.capacity_estimate')} ${figure}`;
 }

@@ -2,7 +2,6 @@ import React from 'react';
 import { Button, Checkbox, Modal, Segmented, Select } from 'antd';
 
 import { useCustomIcons } from '../../hooks/useCustomIcons';
-import { useOverlayHistory } from '../../hooks/useOverlayHistory';
 import { useT } from '../../i18n';
 import { useTheme } from '../../theme/ThemeContext';
 import type { PluginOAuthLogos } from '../../types/pluginOAuthProviders';
@@ -70,9 +69,8 @@ export const RequestExportDialog: React.FC<RequestExportDialogProps> = ({
   const t = useT();
   const toast = useToast();
   const { theme } = useTheme();
-  const { style: tokenStyle, tpsMode, modelView } = useTokenDisplayStyle();
+  const { style: tokenStyle, tpsMode, modelView, showModelIcons } = useTokenDisplayStyle();
   const customIcons = useCustomIcons(open).data;
-  useOverlayHistory({ isOpen: open, onClose });
 
   const [canvas, setCanvas] = React.useState<HTMLCanvasElement | null>(null);
   const imagesRef = React.useRef<SheetImageCache>(new Map());
@@ -98,6 +96,7 @@ export const RequestExportDialog: React.FC<RequestExportDialogProps> = ({
             tokenStyle,
             tpsMode,
             modelView,
+            showModelIcons,
             credentials,
             providerIcons,
             configuredProviders,
@@ -106,7 +105,7 @@ export const RequestExportDialog: React.FC<RequestExportDialogProps> = ({
           })
         : null,
     [
-      open, isImage, rows, masks, colWidths, t, tokenStyle, tpsMode, modelView,
+      open, isImage, rows, masks, colWidths, t, tokenStyle, tpsMode, modelView, showModelIcons,
       credentials, providerIcons, configuredProviders, pluginLogos,
     ],
   );

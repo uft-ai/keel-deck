@@ -1,6 +1,6 @@
 import { checkConversationExport } from './conversation-export.mjs';
 import { abortFixture } from '../browser-guard.mjs';
-import { until } from '../harness.mjs';
+import { attachedText, until, untilBooted, PAGE_BOOT_TIMEOUT_MS } from '../harness.mjs';
 
 export function playgroundFixtures() {
   return [
@@ -47,7 +47,7 @@ export async function playground({ base, page, check, context }) {
         frame('usage', { usage: { prompt_tokens: 12, completion_tokens: 8, total_tokens: 20 } }) + frame('done', { finish_reason: 'stop', first_content_ms: hasMeasurableTiming ? 1000 : 42, duration_ms: hasMeasurableTiming ? 2000 : 90 })) });
   });
   await page.goto(`${base}/playground`, { waitUntil: 'domcontentloaded' });
-  await page.locator('[data-testid="playground-page"]').waitFor();
+  await untilBooted(page.locator('[data-testid="playground-page"]'), 'the Playground page after a navigation');
   const input = page.getByPlaceholder('Enter a message, or paste an image…');
   check('the message box takes text before a model is chosen, and only sending waits for one', await input.isEnabled() && await page.getByRole('button', { name: 'Send', exact: true }).isDisabled());
   // The model is chosen where the message is written, on the chip the Agent's composer uses.
@@ -58,8 +58,8 @@ export async function playground({ base, page, check, context }) {
   // Reloaded with no pause after the choice: a selection that waited out the parameter debounce
   // before being written is dropped by a reload, which unmounts nothing.
   await page.reload({ waitUntil: 'domcontentloaded' });
-  const target = () => page.locator('[data-testid="target-chip"]').innerText();
-  await until(async () => (await target()).includes('vision-alias'), { label: 'the chosen model after an immediate reload' });
+  const target = () => attachedText(page.locator('[data-testid="target-chip"]'));
+  await until(async () => (await target()).includes('vision-alias'), { label: 'the chosen model after an immediate reload', timeoutMs: PAGE_BOOT_TIMEOUT_MS });
   check('a model chosen just before a reload is still selected after it', (await target()).includes('vision-alias'), await target());
   check('playground offers one image picker beside paste', await page.getByRole('button', { name: 'Add image', exact: true }).count() === 1);
   await input.evaluate((element, base64) => {
@@ -111,13 +111,10 @@ export async function playground({ base, page, check, context }) {
   check('playground renders the streamed answer and measured timing', await page.getByText('A streamed answer').count() > 0 && (await page.locator('[data-testid="playground-page"]').innerText()).includes('42'), 'expected content and first-content timing');
   const transcript = page.locator('[data-testid="playground-transcript"]');
   check('playground turn footer renders metrics and tps', await transcript.locator('.anticon-thunderbolt').count() > 0 && await transcript.locator('.anticon-field-time').count() > 0);
-  // The displayed rate is the shared formula's, not a second one computed for this footer:
-  // the fixture streams 8 output tokens over 90ms with a 42ms first token, a 48ms residual
-  // below the 50ms floor, so the rate must be the end-to-end fallback 8*1000/90 = 88.89 t/s
-  // rather than the 8*1000/48 = 166.67 t/s a residual-window division would give. This asserts
-  // formula parity with the request records; it is not a claim about any particular reported
-  // rate, which depends on that call's own timings.
-  check('the footer tps matches the shared request-record formula', (await page.locator('[data-testid="playground-page"]').innerText()).includes('88.89 t/s'), 'expected the shared formula\'s rate, not a residual-window division');
+  // The fixture streams 8 output tokens over 90ms. The default end-to-end rate uses that
+  // total duration even though a first-content boundary was also observed.
+  const footerTPS = '88.89 t/s';
+  check('the footer defaults to the total-duration rate', (await page.locator('[data-testid="playground-page"]').innerText()).includes(footerTPS), `expected ${footerTPS}`);
   const viewRequest = answer => answer.getByRole('button', { name: 'View in request records', exact: true });
   check('a turn CPA named links to its request record', await viewRequest(page.locator('[data-testid="playground-answer"]').first()).isEnabled());
   check('model output does not fetch external images or execute HTML', external.length === 0 && !await page.evaluate(() => window.__playgroundInjected), external.join(','));
@@ -149,7 +146,7 @@ export async function playground({ base, page, check, context }) {
   mode = 'success'; await regenerate.click();
   await until(() => calls.length === 3, { label: 'the regenerate to reach the upstream' });
   check('regenerating reuses the same request instead of appending a partial answer', JSON.stringify(calls[2]) === JSON.stringify(calls[1]), 'request snapshot equality');
-  await until(async () => (await transcript.innerText()).includes('8.00 t/s'), { label: 'the measurable TPS result' });
+  await until(async () => (await transcript.innerText()).includes('4.00 t/s'), { label: 'the measurable default TPS result' });
   // Match this request's observed output and timing exactly, independently of unrelated list fixtures.
   await page.route('**/api/**/usage/events?*', route => route.fulfill({ json: {
     items: [{ id: 1, event_key: 'tps-fixture', request_id: '0000002a', timestamp_ms: Date.now(),
@@ -158,7 +155,7 @@ export async function playground({ base, page, check, context }) {
       source: 'hmac:tps-fixture', auth_index: 'credential-fixture', api_group_key: 'hmac:tps-fixture', executor_type: 'openai' }],
     has_more: false, limit: 50,
   } }));
-  for (const [label, expected] of [['Include first-token latency', '4.00 t/s'], ['Exclude first-token latency', '8.00 t/s']]) {
+  for (const [label, expected] of [['Exclude first-token latency', '8.00 t/s'], ['Include first-token latency', '4.00 t/s']]) {
     await page.goto(`${base}/omc-settings`, { waitUntil: 'domcontentloaded' });
     const tpsRow = page.locator('.settings-toggle-row').filter({ hasText: 'TPS calculation mode' });
     const write = page.waitForResponse(response => response.url().endsWith('/preferences/omc_tps_calculation_mode') && response.request().method() === 'PUT');
@@ -168,7 +165,7 @@ export async function playground({ base, page, check, context }) {
     await until(async () => (await page.locator('.req-tps-val').first().innerText()) === expected, { label: 'the request record TPS mode' });
     check(`request records honor ${label}`, (await page.locator('.req-tps-val').first().innerText()) === expected);
     await page.goto(`${base}/playground`, { waitUntil: 'domcontentloaded' });
-    await until(async () => (await transcript.innerText()).includes(expected), { label: 'the restored Playground TPS mode' });
+    await until(async () => (await attachedText(transcript)).includes(expected), { label: 'the restored Playground TPS mode', timeoutMs: PAGE_BOOT_TIMEOUT_MS });
     check(`historical Playground answers honor ${label} without inference`, (await transcript.innerText()).includes(expected) && calls.length === 3);
   }
 
@@ -211,6 +208,7 @@ export async function playground({ base, page, check, context }) {
   await page.reload({ waitUntil: 'domcontentloaded' });
   await until(async () => await page.getByText('A streamed answer').count() > 0, {
     label: 'the persisted conversation after a reload',
+    timeoutMs: PAGE_BOOT_TIMEOUT_MS,
   });
   check('refresh restores latest session including conversation across devices', await page.getByText('A streamed answer').count() > 0, 'persisted conversation');
   await until(async () => await distanceFromLatest() < 48, { label: 'the reloaded transcript to settle on the newest message' });
@@ -252,11 +250,11 @@ export async function playgroundNarrow({ base, page, check }) {
   await page.locator('[data-testid="playground-page"]').waitFor();
   await page.getByRole('button', { name: 'Parameters', exact: true }).click();
   await page.locator('.ant-drawer-section').waitFor();
-  await page.goBack();
+  await page.locator('.ant-drawer:visible .ant-drawer-close').click();
   await until(async () => await page.locator('.ant-drawer-section:visible').count() === 0, {
-    label: 'Back to close the settings drawer',
+    label: 'settings drawer to close',
   });
-  check('Back closes playground settings without leaving the page', new URL(page.url()).pathname.endsWith('/playground'), page.url());
+  check('closing playground settings leaves the page in place', new URL(page.url()).pathname.endsWith('/playground'), page.url());
   const geometry = await page.evaluate(() => ({ width: innerWidth, scroll: document.documentElement.scrollWidth, body: document.body.scrollHeight, height: innerHeight,
     page: document.querySelector('[data-testid="playground-page"]').getBoundingClientRect().bottom }));
   check('playground fits a 320px phone and keeps its composer inside the viewport', geometry.scroll <= geometry.width && geometry.page <= geometry.height + 1, JSON.stringify(geometry));
@@ -286,7 +284,7 @@ export async function playgroundNarrow({ base, page, check }) {
     && ['/v1/chat/completions', '/v1/responses', '/v1/messages'].every((path, index) => endpointRows[index]?.includes(path)), endpointRows.join(' | '));
   await endpoints.getByRole('option', { name: 'Messages', exact: true }).click();
   await page.reload({ waitUntil: 'domcontentloaded' });
-  await until(async () => (await page.locator('[data-testid="endpoint-chip"]').innerText()).includes('Messages'), { label: 'the chosen endpoint after a reload' });
+  await until(async () => (await attachedText(page.locator('[data-testid="endpoint-chip"]'))).includes('Messages'), { label: 'the chosen endpoint after a reload', timeoutMs: PAGE_BOOT_TIMEOUT_MS });
   check('an endpoint chosen just before a reload is still selected after it', (await page.locator('[data-testid="endpoint-chip"]').innerText()).includes('Messages'));
   // No model is chosen here. A disabled message box takes no focus, which on a phone is a tap that
   // raises no keyboard and gives no reason.
@@ -326,7 +324,7 @@ async function verifyPlaygroundRecovery({ base, page, check }) {
   await page.getByRole('button', { name: 'Send', exact: true }).click();
   await until(() => subscriptions >= 2, { label: 'Playground to reconnect after a socket error' });
   await page.reload({ waitUntil: 'domcontentloaded' });
-  await page.getByRole('button', { name: 'Stop', exact: true }).waitFor();
+  await untilBooted(page.getByRole('button', { name: 'Stop', exact: true }), 'the Playground to reattach to the running task after a reload');
   await until(() => subscriptions >= 3, { label: 'Playground refresh to subscribe to the same task' });
   check('Playground reload keeps one generation and does not cancel it', generationCount === 1 && cancelCount === 0, JSON.stringify({ generationCount, subscriptions, cancelCount }));
   release();
@@ -337,6 +335,6 @@ async function verifyPlaygroundRecovery({ base, page, check }) {
   await page.locator('[data-testid="playground-empty"]').waitFor();
   await until(async () => (await page.evaluate(async () => (await (await fetch('/omc/api/v1/preferences')).json()).preferences)).playground_session?.turns?.length === 0, { label: 'new conversation to persist' });
   await page.reload({ waitUntil: 'domcontentloaded' });
-  await page.getByRole('button', { name: 'Send', exact: true }).waitFor();
+  await untilBooted(page.getByRole('button', { name: 'Send', exact: true }), 'the cleared conversation after a reload');
   check('a retained completed journal cannot resurrect a cleared conversation', await page.getByText('Recovered playground answer', { exact: true }).count() === 0 && generationCount === 1);
 }

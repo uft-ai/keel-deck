@@ -13,7 +13,10 @@ import (
 // settings. Named here so the API and every page agree on the key instead of
 // each hardcoding its own string.
 const (
-	PreferenceDashboardRange      = "dashboard_range"
+	PreferenceDashboardRange = "dashboard_range"
+	// PreferenceInsightsRange is the Insights page's window, kept apart from the
+	// dashboard's: the two pages answer different questions over different spans.
+	PreferenceInsightsRange       = "insights_range"
 	PreferenceLogFilters          = "log_filters"
 	PreferenceProviderIcons       = "provider_icons"
 	PreferenceProviderNames       = "provider_names"
@@ -22,11 +25,11 @@ const (
 	PreferenceUsageEventsColumns  = "usage_events_columns"
 	PreferenceOAuthManagementView = "oauth_management_view_v1"
 
-	// PreferenceTokenStyle, PreferenceTpsCalculationMode, PreferenceModelView, PreferenceTheme and PreferenceScrollSmoothing
+	// PreferenceTokenStyle, PreferenceTpsCalculationMode, PreferenceModelView, PreferenceTheme and PreferenceReducedMotion
 	// are Oh My CPA's own display settings: how token counts are abbreviated across the
 	// console, how TPS accounts for first-token latency, how the dashboard's model panels group their series (by call point or by
 	// upstream model), which palette each theme mode uses along with any palette the operator
-	// authored, and whether wheel and keyboard scrolls glide. They
+	// authored, and whether console animation is reduced. They
 	// are preferences rather than configuration because they describe how the operator reads
 	// the console, not how anything is served.
 	PreferenceTokenStyle         = "omc_token_style"
@@ -34,7 +37,31 @@ const (
 	PreferenceModelView          = "omc_models_view"
 	PreferenceRequestModelIcons  = "omc_request_model_icons"
 	PreferenceTheme              = "omc_theme"
-	PreferenceScrollSmoothing    = "omc_scroll_smoothing"
+	PreferenceReducedMotion      = "omc_reduced_motion"
+
+	// PreferenceNavHidden is the console rail entries the operator has hidden, as an
+	// array of route keys. Storing the hidden set rather than the visible one is what
+	// makes a destination a later release adds appear without anyone re-enabling it.
+	PreferenceNavHidden = "omc_nav_hidden"
+
+	// PreferenceNavOrder is the console rail's order, as each group key mapped to its route keys in
+	// the order the operator arranged them. A group the document does not name keeps the console's
+	// own order, so a release that adds a group or an entry needs no rewrite of what is stored.
+	PreferenceNavOrder = "omc_nav_order"
+
+	// PreferenceSidebarCollapsed remembers the desktop rail independently of the transient phone drawer.
+	PreferenceSidebarCollapsed = "omc_sidebar_collapsed"
+
+	// PreferenceDashboardLayout is the dashboard's widget arrangement: every widget the console
+	// knows, in reading order, with its width and whether it is hidden. A widget a later release
+	// adds is missing from an older document, and the console places and shows it by default.
+	PreferenceDashboardLayout = "omc_dashboard_layout"
+
+	// PreferenceFonts maps a typographic role - `ui` for the interface, `mono` for code
+	// and figures - to a built-in typeface or an installed family (`font:<id>`). A role
+	// left out uses the console's default. References to installed families are checked
+	// on write, and deleting a family clears the roles that used it.
+	PreferenceFonts = "omc_fonts"
 
 	// PreferencePlaygroundSession persists the single latest playground session:
 	// the target key's usage fingerprint and call point, the generation parameters
@@ -58,6 +85,14 @@ const (
 	// environment configuration because it is an operator's running decision about how often
 	// credentials are read, made from the console that shows the readings.
 	PreferenceQuotaAutoRefresh = "omc_quota_auto_refresh"
+
+	// PreferenceOMCPluginSource is whether Oh My CPA's own plugin registry is listed in
+	// the plugin store. The server reads it: the store reconciles CPA's
+	// `plugins.store-sources` with it, which is what keeps the registry present without
+	// anyone configuring it and removes it when the operator switches it off. A
+	// preference rather than configuration because the address is compiled in and only
+	// the running decision is the operator's.
+	PreferenceOMCPluginSource = "omc_plugin_source_enabled"
 )
 
 // MaxPreferenceValueBytes bounds a stored value. Preferences are small UI
@@ -162,6 +197,11 @@ func (r *Repository) putPreferences(ctx context.Context, values map[string]strin
 	for key, value := range values {
 		if key == PreferenceProviderIcons {
 			if err := validateCustomIconReferences(ctx, tx, value); err != nil {
+				return err
+			}
+		}
+		if key == PreferenceFonts {
+			if err := validateFontReferences(ctx, tx, value); err != nil {
 				return err
 			}
 		}

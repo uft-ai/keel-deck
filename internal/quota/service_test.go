@@ -108,7 +108,7 @@ func TestNanRefreshReadsTheLedgerBeforeFetchingQuota(t *testing.T) {
 			return management.PeriodRecord{Version: 4, Blocked: false}, nil
 		},
 	}
-	result, err := NewService(&client).RefreshCredentialQuotaModels(context.Background(), management.AuthFile{AuthIndex: "1111111111111111", Type: "nan", Provider: "nan"}, nil, []string{"qwen3.8-flash"})
+	result, err := NewService(&client).RefreshCredentialQuotaWith(context.Background(), management.AuthFile{AuthIndex: "1111111111111111", Type: "nan", Provider: "nan"}, nil, ReadOptions{Models: []string{"qwen3.8-flash"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestNanRefreshKeepsANotRenewedBlockVisible(t *testing.T) {
 			return management.PeriodRecord{}, &management.HTTPError{StatusCode: 409, Body: `{"error":"not_renewed"}`}
 		},
 	}
-	result, err := NewService(&client).RefreshCredentialQuotaModels(context.Background(), management.AuthFile{AuthIndex: "1111111111111111", Type: "nan", Provider: "nan"}, nil, []string{"qwen3.8-flash"})
+	result, err := NewService(&client).RefreshCredentialQuotaWith(context.Background(), management.AuthFile{AuthIndex: "1111111111111111", Type: "nan", Provider: "nan"}, nil, ReadOptions{Models: []string{"qwen3.8-flash"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +174,7 @@ func TestNanRefreshObservesEveryConfiguredModel(t *testing.T) {
 	service := NewService(&client)
 	file := management.AuthFile{AuthIndex: "1111111111111111", Type: "nan", Provider: "nan"}
 	models := []string{"qwen3.8-flash", "qwen3.6", "qwen3.8-flash"}
-	first, err := service.RefreshCredentialQuotaModels(context.Background(), file, nil, models)
+	first, err := service.RefreshCredentialQuotaWith(context.Background(), file, nil, ReadOptions{Models: models})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +184,7 @@ func TestNanRefreshObservesEveryConfiguredModel(t *testing.T) {
 	if puts[0].State != "available" || puts[1].State != "exhausted" || puts[0].ObservationID == puts[1].ObservationID {
 		t.Fatalf("observations = %+v", puts)
 	}
-	second, err := service.RefreshCredentialQuotaModels(context.Background(), file, first, models)
+	second, err := service.RefreshCredentialQuotaWith(context.Background(), file, first, ReadOptions{Models: models})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +199,7 @@ func TestNanRefreshObservesEveryConfiguredModel(t *testing.T) {
 	failing.get = func(context.Context, string, string) (management.PeriodRead, error) {
 		return management.PeriodRead{}, &management.HTTPError{StatusCode: 503, Body: `{"error":"ledger_unavailable"}`}
 	}
-	failed, err := NewService(&failing).RefreshCredentialQuotaModels(context.Background(), file, nil, []string{"qwen3.8-flash", "qwen3.6"})
+	failed, err := NewService(&failing).RefreshCredentialQuotaWith(context.Background(), file, nil, ReadOptions{Models: []string{"qwen3.8-flash", "qwen3.6"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +222,7 @@ func TestNanRefreshDoesNotExhaustAPositiveUnknownReset(t *testing.T) {
 			return management.PeriodRecord{}, &management.HTTPError{StatusCode: 409, Body: `{"error":"not_renewed"}`}
 		},
 	}
-	result, err := NewService(&client).RefreshCredentialQuotaModels(context.Background(), management.AuthFile{AuthIndex: "1111111111111111", Type: "nan", Provider: "nan"}, nil, []string{"qwen3.8-flash"})
+	result, err := NewService(&client).RefreshCredentialQuotaWith(context.Background(), management.AuthFile{AuthIndex: "1111111111111111", Type: "nan", Provider: "nan"}, nil, ReadOptions{Models: []string{"qwen3.8-flash"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -500,11 +500,13 @@ func TestRefreshCredentialQuotaAttachesClaudeResetGrants(t *testing.T) {
 	// on the same usage endpoint, and its failure must not fail the refresh.
 	// No test here spends anything; the claim path does not exist.
 	var grantsURL string
+	var grantsHeaders map[string]string
 	client := &mockCPAClient{
 		apiCallFunc: func(ctx context.Context, req management.ApiCallRequest) (management.ApiCallResponse, error) {
 			switch {
 			case strings.Contains(req.URL, "cedar_ember"):
 				grantsURL = req.URL
+				grantsHeaders = req.Header
 				return management.ApiCallResponse{StatusCode: 200, Body: json.RawMessage(
 					`{"cedar_ember":{"eligible":true,"grants":[{"id":"grant-9","label":"Weekly","resets_total":3,"resets_left":2,"ends_at":"2026-10-09T00:00:00Z"}]}}`)}, nil
 			case strings.Contains(req.URL, "oauth/usage"):
@@ -526,6 +528,11 @@ func TestRefreshCredentialQuotaAttachesClaudeResetGrants(t *testing.T) {
 	}
 	if !strings.Contains(grantsURL, "cedar_ember=1") || !strings.Contains(grantsURL, "skip_spend=1") {
 		t.Fatalf("grants URL = %q, want the grant program query", grantsURL)
+	}
+	// Without a Claude Code identity the program reports every account as
+	// ineligible with no grants, so the display would stay empty.
+	if grantsHeaders["User-Agent"] != ClaudeCLIUserAgent || grantsHeaders["x-app"] != "cli" {
+		t.Fatalf("grants headers = %v, want the Claude Code client identity", grantsHeaders)
 	}
 	if len(result.ResetGrants) != 1 || result.ResetGrants[0].ID != "grant-9" || result.ResetGrants[0].ResetsLeft != 2 {
 		t.Fatalf("reset grants = %+v, want the weekly grant", result.ResetGrants)
@@ -1028,5 +1035,23 @@ func TestRefreshMarksAReadThatPublishedNoWindow(t *testing.T) {
 	}
 	if len(result.Windows) != 0 || result.Error != "" {
 		t.Fatalf("result = %+v, want an empty reading without an error", result)
+	}
+}
+
+// Balances and extra usage come from the usage read: a failed profile read must
+// not drop them along with the plan label it would have supplied.
+func TestRefreshClaudeKeepsBalancesWithoutAProfile(t *testing.T) {
+	client := &mockCPAClient{apiCallFunc: func(ctx context.Context, req management.ApiCallRequest) (management.ApiCallResponse, error) {
+		if strings.Contains(req.URL, "oauth/usage") && !strings.Contains(req.URL, "cedar_ember") {
+			return management.ApiCallResponse{StatusCode: 200, Body: json.RawMessage(`{"five_hour":{"utilization":30},"iguana_necktie":{"utilization":10,"limit_dollars":50,"used_dollars":5,"remaining_dollars":45,"resets_at":null},"extra_usage":{"is_enabled":false}}`)}, nil
+		}
+		return management.ApiCallResponse{StatusCode: 500}, nil
+	}}
+	result, err := NewService(client).RefreshCredentialQuota(context.Background(), management.AuthFile{AuthIndex: "cl-2", Name: "claude.json", Type: "claude", Provider: "claude"}, nil)
+	if err != nil {
+		t.Fatalf("RefreshCredentialQuota error: %v", err)
+	}
+	if result.Plan == nil || result.Plan.PlanLabel != "" || len(result.Plan.Balances) != 1 || result.Plan.ExtraUsage == nil {
+		t.Fatalf("plan = %+v, want an unlabelled plan carrying the balance and extra usage", result.Plan)
 	}
 }

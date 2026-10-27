@@ -1,10 +1,10 @@
+import { translateOr } from '../../i18n/catalog';
 import { useTimeZone } from '../../utils/TimeZoneProvider';
 import React from 'react';
 import { Button } from 'antd';
 import dayjs from '../../utils/time';
 import { DownOutlined, FilterOutlined, UpOutlined } from '../icons';
 import { useT } from '../../i18n';
-import { useOverlayHistory } from '../../hooks/useOverlayHistory';
 import {
   categoryOf,
   formatDetailValue,
@@ -44,7 +44,6 @@ export const AuditEventDrawer: React.FC<AuditEventDrawerProps> = ({ event, newer
   useTimeZone();
   const t = useT();
   const isOpen = event !== undefined;
-  useOverlayHistory({ isOpen, onClose });
 
   // `[` and `]` step through the loaded trail, as they do in the request drawer.
   React.useEffect(() => {
@@ -68,7 +67,7 @@ export const AuditEventDrawer: React.FC<AuditEventDrawerProps> = ({ event, newer
       { key: 'time', label: t('audit.field_time'), value: <span className={styles['audit-mono']}>{dayjs(event.occurred_at_ms).format('YYYY-MM-DD HH:mm:ss.SSS')}</span> },
       { key: 'action', label: t('audit.field_action'), value: <span className={styles['audit-mono']}>{event.action}</span> },
     );
-    if (category) facts.push({ key: 'category', label: t('audit.col_category'), value: t(`audit.cat.${category}`) });
+    if (category) facts.push({ key: 'category', label: t('audit.col_category'), value: translateOr(t, `audit.cat.${category}`, category) });
     facts.push({
       key: 'target',
       label: t('audit.field_target'),

@@ -9,10 +9,11 @@ import {
   Row,
   Select,
 } from 'antd';
-import { CheckSquareOutlined, CloseOutlined, DownOutlined, PlusOutlined, SyncOutlined, UpOutlined } from '../icons';
+import { CheckSquareOutlined, CloseOutlined, DownOutlined, PlusOutlined, SyncOutlined } from '../icons';
 import { Switch } from '../common/Switch';
 
 import { useT } from '../../i18n';
+import type { MessageKey } from '../../i18n/catalog';
 import { useCustomIcons } from '../../hooks/useCustomIcons';
 import { usePluginOAuthLogos } from '../../hooks/usePluginOAuthLogos';
 import { customIconID } from '../../types/customIcons';
@@ -25,14 +26,22 @@ import { PROVIDER_FAMILIES, lookupProviderFamily } from '../../types/providerFam
 import { isNanBaseURL, NAN_PROVIDER } from '../../types/providerKinds';
 
 const OPENAI_COMPATIBILITY_FAMILY = 'openai-compatibility';
-import { useOverlayHistory } from '../../hooks/useOverlayHistory';
 import type { useProviderManagement } from './useProviderManagement';
 import { EditorSection } from './EditorSection';
+import { Fold } from '../common/Fold';
 import { RuntimePolicySection } from './RuntimePolicySection';
 import { countPolicyOverrides } from './runtimePolicy';
 import { ModelOptionsFields } from './ModelOptionsFields';
 import { modelOptionsProblem } from './modelOptions';
 import { ModelPickerModal } from './ModelPickerModal';
+import {
+  OPENCODE_SESSION_HEADER,
+  OPENCODE_SESSION_HEADER_VALUE,
+  openCodeSessionState,
+  isOpenCodeEndpoint,
+  withOpenCodeSessionHeader,
+} from './opencodeSession';
+import { Notice } from '../feedback';
 import { SecretInput } from '../common/SecretInput';
 import styles from './ProviderEditorDrawer.module.css';
 import { AppDrawer } from '../common/AppDrawer';
@@ -110,6 +119,7 @@ interface ProviderEditorDrawerProps extends Pick<
   | 'handleAddModel'
   | 'updateModelImage'
   | 'toggleThinkingLevel'
+  | 'setThinkingLevels'
   | 'toggleKeyExpanded'
   | 'handleKeyAdd'
   | 'handleTestKey'
@@ -118,7 +128,7 @@ interface ProviderEditorDrawerProps extends Pick<
   | 'handleSaveProvider'
 > {}
 
-const THINKING_LEVEL_OPTIONS = [
+const THINKING_LEVEL_OPTIONS: readonly { value: string; labelKey: MessageKey }[] = [
   { value: 'none', labelKey: 'pro.level_none' },
   { value: 'minimal', labelKey: 'pro.level_minimal' },
   { value: 'low', labelKey: 'pro.level_low' },
@@ -215,6 +225,7 @@ export function ProviderEditorDrawer({
     handleAddModel,
     updateModelImage,
     toggleThinkingLevel,
+    setThinkingLevels,
     toggleKeyExpanded,
     handleKeyAdd,
     handleTestKey,
@@ -230,10 +241,6 @@ export function ProviderEditorDrawer({
   const iconName = selectedCustomID
     ? customIcons.data?.find((icon) => icon.id === selectedCustomID)?.name ?? t('pro.field_icon')
     : formIcon;
-
-  // The provider editor is the deepest surface on this page, so Back closing it is the
-  // difference between abandoning an edit and losing the page it was made on.
-  useOverlayHistory({ isOpen: providerDrawerOpen, onClose: handleCloseProviderDrawer });
 
   // The picker's options come from the family registry, so a family the console
   // manages cannot appear in one control and not the other.
@@ -251,6 +258,10 @@ export function ProviderEditorDrawer({
     ? NAN_PROVIDER.preset
     : formFamily;
   const chooseFamily = (value: string) => {
+    modelFetchSeqRef.current += 1;
+    setEndpointModels([]);
+    setIsPullingModels(false);
+    setIsModelPickerOpen(false);
     if (value !== NAN_PROVIDER.preset) {
       setFormFamily(value);
       if (!iconManuallySelected) setFormIcon(getProviderDefaultIcon(value, formName, formBaseURL));
@@ -258,9 +269,6 @@ export function ProviderEditorDrawer({
     }
     setFormFamily(OPENAI_COMPATIBILITY_FAMILY);
     setFormBaseURL(NAN_PROVIDER.baseURL);
-    modelFetchSeqRef.current += 1;
-    setEndpointModels([]);
-    setIsPullingModels(false);
     if (!formName.trim()) setFormName(NAN_PROVIDER.label);
     if (!formPrefix.trim()) setFormPrefix(NAN_PROVIDER.prefix);
     if (!formWebsite.trim()) setFormWebsite(NAN_PROVIDER.website);
@@ -273,6 +281,14 @@ export function ProviderEditorDrawer({
   const configuredModelNames = new Set(
     formModels.map((m) => m.name.trim()).filter((name) => name !== ''),
   );
+  const openCodeSession = isOpenCodeEndpoint(formBaseURL) ? openCodeSessionState(formHeaders) : null;
+
+  // The one click only edits the draft: the header travels with the Save the
+  // operator already has to make, so nothing is written behind their back.
+  const handleAddOpenCodeSessionHeader = () => {
+    setFormHeaders((prev) => withOpenCodeSessionHeader(prev, `hdr-opencode-${Date.now()}`));
+    setHeadersSectionOpen(true);
+  };
 
   return (
 
@@ -345,11 +361,20 @@ export function ProviderEditorDrawer({
           {/* Driver & Name */}
           <Row gutter={16}>
             <Col xs={24} sm={12}>
-              <Form.Item label={t('pro.field_family')} required>
+              <Form.Item
+                label={t('pro.field_family')}
+                required
+                extra={editingProvider && formFamily !== editingProvider.family
+                  ? t(formFamily !== 'openai-compatibility' && formKeys.length > 1
+                    ? 'pro.family_change_keys_hint'
+                    : 'pro.family_change_hint')
+                  : undefined}
+              >
                 <Select
+                  aria-label={t('pro.field_family')}
                   value={familyValue}
                   onChange={chooseFamily}
-                  disabled={!!editingProvider}
+                  disabled={createProviderMutation.isPending || updateProviderMutation.isPending}
                   options={familyOptions}
                 />
               </Form.Item>
@@ -398,6 +423,41 @@ export function ProviderEditorDrawer({
               placeholder={t('pro.field_base_url_ph')}
             />
           </Form.Item>
+
+          {/* Guidance sits with the URL that makes the header necessary: the
+              Custom Headers group is collapsed by default, and a requirement
+              discovered only after a failed request is the bug this prevents. */}
+          {openCodeSession === 'missing' && (
+            <Notice
+              tone="warning"
+              className={styles['endpoint-notice']}
+              title={t('pro.opencode_session_title')}
+              description={t('pro.opencode_session_desc', {
+                header: OPENCODE_SESSION_HEADER,
+                value: OPENCODE_SESSION_HEADER_VALUE,
+              })}
+              action={
+                <Button size="small" onClick={handleAddOpenCodeSessionHeader}>
+                  {t('pro.opencode_session_add', { header: OPENCODE_SESSION_HEADER })}
+                </Button>
+              }
+            />
+          )}
+          {/* Two configured ids are reported, never resolved: whichever one this
+              console picked would silently replace the other on the wire. */}
+          {openCodeSession === 'conflict' && (
+            <Notice
+              tone="warning"
+              className={styles['endpoint-notice']}
+              title={t('pro.opencode_session_conflict_title')}
+              description={t('pro.opencode_session_conflict_desc', { header: OPENCODE_SESSION_HEADER })}
+              action={
+                <Button size="small" onClick={() => setHeadersSectionOpen(true)}>
+                  {t('pro.opencode_session_review')}
+                </Button>
+              }
+            />
+          )}
 
           {/* Website: console metadata, deliberately not a CPA field. */}
           <Form.Item
@@ -506,6 +566,10 @@ export function ProviderEditorDrawer({
                   </Button>
                 </div>
 
+                {formFamily !== 'openai-compatibility' && formKeys.length > 1 && (
+                  <div className={styles['section-note']}>{t('pro.keys_split_hint')}</div>
+                )}
+
                 {/* Key Cards List */}
                 <div className={styles['item-list']}>
                   {formKeys.map((k, idx) => {
@@ -541,7 +605,8 @@ export function ProviderEditorDrawer({
                             <Button
                               type="text"
                               size="small"
-                              icon={isExpanded ? <UpOutlined /> : <DownOutlined />}
+                              icon={<DownOutlined className={styles['chevron']} />}
+                              data-expanded={isExpanded || undefined}
                               aria-hidden="true"
                               tabIndex={-1}
                               onClick={() => toggleKeyExpanded(k.id)}
@@ -572,71 +637,69 @@ export function ProviderEditorDrawer({
                         </div>
 
                         {/* Key Item Body (when expanded) */}
-                        {isExpanded && (
-                          <div className={styles['item-body']}>
-                            {/* API Key */}
-                            <div>
-                              <div className={styles['item-field-label']}>
-                                {t('pro.api_key_label')}
-                              </div>
-                              <SecretInput
-                                value={k.apiKey || ''}
-                                onChange={(e) =>
-                                  setFormKeys((prev) =>
-                                    prev.map((item) =>
-                                      item.id === k.id ? { ...item, apiKey: e.target.value } : item
-                                    )
-                                  )
-                                }
-                                placeholder={t('pro.field_key_ph_create')}
-                                className={styles['full-width']}
-                              />
+                        <Fold isOpen={isExpanded} className={styles['item-body']}>
+                          {/* API Key */}
+                          <div>
+                            <div className={styles['item-field-label']}>
+                              {t('pro.api_key_label')}
                             </div>
-
-                            {/* Proxy URL */}
-                            <div>
-                              <div className={styles['item-field-label']}>
-                                {t('pro.proxy_url_label')}
-                              </div>
-                              <Input
-                                value={k.proxyUrl || ''}
-                                onChange={(e) =>
-                                  setFormKeys((prev) =>
-                                    prev.map((item) =>
-                                      item.id === k.id ? { ...item, proxyUrl: e.target.value } : item
-                                    )
+                            <SecretInput
+                              value={k.apiKey || ''}
+                              onChange={(e) =>
+                                setFormKeys((prev) =>
+                                  prev.map((item) =>
+                                    item.id === k.id ? { ...item, apiKey: e.target.value } : item
                                   )
-                                }
-                                placeholder="http://127.0.0.1:7890"
-                                className={styles['full-width']}
-                              />
+                                )
+                              }
+                              placeholder={t('pro.field_key_ph_create')}
+                              className={styles['full-width']}
+                            />
+                          </div>
+
+                          {/* Proxy URL */}
+                          <div>
+                            <div className={styles['item-field-label']}>
+                              {t('pro.proxy_url_label')}
                             </div>
-
-                            {/* Schedule Weight */}
-                            <div>
-                              <div className={styles['item-field-label']}>
-                                {t('pro.weight_label')}
-                              </div>
-                              <InputNumber
-                                value={k.weight ?? 1}
-                                onChange={(val) =>
-                                  setFormKeys((prev) =>
-                                    prev.map((item) =>
-                                      item.id === k.id ? { ...item, weight: val ?? 1 } : item
-                                    )
+                            <Input
+                              value={k.proxyUrl || ''}
+                              onChange={(e) =>
+                                setFormKeys((prev) =>
+                                  prev.map((item) =>
+                                    item.id === k.id ? { ...item, proxyUrl: e.target.value } : item
                                   )
-                                }
-                                min={0}
-                                max={1000000}
-                                className={styles['full-width']}
-                                placeholder="1"
-                              />
-                              <div className={styles['field-hint']}>
-                                {t('pro.weight_desc')}
-                              </div>
+                                )
+                              }
+                              placeholder="http://127.0.0.1:7890"
+                              className={styles['full-width']}
+                            />
+                          </div>
+
+                          {/* Schedule Weight */}
+                          <div>
+                            <div className={styles['item-field-label']}>
+                              {t('pro.weight_label')}
+                            </div>
+                            <InputNumber
+                              value={k.weight ?? 1}
+                              onChange={(val) =>
+                                setFormKeys((prev) =>
+                                  prev.map((item) =>
+                                    item.id === k.id ? { ...item, weight: val ?? 1 } : item
+                                  )
+                                )
+                              }
+                              min={0}
+                              max={1000000}
+                              className={styles['full-width']}
+                              placeholder="1"
+                            />
+                            <div className={styles['field-hint']}>
+                              {t('pro.weight_desc')}
                             </div>
                           </div>
-                        )}
+                        </Fold>
                       </div>
                     );
                   })}
@@ -870,7 +933,7 @@ export function ProviderEditorDrawer({
                             <Button
                               type="text"
                               size="small"
-                              icon={isExpanded ? <UpOutlined /> : <DownOutlined />}
+                              icon={<DownOutlined className={styles['chevron']} />}
                               aria-label={m.name || t('pro.actual_request_model')}
                               aria-expanded={isExpanded}
                               onClick={() => toggleModelExpanded(m.id)}
@@ -893,76 +956,92 @@ export function ProviderEditorDrawer({
                           </div>
 
                           {/* Model Card Body (expanded) */}
-                          {isExpanded && (
-                            <div className={styles['item-body']}>
-                              {/* Only the OpenAI-compatible model entry has the image flag;
-                                  CPA refuses it on every other family's list. */}
-                              {supportsModelImage && (
-                                <div>
-                                  <Checkbox
-                                    checked={m.image || false}
-                                    onChange={(e) => updateModelImage(m.id, e.target.checked)}
-                                  >
-                                    <span className={styles['flag-label']}>
-                                      {t('pro.allow_image_endpoint')}
-                                    </span>
-                                  </Checkbox>
-                                  <div className={styles['flag-desc']}>
-                                    {t('pro.allow_image_endpoint_desc')}
-                                  </div>
-                                </div>
-                              )}
-
-                              {/* Option: Allowed Thinking Levels */}
+                          <Fold isOpen={isExpanded} className={styles['item-body']}>
+                            {/* Only the OpenAI-compatible model entry has the image flag;
+                                CPA refuses it on every other family's list. */}
+                            {supportsModelImage && (
                               <div>
-                                <div className={styles['item-field-label']}>
-                                  {t('pro.allowed_thinking_levels')}
+                                <Checkbox
+                                  checked={m.image || false}
+                                  onChange={(e) => updateModelImage(m.id, e.target.checked)}
+                                >
+                                  <span className={styles['flag-label']}>
+                                    {t('pro.allow_image_endpoint')}
+                                  </span>
+                                </Checkbox>
+                                <div className={styles['flag-desc']}>
+                                  {t('pro.allow_image_endpoint_desc')}
                                 </div>
-                                <Row gutter={[10, 10]}>
-                                  {THINKING_LEVEL_OPTIONS.map((opt) => {
-                                    const isChecked =
-                                      m.thinking?.levels?.includes(opt.value) || false;
-                                    return (
-                                      <Col xs={24} sm={12} key={opt.value}>
-                                        <div
-                                          role="button"
-                                          tabIndex={0}
-                                          onClick={() => toggleThinkingLevel(m.id, opt.value)}
-                                          onKeyDown={(e) => {
-                                            if (e.key === ' ' || e.key === 'Enter') {
-                                              e.preventDefault();
-                                              toggleThinkingLevel(m.id, opt.value);
-                                            }
-                                          }}
-                                          aria-pressed={isChecked}
-                                          className={`${styles['level-option']} ${isChecked ? styles['level-option-checked'] : ''}`}
-                                        >
-                                          <Checkbox checked={isChecked} tabIndex={-1} className={styles['level-check']}>
-                                            <span className={styles['level-label']}>{t(opt.labelKey)}</span>
-                                          </Checkbox>
-                                          <span className={styles['level-value']}>{opt.value}</span>
-                                        </div>
-                                      </Col>
-                                    );
-                                  })}
-                                </Row>
                               </div>
+                            )}
 
-                              <ModelOptionsFields
-                                idPrefix={`model-${m.id}`}
-                                options={m.options}
-                                fields={modelOptionFields}
-                                problem={modelOptionsProblem(m.options, modelOptionFields)}
-                                onChange={(patch) =>
-                                  setFormModels((prev) =>
-                                    prev.map((item) =>
-                                      item.id === m.id ? { ...item, options: { ...item.options, ...patch } } : item
-                                    )
-                                  )
-                                }
-                              />
+                            {/* Option: Allowed Thinking Levels */}
+                            <div>
+                              <div className={styles['level-head']}>
+                                <span className={styles['item-field-label']}>
+                                  {t('pro.allowed_thinking_levels')}
+                                </span>
+                                <Checkbox
+                                  className={styles['level-select-all']}
+                                  checked={THINKING_LEVEL_OPTIONS.every((opt) => m.thinking?.levels?.includes(opt.value))}
+                                  indeterminate={THINKING_LEVEL_OPTIONS.some((opt) => m.thinking?.levels?.includes(opt.value))
+                                    && !THINKING_LEVEL_OPTIONS.every((opt) => m.thinking?.levels?.includes(opt.value))}
+                                  onChange={(event) => {
+                                    const current = m.thinking?.levels ?? [];
+                                    const known = new Set(THINKING_LEVEL_OPTIONS.map((opt) => opt.value));
+                                    const next = event.target.checked
+                                      ? [...THINKING_LEVEL_OPTIONS.map((opt) => opt.value), ...current.filter((level) => !known.has(level))]
+                                      : current.filter((level) => !known.has(level));
+                                    setThinkingLevels(m.id, next);
+                                  }}
+                                >
+                                  {t('pro.select_all')}
+                                </Checkbox>
+                              </div>
+                              <Row gutter={[10, 10]}>
+                                {THINKING_LEVEL_OPTIONS.map((opt) => {
+                                  const isChecked =
+                                    m.thinking?.levels?.includes(opt.value) || false;
+                                  return (
+                                    <Col xs={24} sm={12} key={opt.value}>
+                                      <div
+                                        role="button"
+                                        tabIndex={0}
+                                        onClick={() => toggleThinkingLevel(m.id, opt.value)}
+                                        onKeyDown={(e) => {
+                                          if (e.key === ' ' || e.key === 'Enter') {
+                                            e.preventDefault();
+                                            toggleThinkingLevel(m.id, opt.value);
+                                          }
+                                        }}
+                                        aria-pressed={isChecked}
+                                        className={`${styles['level-option']} ${isChecked ? styles['level-option-checked'] : ''}`}
+                                      >
+                                        <Checkbox checked={isChecked} tabIndex={-1} className={styles['level-check']}>
+                                          <span className={styles['level-label']}>{t(opt.labelKey)}</span>
+                                        </Checkbox>
+                                        <span className={styles['level-value']}>{opt.value}</span>
+                                      </div>
+                                    </Col>
+                                  );
+                                })}
+                              </Row>
                             </div>
-                          )}
+
+                            <ModelOptionsFields
+                              idPrefix={`model-${m.id}`}
+                              options={m.options}
+                              fields={modelOptionFields}
+                              problem={modelOptionsProblem(m.options, modelOptionFields)}
+                              onChange={(patch) =>
+                                setFormModels((prev) =>
+                                  prev.map((item) =>
+                                    item.id === m.id ? { ...item, options: { ...item.options, ...patch } } : item
+                                  )
+                                )
+                              }
+                            />
+                          </Fold>
                         </div>
                       );
                     })}

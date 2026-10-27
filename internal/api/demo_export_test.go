@@ -30,6 +30,7 @@ import (
 	"github.com/oh-my-cpa/oh-my-cpa/internal/pricing"
 	"github.com/oh-my-cpa/oh-my-cpa/internal/quota"
 	"github.com/oh-my-cpa/oh-my-cpa/internal/repository"
+	"github.com/oh-my-cpa/oh-my-cpa/internal/testkit"
 )
 
 // The public demo is served from a static host, so its API responses have to exist
@@ -40,8 +41,10 @@ import (
 // the fixtures instead would duplicate the response shapes, which is the most
 // expensive thing in the repository to keep correct.
 //
-// It is a test rather than a command so it can use the existing test seams, and it
-// writes nothing unless explicitly asked. Run it with:
+// It is a test rather than a command so it can use the existing test seams. In the
+// ordinary suite it regenerates the dataset in memory and compares it with the
+// committed copy, so a change that moves a served response fails `go test` until
+// `pnpm demo:generate` is run and the diff reviewed. It writes only when asked:
 //
 //	OMCPA_DEMO_EXPORT_DIR=<dir> go test ./internal/api -run TestExportDemoDataset -count=1
 //
@@ -109,6 +112,7 @@ func demoExportCases() []demoExportCase {
 		{Name: "resources", Path: "/api/v1/resources"},
 		{Name: "preferences", Path: "/api/v1/preferences"},
 		{Name: "custom-icons", Path: "/api/v1/custom-icons"},
+		{Name: "fonts", Path: "/api/v1/fonts"},
 		{Name: "custom-icon-content", Path: "/api/v1/custom-icons/00000000000000000000000000000001/content", Route: "/api/v1/custom-icons/{id}/content"},
 		{Name: "overview", Path: "/api/v1/management/overview"},
 		{Name: "system", Path: "/api/v1/management/system"},
@@ -218,6 +222,12 @@ func demoExportCases() []demoExportCase {
 			demoExportCase{Name: "client-key-usage-" + preset, Path: "/api/v1/management/client-key-usage?" + window},
 		)
 	}
+	// The dashboard's live routing panel reads one fixed window ending at the
+	// export's pinned now, which the Worker re-bases with every other timestamp.
+	cases = append(cases, demoExportCase{Name: "usage-routing", Path: "/api/v1/usage/routing"})
+	// The demonstration has no collector, so its live stream answers 204 and the
+	// pages keep polling the dataset.
+	cases = append(cases, demoExportCase{Name: "usage-live", Path: "/api/v1/usage/live"})
 	// The all-time window has no span to turn into bounds: the server starts it at the
 	// first usage record. It is still reproducible, because the export pins the
 	// handler's clock to the reference instant. The key table does not offer it.
@@ -229,6 +239,14 @@ func demoExportCases() []demoExportCase {
 		demoExportCase{Name: "dashboard-models-model-all", Path: "/api/v1/management/dashboard/models?" + allTime + "&group_by=model"},
 		demoExportCase{Name: "dashboard-providers-all", Path: "/api/v1/management/dashboard/providers?" + allTime},
 	)
+	// The static replay serves relative presets and all-time as closed snapshots.
+	// Every capture resolves against the same seeded clock.
+	for _, preset := range []string{"24h", "7d", "30d", "90d", "all"} {
+		cases = append(cases,
+			demoExportCase{Name: "insights-cube-" + preset, Path: "/api/v1/management/insights/cube?preset=" + preset},
+			demoExportCase{Name: "insights-rhythm-" + preset, Path: "/api/v1/management/insights/rhythm?preset=" + preset},
+		)
+	}
 	// The heatmap is asked for in the viewer's own zone; the export keeps a UTC and a
 	// non-UTC zone so the Worker's calendar maths has a reference for both an offset
 	// that is a whole number of hours and one that is not.
@@ -258,6 +276,7 @@ func demoExportCases() []demoExportCase {
 // the console already renders for a refused operation.
 var demoExportRouteGaps = map[string]string{
 	"/api/v1/management/auth-files/safe-fields": "the fixture refuses the download the projection reads, by design and under test",
+	"/api/v1/fonts/{id}/faces/{faceId}":         "the demonstration's font library is empty, so no face is ever declared to the browser",
 }
 
 // demoExportFirstEventPath builds the detail path for the first event the list carried.
@@ -309,16 +328,25 @@ func demoExportWindow(preset string) string {
 		"&to=" + strconv.FormatInt(to.UnixMilli(), 10)
 }
 
-// TestExportDemoDataset writes the dataset the public demo is served from.
-//
-// It is skipped unless an output directory is given, because writing files from a
-// test that runs by default would make the ordinary suite mutate the worktree.
+// committedDemoDataset is the dataset the public demonstration serves.
+const committedDemoDataset = "../../deploy/cloudflare/data/responses.json"
+
+// TestExportDemoDataset regenerates the dataset the public demo is served from. It
+// writes it when an output directory is given and otherwise requires the committed
+// copy to be byte-identical: the comparison is the freshness gate, so no list of
+// source files has to predict which edits can move a response.
 func TestExportDemoDataset(t *testing.T) {
 	outDir := strings.TrimSpace(os.Getenv("OMCPA_DEMO_EXPORT_DIR"))
-	if outDir == "" {
-		t.Skip("set OMCPA_DEMO_EXPORT_DIR to export the demo dataset")
+	if outDir == "" && testing.Short() {
+		// Seeding a year of history takes about fifteen seconds; CI runs the comparison.
+		t.Skip("the dataset comparison runs without -short")
 	}
+	// Day grids fold on the deployment's zone; a comparison on a non-UTC machine would
+	// otherwise report drift that is only the clock's.
+	testkit.PinUTC(t)
 
+	demoExportRunWindow.startMS = time.Now().UnixMilli()
+	t.Cleanup(func() { demoExportRunWindow.startMS, demoExportRunWindow.endMS = 0, 0 })
 	router, seededAt := demoExportRouter(t)
 	server := httptest.NewServer(router)
 	defer server.Close()
@@ -340,7 +368,28 @@ func TestExportDemoDataset(t *testing.T) {
 			one.Path = resolved
 		}
 		responses[one.Name] = demoExportFetch(t, server.URL, one)
+		if strings.HasPrefix(one.Name, "insights-") && responses[one.Name].Status != http.StatusOK {
+			t.Fatalf("%s returned HTTP %d", one.Name, responses[one.Name].Status)
+		}
+		if strings.HasPrefix(one.Name, "insights-cube-") {
+			var cube insightsCubeResponse
+			if err := json.Unmarshal([]byte(responses[one.Name].Body), &cube); err != nil {
+				t.Fatal(err)
+			}
+			if len(cube.Rows) == 0 || len(cube.Columns) == 0 || len(cube.BucketStarts) == 0 {
+				t.Fatalf("%s must demonstrate non-empty usage", one.Name)
+			}
+		} else if strings.HasPrefix(one.Name, "insights-rhythm-") {
+			var rhythm insightsRhythmResponse
+			if err := json.Unmarshal([]byte(responses[one.Name].Body), &rhythm); err != nil {
+				t.Fatal(err)
+			}
+			if len(rhythm.Cells) != 7*24 || rhythm.Window.Timezone == "" {
+				t.Fatalf("%s must carry a window and 168 rhythm cells", one.Name)
+			}
+		}
 	}
+	demoExportRunWindow.endMS = time.Now().UnixMilli()
 
 	// Runtime-stamped fields move onto the reference instant. Seeded quota
 	// observations already use the injected reference clock and remain unchanged.
@@ -386,13 +435,29 @@ func TestExportDemoDataset(t *testing.T) {
 
 	assertDemoQuotaCapacityExamples(t, normalised, seededAt.UnixMilli())
 
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		t.Fatalf("create export directory: %v", err)
-	}
-	writeDemoExportJSON(t, filepath.Join(outDir, "responses.json"), demoExportResponses{
+	encoded, err := encodeDemoExport(demoExportResponses{
 		ReferenceMS: seededAt.UnixMilli(),
 		Responses:   normalised,
 	})
+	if err != nil {
+		t.Fatalf("encode dataset: %v", err)
+	}
+	if outDir == "" {
+		committed, err := os.ReadFile(committedDemoDataset)
+		if err != nil {
+			t.Fatalf("read committed dataset: %v", err)
+		}
+		if string(committed) != string(encoded) {
+			t.Fatal("the committed demonstration dataset is stale; run pnpm demo:generate and review the diff")
+		}
+		return
+	}
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		t.Fatalf("create export directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(outDir, "responses.json"), encoded, 0o644); err != nil {
+		t.Fatalf("write dataset: %v", err)
+	}
 }
 
 // demoExportResponse is one exported response, kept as the bytes the handler wrote
@@ -494,7 +559,7 @@ var demoExportMeasuredKeys = map[string]bool{
 // (which the Dockerfile's builder image also pins) and the release image's default
 // platform. `TestDemoExportHostKeysFollowThePinnedToolchain` keeps the version in step.
 var demoExportHostKeys = map[string]string{
-	"go_version": "go1.27.1",
+	"go_version": "go1.27.3",
 	"os_arch":    "linux/amd64",
 }
 
@@ -648,6 +713,13 @@ func demoExportMirrorTailAsOfMS(decoded any) any {
 	return decoded
 }
 
+// demoExportRunWindow is the wall-clock span of the export run in progress: from before
+// seeding to after the last capture. An instant stamped inside it - a price the seed
+// applied, an audit row a read wrote - means "now", so it becomes the reference itself.
+// Shifting it instead would keep how long the run had taken, and a seed that crossed
+// half a minute on a slower machine moved every such stamp into the previous minute.
+var demoExportRunWindow struct{ startMS, endMS int64 }
+
 func demoExportShiftMillis(item any, deltaMS int64) any {
 	millis, ok := demoExportNumericMillis(item)
 	// Zero is "never happened" (an unconfigured channel has no update time), not the
@@ -655,6 +727,19 @@ func demoExportShiftMillis(item any, deltaMS int64) any {
 	// wall clock, so every regeneration differed.
 	if !ok || millis == 0 {
 		return item
+	}
+	if window := demoExportRunWindow; window.startMS != 0 {
+		inSeconds := math.Abs(millis) < 1e11
+		atMS := millis
+		if inSeconds {
+			atMS = millis * 1000
+		}
+		if atMS >= float64(window.startMS) && atMS <= float64(window.endMS) {
+			if inSeconds {
+				return float64(demoExportReference.Unix())
+			}
+			return float64(demoExportReference.UnixMilli())
+		}
 	}
 	// A field reported in seconds rather than milliseconds is one whose magnitude is
 	// three orders smaller, so it takes the delta in its own unit.
@@ -683,21 +768,6 @@ func demoExportShiftMillis(item any, deltaMS int64) any {
 func demoExportIsSeededInstant(item any) bool {
 	millis, ok := demoExportNumericMillis(item)
 	return ok && millis <= float64(demoExportReference.UnixMilli())
-}
-
-// demoExportShiftText moves an instant written as text by the delta, leaving anything
-// that is not an instant alone.
-func demoExportStampText(item any, referenceMS int64) any {
-	text, ok := item.(string)
-	if !ok {
-		return item
-	}
-	stamped := time.UnixMilli(referenceMS).UTC().Format(time.RFC3339)
-	if _, err := time.Parse(time.RFC3339, text); err == nil {
-		return stamped
-	}
-	// A log line carries its instants in prose, so they are rewritten in place.
-	return demoExportLogInstant.ReplaceAllString(text, stamped)
 }
 
 // demoExportDayBoundaryKeys are the heatmap's calendar-cell boundaries.
@@ -943,18 +1013,29 @@ func demoExportFetch(t *testing.T, baseURL string, one demoExportCase) demoExpor
 	}
 }
 
-// writeDemoExportJSON writes sorted, indented JSON so two exports of the same
-// history compare byte for byte.
-func writeDemoExportJSON(t *testing.T, path string, payload any) {
-	t.Helper()
-
+// encodeDemoExport renders sorted, indented JSON so two exports of the same history
+// compare byte for byte.
+func encodeDemoExport(payload demoExportResponses) ([]byte, error) {
 	encoded, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
-		t.Fatalf("encode %s: %v", filepath.Base(path), err)
+		return nil, err
 	}
-	if err := os.WriteFile(path, append(encoded, '\n'), 0o644); err != nil {
-		t.Fatalf("write %s: %v", filepath.Base(path), err)
+	return append(encoded, '\n'), nil
+}
+
+// readCommittedDemoDataset decodes the committed dataset, which TestExportDemoDataset
+// keeps identical to a fresh export.
+func readCommittedDemoDataset(t *testing.T) demoExportResponses {
+	t.Helper()
+	raw, err := os.ReadFile(committedDemoDataset)
+	if err != nil {
+		t.Fatalf("read committed dataset: %v", err)
 	}
+	var exported demoExportResponses
+	if err := json.Unmarshal(raw, &exported); err != nil {
+		t.Fatalf("decode committed dataset: %v", err)
+	}
+	return exported
 }
 
 // TestDemoExportCoversEveryReadableRoute is the contract that keeps the exported
@@ -1057,18 +1138,7 @@ func demoExportPatternMatches(route, pattern string) bool {
 // is invisible from the console, which simply keeps the full response, which is why it is asserted
 // on the dataset rather than left to the demo smoke.
 func TestDemoExportTailsAgreeWithTheirWindow(t *testing.T) {
-	outDir := strings.TrimSpace(os.Getenv("OMCPA_DEMO_EXPORT_DIR"))
-	if outDir == "" {
-		t.Skip("set OMCPA_DEMO_EXPORT_DIR to check the exported dataset")
-	}
-	raw, err := os.ReadFile(filepath.Join(outDir, "responses.json"))
-	if err != nil {
-		t.Fatalf("read exported dataset: %v", err)
-	}
-	var exported demoExportResponses
-	if err := json.Unmarshal(raw, &exported); err != nil {
-		t.Fatalf("decode exported dataset: %v", err)
-	}
+	exported := readCommittedDemoDataset(t)
 
 	// Named rather than pattern-matched: a substring test for "tail" also matches
 	// `usage-event-detail`, and a test that decides which responses it is about by accident is how
@@ -1124,18 +1194,7 @@ func TestDemoExportTailsAgreeWithTheirWindow(t *testing.T) {
 }
 
 func TestDemoExportKeepsSeriesAndDayGridsIntact(t *testing.T) {
-	outDir := strings.TrimSpace(os.Getenv("OMCPA_DEMO_EXPORT_DIR"))
-	if outDir == "" {
-		t.Skip("set OMCPA_DEMO_EXPORT_DIR to check the exported dataset")
-	}
-	raw, err := os.ReadFile(filepath.Join(outDir, "responses.json"))
-	if err != nil {
-		t.Fatalf("read exported dataset: %v", err)
-	}
-	var exported demoExportResponses
-	if err := json.Unmarshal(raw, &exported); err != nil {
-		t.Fatalf("decode exported dataset: %v", err)
-	}
+	exported := readCommittedDemoDataset(t)
 
 	// A plotted series has to advance. One distinct `t` across a whole window is a vertical
 	// line on the dashboard's token trend, which is what the demonstration drew.
@@ -1225,18 +1284,7 @@ func TestDemoExportKeepsSeriesAndDayGridsIntact(t *testing.T) {
 // The exported response must never carry an error, because an error captured at
 // export time would be served to every visitor as if it were data.
 func TestDemoExportCasesAllSucceed(t *testing.T) {
-	outDir := strings.TrimSpace(os.Getenv("OMCPA_DEMO_EXPORT_DIR"))
-	if outDir == "" {
-		t.Skip("set OMCPA_DEMO_EXPORT_DIR to check the exported dataset")
-	}
-	raw, err := os.ReadFile(filepath.Join(outDir, "responses.json"))
-	if err != nil {
-		t.Fatalf("read exported dataset: %v", err)
-	}
-	var exported demoExportResponses
-	if err := json.Unmarshal(raw, &exported); err != nil {
-		t.Fatalf("decode exported dataset: %v", err)
-	}
+	exported := readCommittedDemoDataset(t)
 	if exported.ReferenceMS == 0 {
 		t.Fatal("exported dataset has no reference instant")
 	}
@@ -1248,12 +1296,13 @@ func TestDemoExportCasesAllSucceed(t *testing.T) {
 	sort.Strings(names)
 	for _, name := range names {
 		response := exported.Responses[name]
-		if response.Status != http.StatusOK {
+		// A 204 is an answer too: the live feed has nothing to stream in a static demo.
+		if response.Status >= http.StatusMultipleChoices {
 			failed = append(failed, fmt.Sprintf("%s -> %d", name, response.Status))
 		}
 	}
 	if len(failed) > 0 {
-		t.Fatalf("exported responses that are not 200:\n  %s", strings.Join(failed, "\n  "))
+		t.Fatalf("exported responses that are not successes:\n  %s", strings.Join(failed, "\n  "))
 	}
 	assertDemoQuotaCapacityExamples(t, exported.Responses, exported.ReferenceMS)
 }
@@ -1267,11 +1316,11 @@ func assertDemoQuotaCapacityExamples(t *testing.T, responses map[string]demoExpo
 		t.Fatal(err)
 	}
 	expected := map[string]string{
-		"auth-codex-01/five_hour":                            "current_cycle",
-		"auth-codex-02/five_hour":                            "previous_cycle",
-		"auth-claude-01/seven_day_sonnet":                    "current_cycle",
-		"auth-claude-01/seven_day_opus":                      "current_cycle",
-		"auth-antigravity-01/ag_Gemini models_gemini-shared": "current_cycle",
+		"auth-codex-01/five_hour":                               "current_cycle",
+		"auth-codex-02/five_hour":                               "previous_cycle",
+		"auth-claude-01/seven_day_sonnet":                       "current_cycle",
+		"auth-claude-01/seven_day_opus":                         "current_cycle",
+		"auth-antigravity-01/ag_Gemini Models_gemini-shared-5h": "current_cycle",
 	}
 	for _, observation := range quotas.Quotas {
 		for _, window := range observation.Windows {
@@ -1465,7 +1514,7 @@ func TestDemoExportPreservesSeededQuotaCyclesAndUsageEnds(t *testing.T) {
 func TestDemoExportPreservesSeededLatencyAndSourceSize(t *testing.T) {
 	for _, shouldUseNumber := range []bool{false, true} {
 		t.Run(fmt.Sprintf("use-number=%t", shouldUseNumber), func(t *testing.T) {
-			decoder := json.NewDecoder(strings.NewReader(`{"event":{"latency_ms":1423,"timestamp_ms":1767225000000},"config":{"size_bytes":4580,"revision":"seed"},"cpa":{"endpoint_masked":"http://127.0.0.1:0","status":"ok","latency_ms":2},"runtime":{"go_version":"go1.27.1","pid":7123,"num_goroutines":17}}`))
+			decoder := json.NewDecoder(strings.NewReader(`{"event":{"latency_ms":1423,"timestamp_ms":1767225000000},"config":{"size_bytes":4580,"revision":"seed"},"cpa":{"endpoint_masked":"http://127.0.0.1:0","status":"ok","latency_ms":2},"runtime":{"go_version":"go1.27.3","pid":7123,"num_goroutines":17}}`))
 			if shouldUseNumber {
 				decoder.UseNumber()
 			}

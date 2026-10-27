@@ -27,6 +27,7 @@ type QuotaItemDTO struct {
 	QuotaReason      string                                `json:"quota_reason,omitempty"`
 	NextRecoverAtMS  *int64                                `json:"next_recover_at_ms,omitempty"`
 	NextRetryAfterMS *int64                                `json:"next_retry_after_ms,omitempty"`
+	LastRefresh      *QuotaRefreshAttemptDTO               `json:"last_refresh,omitempty"`
 }
 
 func (h *Handler) getQuotaOverview(writer http.ResponseWriter, request *http.Request) {
@@ -47,6 +48,155 @@ func (h *Handler) getQuotaOverview(writer http.ResponseWriter, request *http.Req
 type refreshQuotaRequest struct {
 	AuthIndex   string   `json:"auth_index,omitempty"`
 	AuthIndexes []string `json:"auth_indexes,omitempty"`
+}
+
+// QuotaRefreshAttemptDTO is the last try to read a credential's quota, as the console shows it.
+//
+// It travels beside the reading rather than inside it: the reading is the last successful
+// observation, and a failure must not become one. A page that has both can say "refreshed 3
+// minutes ago, failed with 401" instead of presenting a reading from three days ago as current.
+type QuotaRefreshAttemptDTO struct {
+	AttemptedAtMS int64  `json:"attempted_at_ms"`
+	Outcome       string `json:"outcome"`
+	Error         string `json:"error,omitempty"`
+}
+
+// refreshQuotaReading runs one credential read and records the attempt before returning.
+//
+// It is the single door to quota.Service.RefreshCredentialQuota for every surface that can read
+// a credential - the manual refresh, the background loop, the warmup probe and the Agent
+// capability - so a failure the operator is shown in a toast is also the failure the page can
+// still report after the toast is gone. models are the exact configured upstream models a NaN
+// key must observe; other credentials pass none.
+func (h *Handler) refreshQuotaReading(ctx context.Context, svc *quota.Service, file management.AuthFile, prior *quota.NormalizedQuota, models []string) (*quota.NormalizedQuota, error) {
+	return h.refreshQuotaReadingAs(ctx, svc, file, prior, models, false)
+}
+
+// refreshAutomaticQuotaReading is the same read for a caller no operator is waiting on. It also
+// honors the credential backoff a refused automatic read established; a manual refresh keeps its
+// existing rule and waits only for the provider pause, because the operator is asking for the
+// answer now.
+func (h *Handler) refreshAutomaticQuotaReading(ctx context.Context, svc *quota.Service, file management.AuthFile, prior *quota.NormalizedQuota, models []string) (*quota.NormalizedQuota, error) {
+	return h.refreshQuotaReadingAs(ctx, svc, file, prior, models, true)
+}
+
+func (h *Handler) refreshQuotaReadingAs(ctx context.Context, svc *quota.Service, file management.AuthFile, prior *quota.NormalizedQuota, models []string, isAutomatic bool) (*quota.NormalizedQuota, error) {
+	// Stamped before the read, on the same clock the service stamps the reading with: two reads of
+	// one credential can overlap, and the stored attempt must answer "which read started last", not
+	// "which response landed last". A slow failing read that started first may finish after a newer
+	// successful one, and completion order would let it report the credential as broken.
+	attemptedAtMS := svc.Now().UnixMilli()
+	refreshed, err := h.readThroughGate(ctx, svc, file, prior, isAutomatic, func(options quota.ReadOptions) (*quota.NormalizedQuota, error) {
+		options.Models = models
+		return svc.RefreshCredentialQuotaWith(ctx, file, prior, options)
+	})
+	if refreshed != nil && refreshed.IsDeferred {
+		return refreshed, err
+	}
+	h.recordQuotaReadAttempt(ctx, file, attemptedAtMS, refreshed, err)
+	if err == nil && quota.HasRestoredCapacity(refreshed, attemptedAtMS) {
+		h.releaseRestoredCooldown(ctx, svc, refreshed)
+	}
+	return refreshed, err
+}
+
+// releaseRestoredCooldown lifts a CPA cooldown once a fresh read shows the credential has
+// capacity again. A provider can reset a quota before the recovery time CPA recorded, and
+// without this the credential stays blocked until that time even though it could serve.
+//
+// It runs for every read, so a manual refresh, the background loop and the warmup probe all
+// release the credential the same way. Best effort: the read itself already succeeded.
+func (h *Handler) releaseRestoredCooldown(ctx context.Context, svc *quota.Service, reading *quota.NormalizedQuota) {
+	authIndex := strings.TrimSpace(reading.AuthIndex)
+	if h.repo == nil || authIndex == "" {
+		return
+	}
+	hasEvidence, err := h.repo.HasCooldownEvidence(ctx, authIndex)
+	if err != nil || !hasEvidence {
+		return
+	}
+	clearErr := svc.ClearCPACooldown(ctx, authIndex)
+	var evidenceErr error
+	if clearErr == nil {
+		evidenceErr = h.repo.ClearCooldownEvidence(ctx, authIndex)
+	}
+	h.recordAutomaticCooldownClear(authIndex, "capacity_restored", clearErr, evidenceErr)
+	if clearErr != nil || evidenceErr != nil {
+		h.logCooldownClearFailure("quota restored but CPA cooldown release failed", authIndex, 0, clearErr, evidenceErr)
+		return
+	}
+	// The reading carried the prior cooldown forward; the response must show what it is now.
+	reading.ActiveCooldown = nil
+	quota.EvaluateStatusAndRecommendation(reading, svc.Now().UnixMilli())
+	if h.logger != nil {
+		h.logger.Info("CPA cooldown cleared after quota restored", "auth_index", authIndex, "status", reading.Status)
+	}
+}
+
+// recordQuotaReadAttempt stores what a read produced for the console's next question about it.
+//
+// Best effort in the way the observation write is not: the read already happened upstream, and a
+// storage failure must not turn a successful refresh into an error reply. It is logged, because
+// a page silently showing an older attempt is exactly the confusion this record exists to end.
+func (h *Handler) recordQuotaReadAttempt(ctx context.Context, file management.AuthFile, attemptedAtMS int64, reading *quota.NormalizedQuota, readErr error) {
+	index := strings.TrimSpace(file.AuthIndex)
+	// A disabled credential is never read upstream: its reading is the operator's own decision,
+	// and recording an attempt would invent a try the console never made.
+	if h.repo == nil || index == "" || file.Disabled {
+		return
+	}
+	isUsable, reason := quota.ReadOutcome(reading, readErr)
+	attempt := repository.QuotaRefreshAttemptRecord{
+		AuthIndex:     index,
+		AttemptedAtMS: attemptedAtMS,
+		Outcome:       repository.QuotaRefreshAttemptSucceeded,
+		Error:         reason,
+	}
+	if !isUsable {
+		attempt.Outcome = repository.QuotaRefreshAttemptFailed
+	}
+	if err := h.repo.SaveQuotaRefreshAttempt(ctx, attempt); err != nil && h.logger != nil {
+		h.logger.Warn("quota read attempt could not be recorded", "auth_index", index, "error", err)
+	}
+}
+
+// lastQuotaAttempts reads the recorded attempts for the credentials a response describes.
+func (h *Handler) lastQuotaAttempts(ctx context.Context, authIndexes []string) map[string]repository.QuotaRefreshAttemptRecord {
+	if h.repo == nil || len(authIndexes) == 0 {
+		return nil
+	}
+	attempts, err := h.repo.GetQuotaRefreshAttempts(ctx, authIndexes)
+	if err != nil {
+		if h.logger != nil {
+			h.logger.Warn("quota refresh attempts unavailable", "error", err)
+		}
+		return nil
+	}
+	return attempts
+}
+
+// quotaAttemptOf turns a stored attempt into the domain fact the status derivation reads.
+func quotaAttemptOf(record repository.QuotaRefreshAttemptRecord) *quota.ReadAttempt {
+	if record.AttemptedAtMS == 0 {
+		return nil
+	}
+	return &quota.ReadAttempt{
+		AttemptedAtMS: record.AttemptedAtMS,
+		IsFailed:      record.Outcome == repository.QuotaRefreshAttemptFailed,
+		Failure:       record.Error,
+	}
+}
+
+// quotaAttemptDTO is the same attempt as the console reads it, absent when nobody has tried.
+func quotaAttemptDTO(attempt *quota.ReadAttempt) *QuotaRefreshAttemptDTO {
+	if attempt == nil {
+		return nil
+	}
+	outcome := repository.QuotaRefreshAttemptSucceeded
+	if attempt.IsFailed {
+		outcome = repository.QuotaRefreshAttemptFailed
+	}
+	return &QuotaRefreshAttemptDTO{AttemptedAtMS: attempt.AttemptedAtMS, Outcome: outcome, Error: attempt.Failure}
 }
 
 func (h *Handler) refreshCredentialQuota(writer http.ResponseWriter, request *http.Request) {
@@ -101,16 +251,13 @@ func (h *Handler) refreshCredentialQuota(writer http.ResponseWriter, request *ht
 		}
 		prior := h.loadPriorNormalizedQuota(ctx, targetIndex)
 		svc := quota.NewService(client)
-		refreshed, err := svc.RefreshCredentialQuotaModels(ctx, file, prior, subject.Models)
+		refreshed, err := h.refreshQuotaReading(ctx, svc, file, prior, subject.Models)
 		if err != nil {
 			writeError(writer, http.StatusBadGateway, fmt.Sprintf("refresh quota failed: %v", err))
 			return
 		}
 
-		// Persist snapshot to DB only when successful (healthy, warning, or exhausted), never stale or error
-		if h.repo != nil && refreshed.Status != "error" && refreshed.Status != "stale" {
-			_ = h.persistNormalizedQuotaSnapshot(ctx, refreshed)
-		}
+		_ = h.persistNormalizedQuotaSnapshot(ctx, refreshed)
 		h.attachWindowCapacity(ctx, refreshed, h.now().UnixMilli())
 
 		outcome := "success"
@@ -170,16 +317,16 @@ func (h *Handler) refreshCredentialQuota(writer http.ResponseWriter, request *ht
 		wg.Add(1)
 		go func(index int, authIdx string, f management.AuthFile, models []string) {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
+			if h.holdsCallerSlot(f) {
+				sem <- struct{}{}
+				defer func() { <-sem }()
+			}
 
 			prior := h.loadPriorNormalizedQuota(ctx, authIdx)
-			refreshed, rErr := svc.RefreshCredentialQuotaModels(ctx, f, prior, models)
+			refreshed, rErr := h.refreshQuotaReading(ctx, svc, f, prior, models)
 			if rErr == nil && refreshed != nil {
 				results[index] = refreshed
-				if h.repo != nil && refreshed.Status != "error" && refreshed.Status != "stale" {
-					_ = h.persistNormalizedQuotaSnapshot(ctx, refreshed)
-				}
+				_ = h.persistNormalizedQuotaSnapshot(ctx, refreshed)
 			}
 		}(i, cleanIdx, file, subject.Models)
 	}
@@ -310,7 +457,12 @@ func markPendingPeriodDelivery(reading *quota.NormalizedQuota) {
 }
 
 func (h *Handler) persistNormalizedQuotaSnapshot(ctx context.Context, q *quota.NormalizedQuota) error {
-	if h.repo == nil || q == nil || q.Disabled || q.Error != "" || q.Status == "stale" || q.Status == "error" {
+	if h.repo == nil || q == nil || q.Disabled {
+		return nil
+	}
+	// Only a usable reading becomes an observation: a failed or stale read leaves the last good
+	// one in place, and the attempt beside it carries the failure.
+	if isUsable, _ := quota.ReadOutcome(q, nil); !isUsable {
 		return nil
 	}
 	// Carry observed reset evidence through the existing JSON snapshots, so a
@@ -523,6 +675,10 @@ func (h *Handler) getCredentialQuotaDetail(writer http.ResponseWriter, request *
 
 	nowMS := h.now().UnixMilli()
 	normalized := normalizedQuotaForSubject(subject, nowMS)
+	// Whether an observation exists at all is what a failure means here: beside a reading it is a
+	// reason the previous numbers still stand, and without one it is the whole answer about the
+	// credential. See quota.ApplyReadingHealth.
+	hasStoredReading := false
 
 	if h.repo != nil {
 		if cooldowns, err := h.repo.BatchCorrelatedCooldowns(ctx, []string{authIndex}, nowMS); err == nil {
@@ -538,6 +694,7 @@ func (h *Handler) getCredentialQuotaDetail(writer http.ResponseWriter, request *
 		}
 		if snapshots, err := h.repo.GetLatestQuotaSnapshots(ctx, []string{authIndex}); err == nil {
 			if snapshot, ok := snapshots[authIndex]; ok {
+				hasStoredReading = true
 				normalized.ObservedAtMS = snapshot.ObservedAtMS
 				// See buildQuotaOverview: an empty reading survives only through the stored status.
 				normalized.Status = snapshot.Status
@@ -567,6 +724,9 @@ func (h *Handler) getCredentialQuotaDetail(writer http.ResponseWriter, request *
 	}
 
 	quota.EvaluateStatusAndRecommendation(&normalized, nowMS)
+	lastAttempts := h.lastQuotaAttempts(ctx, []string{authIndex})
+	attempt := quotaAttemptOf(lastAttempts[authIndex])
+	quota.ApplyReadingHealth(&normalized, attempt, hasStoredReading, nowMS)
 	h.attachWindowCapacity(ctx, &normalized, nowMS)
 
 	var history []repository.QuotaSnapshotRecord
@@ -576,11 +736,17 @@ func (h *Handler) getCredentialQuotaDetail(writer http.ResponseWriter, request *
 		}
 	}
 
-	writeJSON(writer, http.StatusOK, map[string]any{
+	response := map[string]any{
 		"quota":        normalized,
 		"history":      history,
 		"model_quotas": projectModelQuotas(targetFile.ModelQuotas),
-	})
+	}
+	// Absent rather than null: a credential nobody has tried to read has no attempt to report, and
+	// an explicit null would claim otherwise.
+	if lastRefresh := quotaAttemptDTO(attempt); lastRefresh != nil {
+		response["last_refresh"] = lastRefresh
+	}
+	writeJSON(writer, http.StatusOK, response)
 }
 
 type quotaOverviewData struct {
@@ -618,6 +784,9 @@ func (h *Handler) buildQuotaOverview(ctx context.Context, client *management.Cli
 			activeCooldowns = cooldowns
 		}
 	}
+	// Every row is read against the last attempt, because a reading alone cannot say whether the
+	// console's own refreshes are still working; see quota.ApplyReadingHealth.
+	lastAttempts := h.lastQuotaAttempts(ctx, authIndexes)
 
 	items := make([]QuotaItemDTO, 0, len(authIndexes))
 	var soonestRecoveryMS *int64
@@ -703,6 +872,9 @@ func (h *Handler) buildQuotaOverview(ctx context.Context, client *management.Cli
 		}
 
 		quota.EvaluateStatusAndRecommendation(&normalized, nowMS)
+		attempt := quotaAttemptOf(lastAttempts[authIndex])
+		_, hasStoredReading := latestSnapshots[authIndex]
+		quota.ApplyReadingHealth(&normalized, attempt, hasStoredReading, nowMS)
 		h.attachWindowCapacity(ctx, &normalized, nowMS)
 
 		switch normalized.Status {
@@ -726,6 +898,7 @@ func (h *Handler) buildQuotaOverview(ctx context.Context, client *management.Cli
 			Source:          sources[authIndex],
 			Quota:           projectQuota(file.Quota),
 			ModelQuotas:     projectModelQuotas(file.ModelQuotas),
+			LastRefresh:     quotaAttemptDTO(attempt),
 		}
 		if normalized.ActiveCooldown != nil && normalized.ActiveCooldown.IsActive {
 			dto.QuotaExceeded = true

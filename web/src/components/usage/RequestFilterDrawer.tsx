@@ -1,6 +1,7 @@
+import type { MessageKey } from '../../i18n/catalog';
 import clsx from 'clsx';
 import React from 'react';
-import { Button, Input, InputNumber, Segmented, Select, Space, Tooltip } from 'antd';
+import { Button, Input, InputNumber, Segmented, Select, Space } from 'antd';
 import type {
   UsageCostFilter,
   UsageFacetValue,
@@ -29,12 +30,12 @@ import {
 } from '../../types/usageEventFilters';
 import { useT } from '../../i18n';
 import { displayEffortName } from '../../theme/effortScale';
-import { useOverlayHistory } from '../../hooks/useOverlayHistory';
 import { renderFacetOption, type FacetMarkRenderer } from './RequestFacetMark';
 import { AppDrawer } from '../common/AppDrawer';
 import styles from './RequestFilterDrawer.module.css';
 import { SectionHeading } from '../common/SectionHeading';
 import './requestMarks.css';
+import { Tooltip } from '../common/Tooltip';
 
 /**
  * canonicalViewKey gives the committed view a stable identity so the drawer can
@@ -56,19 +57,20 @@ function canonicalViewKey(view: UsageEventsView): string {
 interface FacetSpec {
   key: EventFilterKey;
   facet: keyof UsageFacets;
-  labelKey: string;
+  labelKey: MessageKey;
 }
 
 /**
  * Facets are grouped the way an operator reasons about a request rather than the
  * way the database is shaped: what was asked, how it was routed, and what it
- * cost. One flat list of eleven dropdowns is technically complete and
+ * cost. One flat list of dropdowns is technically complete and
  * practically unusable, because finding a field means reading all of them.
  */
 const REQUEST_FACETS: FacetSpec[] = [
   { key: 'auth_type', facet: 'auth_types', labelKey: 'events.auth_type' },
   { key: 'reasoning', facet: 'reasoning_efforts', labelKey: 'events.reasoning_effort' },
   { key: 'service_tier', facet: 'service_tiers', labelKey: 'events.service_tier' },
+  { key: 'resolved_service_tier', facet: 'resolved_service_tiers', labelKey: 'events.resolved_tier' },
 ];
 
 const ROUTING_FACETS: FacetSpec[] = [
@@ -89,7 +91,7 @@ const ALIAS_FACETS: FacetSpec[] = [
 ];
 
 /** What the reader calls each field a pattern can be matched against. */
-export const REGEX_FIELD_LABELS: Record<UsageRegexField, string> = {
+export const REGEX_FIELD_LABELS: Record<UsageRegexField, MessageKey> = {
   model: 'events.request_model',
   model_alias: 'events.call_model',
   response_model: 'events.served_model',
@@ -99,7 +101,7 @@ export const REGEX_FIELD_LABELS: Record<UsageRegexField, string> = {
   request_id: 'events.col_request_id',
 };
 
-const TEXT_FIELDS: Array<{ key: EventFilterKey; labelKey: string }> = [
+const TEXT_FIELDS: Array<{ key: EventFilterKey; labelKey: MessageKey }> = [
   { key: 'ua', labelKey: 'events.col_ua' },
   { key: 'endpoint', labelKey: 'events.endpoint' },
   { key: 'request_id', labelKey: 'events.col_request_id' },
@@ -140,11 +142,6 @@ export const RequestFilterDrawer: React.FC<RequestFilterDrawerProps> = ({
   onApply,
 }) => {
   const t = useT();
-  // Apply navigates and *then* closes the drawer, and that order is what makes the close safe:
-  // the router has already replaced the entry this sentinel was opened over, so the module
-  // abandons the sentinel instead of traversing. Traversing would pop the entry the filters
-  // were just written to and visibly revert them. The browser suite pins this pair.
-  useOverlayHistory({ isOpen: open, onClose });
   const [draft, setDraft] = React.useState<UsageEventsFilterDraft>(EMPTY_FILTER_DRAFT);
   const [pendingRegexField, setPendingRegexField] = React.useState<UsageRegexField>('model');
 
@@ -222,7 +219,7 @@ export const RequestFilterDrawer: React.FC<RequestFilterDrawerProps> = ({
     return options;
   };
 
-  const section = (titleKey: string, children: React.ReactNode) => (
+  const section = (titleKey: MessageKey, children: React.ReactNode) => (
     <section className={styles['group']}>
       <SectionHeading as="h3" level="label" className={clsx('req-filter-group-title', styles['group-title'])} title={t(titleKey)} />
       <div className={styles['group-body']}>{children}</div>
@@ -237,7 +234,7 @@ export const RequestFilterDrawer: React.FC<RequestFilterDrawerProps> = ({
    */
   // Keyed by the control's id: the rows are rendered from the facet and field lists, and the id is
   // the one value already unique across them.
-  const row = (labelKey: string, labelFor: string, control: React.ReactNode, errorKeys?: string[]) => (
+  const row = (labelKey: MessageKey, labelFor: string, control: React.ReactNode, errorKeys?: string[]) => (
     <div className={clsx('req-filter-row', styles['row'])} key={labelFor}>
       <label className={styles['label']} htmlFor={labelFor}>
         {t(labelKey)}
@@ -283,7 +280,7 @@ export const RequestFilterDrawer: React.FC<RequestFilterDrawerProps> = ({
       />,
     );
 
-  const textRow = (field: { key: EventFilterKey; labelKey: string }) =>
+  const textRow = (field: { key: EventFilterKey; labelKey: MessageKey }) =>
     row(
       field.labelKey,
       `req-text-${field.key}`,
@@ -338,7 +335,7 @@ export const RequestFilterDrawer: React.FC<RequestFilterDrawerProps> = ({
     ['regex'],
   );
 
-  const rangeRow = (key: 'latency' | 'tokens' | 'cost', labelKey: string, unit: string) => {
+  const rangeRow = (key: 'latency' | 'tokens' | 'cost', labelKey: MessageKey, unit: string) => {
     // Cost is a nano-dollar decimal, which no number input can represent without
     // rounding, so that one field is a text input constrained by its own
     // validator. Latency and tokens are integral by definition.

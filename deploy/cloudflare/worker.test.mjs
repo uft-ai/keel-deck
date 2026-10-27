@@ -48,9 +48,24 @@ describe('the dataset the demonstration is served from', () => {
 
   it('answers every response with a success', () => {
     // An error captured at export time would be served to a visitor as data.
+    // The one deliberate exception is the live usage stream, which the export captures as
+    // the gateway's demonstration mode answers it; the Worker streams its own instead.
     for (const [name, response] of Object.entries(DATASET.responses)) {
-      assert.equal(response.status, 200, `${name} was captured as ${response.status}`);
+      const expected = name === 'usage-live' ? 204 : 200;
+      assert.equal(response.status, expected, `${name} was captured as ${response.status}`);
     }
+  });
+
+  it('streams live usage signals in the gateway\'s framing', async () => {
+    const { default: worker } = await import('./worker.mjs');
+    const env = { ASSETS: { fetch: () => new Response('', { status: 200 }) } };
+    const response = await worker.fetch(request('/api/v1/usage/live'), env);
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('Content-Type'), /^text\/event-stream/);
+    const reader = response.body.getReader();
+    const first = new TextDecoder().decode((await reader.read()).value);
+    await reader.cancel();
+    assert.equal(first, 'retry: 2000\nevent: ready\ndata: {}\n\n');
   });
 });
 
@@ -104,6 +119,39 @@ describe('routing', () => {
     assert.equal(new Set(names).size, names.length, 'two presets resolve to one response');
     for (const name of names) {
       assert.ok(DATASET.responses[name], `${name} is not in the dataset`);
+    }
+  });
+
+  it('keeps Insights week windows and rhythm weekdays aligned after rebasing', async (t) => {
+    const dayMs = 86_400_000;
+    t.mock.method(Date, 'now', () => REFERENCE_MS + 10 * dayMs + 3_600_000);
+    const { default: worker } = await import('./worker.mjs');
+    const env = { ASSETS: { fetch: () => new Response('', { status: 200 }) } };
+    for (const preset of ['7d', '30d', '90d', 'all']) {
+      for (const view of ['cube', 'rhythm']) {
+        const response = await worker.fetch(request(`/api/v1/management/insights/${view}?preset=${preset}`), env);
+        const captured = JSON.parse(DATASET.responses[`insights-${view}-${preset}`].body);
+        const expected = rebase(captured, 7 * dayMs);
+        expected.window.open_end = false;
+        assert.deepEqual(await response.json(), expected, `${view}/${preset}`);
+      }
+    }
+  });
+
+  it('refuses Insights windows and granularities absent from the capture', async (t) => {
+    t.mock.method(Date, 'now', () => Date.UTC(2026, 9, 24, 12));
+    const { default: worker } = await import('./worker.mjs');
+    const env = { ASSETS: { fetch: () => new Response('', { status: 200 }) } };
+    for (const query of ['preset=today', 'preset=yesterday', 'preset=this_week', 'preset=last_week',
+      'preset=this_month', 'preset=last_month', 'from=1767139200000&to=1767225600000',
+      'preset=7d&bucket=month', 'preset=unknown']) {
+      for (const view of ['cube', 'rhythm']) {
+        const response = await worker.fetch(request(`/api/v1/management/insights/${view}?${query}`), env);
+        assert.equal(response.status, 404, `${view}?${query}`);
+        assert.deepEqual(await response.json(), {
+          error: 'this Insights window or granularity is not captured in the demonstration', code: 'demo_uncaptured',
+        });
+      }
     }
   });
 

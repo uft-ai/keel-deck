@@ -1,5 +1,7 @@
+import type { MessageKey } from '../../i18n/catalog';
 import { Checkbox, Input, InputNumber, Select } from 'antd';
 
+import { VertexModelOpenAPI } from '../authFiles/VertexModelOpenAPI';
 import { useT } from '../../i18n';
 import type { ProviderModelOptionField } from '../../types/providers';
 import { MODALITY_SUGGESTIONS, type ModelOptionsDraft, type ModelOptionsProblem } from './modelOptions';
@@ -17,7 +19,7 @@ interface ModelOptionsFieldsProps {
 
 type FlagName = 'forceMapping' | 'isCompat' | 'supportConfigurationUpdate' | 'useMaxCompletionTokens';
 
-const FLAGS: { name: FlagName; field?: ProviderModelOptionField; labelKey: string; descKey: string }[] = [
+const FLAGS: { name: FlagName; field?: ProviderModelOptionField; labelKey: MessageKey; descKey: MessageKey }[] = [
   { name: 'forceMapping', labelKey: 'pro.model_force_mapping', descKey: 'pro.model_force_mapping_desc' },
   { name: 'isCompat', field: 'is_compat', labelKey: 'pro.model_is_compat', descKey: 'pro.model_is_compat_desc' },
   {
@@ -34,7 +36,7 @@ const FLAGS: { name: FlagName; field?: ProviderModelOptionField; labelKey: strin
   },
 ];
 
-const PROBLEM_KEYS: Record<ModelOptionsProblem, string> = {
+const PROBLEM_KEYS: Record<ModelOptionsProblem, MessageKey> = {
   context_length: 'pro.model_problem_context_length',
   thinking_bounds: 'pro.model_problem_thinking_bounds',
   thinking_order: 'pro.model_problem_thinking_order',
@@ -52,6 +54,11 @@ export function ModelOptionsFields({ idPrefix, options, onChange, fields, proble
 
   return (
     <>
+      {fields.includes('openapi') && <div className={styles['policy-field']}>
+        <div className={styles['item-field-label']}>{t('vertex.openapi_model')}</div>
+        <VertexModelOpenAPI value={options.openapi} onChange={(openapi) => onChange({ openapi })} />
+        <div className={styles['policy-desc']}>{t('vertex.openapi_precedence')}</div>
+      </div>}
       <div className={styles['option-grid']}>
         <div>
           <label className={styles['item-field-label']} htmlFor={`${idPrefix}-display-name`}>

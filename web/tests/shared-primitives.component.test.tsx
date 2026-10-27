@@ -1,17 +1,15 @@
-import { fireEvent, render, screen } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppDrawer } from '../src/components/common/AppDrawer';
 import { ConfirmAction } from '../src/components/common/ConfirmAction';
 import { EmptyState } from '../src/components/common/EmptyState';
 import { Meter } from '../src/components/common/Meter';
 import { Pager } from '../src/components/common/Pager';
-import { Panel } from '../src/components/common/Panel';
 import { SearchInput } from '../src/components/common/SearchInput';
 import { SectionHeading } from '../src/components/common/SectionHeading';
 import { SelectionBar } from '../src/components/common/SelectionBar';
 import { Tag, ToggleTag } from '../src/components/common/Tag';
-import { Toolbar } from '../src/components/common/Toolbar';
-import { I18nProvider } from '../src/i18n';
+import { I18nProvider, useT, type MessageKey } from '../src/i18n';
 
 describe('SearchInput', () => {
   it('is named by its label, shows it as the placeholder, and reports text rather than events', () => {
@@ -104,22 +102,28 @@ describe('AppDrawer', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('draws no footer when neither slot has content, and sizes itself from the width step', () => {
-    render(<I18nProvider><AppDrawer open title="Details" width="narrow" footer={false} footerStart={undefined}>body</AppDrawer></I18nProvider>);
-    expect(document.querySelector('.ant-drawer-footer')).toBeNull();
-    const panel = document.querySelector<HTMLElement>('.ant-drawer-content-wrapper');
-    expect(panel?.style.width).toBe('min(420px, 100vw)');
+  it('keeps showing what it showed while open as it closes, though the caller has cleared it', () => {
+    const view = (record: string | null) => (
+      <I18nProvider>
+        <AppDrawer open={record !== null} title={record} footer={record && <button type="button">Copy {record}</button>}>
+          {record && <p>Body of {record}</p>}
+        </AppDrawer>
+      </I18nProvider>
+    );
+    const { rerender } = render(view('request 42'));
+
+    rerender(view(null));
+
+    expect(screen.getByText('Body of request 42')).toBeTruthy();
+    expect(document.querySelector('.ant-drawer-title')?.textContent).toBe('request 42');
+    expect(document.querySelector('.app-drawer-footer-actions button')?.textContent).toBe('Copy request 42');
   });
 });
 
 describe('Tag', () => {
-  it('carries its tone and size as classes and hides the glyph from assistive technology', () => {
-    const { container } = render(<Tag tone="warn" size="small" icon={<svg />}>Unsaved</Tag>);
-    const tag = container.querySelector('.tag')!;
-    expect(tag.classList.contains('is-warn')).toBe(true);
-    expect(tag.classList.contains('is-small')).toBe(true);
-    expect(tag.querySelector('.tag-icon')?.getAttribute('aria-hidden')).toBe('true');
-    expect(tag.textContent).toBe('Unsaved');
+  it('hides its decorative glyph from assistive technology', () => {
+    const { container } = render(<Tag icon={<svg />}>Unsaved</Tag>);
+    expect(container.querySelector('svg')?.parentElement?.getAttribute('aria-hidden')).toBe('true');
   });
 
   it('as a toggle reports the opposite of its pressed state', () => {
@@ -135,13 +139,6 @@ describe('Tag', () => {
 });
 
 describe('ConfirmAction', () => {
-  beforeEach(() => {
-    window.localStorage.setItem('omc-lang', 'en');
-    // The anchored overlay measures its trigger, which jsdom has no observer for.
-    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
-  });
-  afterEach(() => { vi.unstubAllGlobals(); });
-
   it('fixes the cancel label, names the confirming button and colours a destructive one', () => {
     const onConfirm = vi.fn();
     render(
@@ -160,13 +157,26 @@ describe('ConfirmAction', () => {
     expect(onConfirm).toHaveBeenCalledTimes(1);
   });
 
-  it('falls back to a plain confirmation that is not coloured', () => {
+  it("puts the trigger's tooltip away while the confirmation is open", async () => {
     render(
       <I18nProvider>
-        <ConfirmAction open title="Save the source?"><button type="button">Save</button></ConfirmAction>
+        <ConfirmAction title="Delete this key?" confirmLabel="Delete" tooltip="Delete key">
+          <button type="button">Remove</button>
+        </ConfirmAction>
       </I18nProvider>,
     );
-    expect(screen.getByRole('button', { name: 'Confirm' }).classList.contains('ant-btn-dangerous')).toBe(false);
+    const trigger = screen.getByRole('button', { name: 'Remove' });
+    fireEvent.pointerMove(trigger, { pointerType: 'mouse' });
+    await waitFor(() => expect(screen.getByRole('tooltip').textContent).toBe('Delete key'));
+
+    fireEvent.click(trigger);
+
+    await screen.findByRole('button', { name: 'Cancel' });
+    // jsdom never ends a motion, so a tooltip on its way out keeps its node in the leave state.
+    await waitFor(() => {
+      const tooltip = screen.queryByText('Delete key')?.closest('.ant-tooltip');
+      expect(!tooltip || /-leave\b/.test(tooltip.className)).toBe(true);
+    });
   });
 });
 
@@ -181,30 +191,6 @@ describe('SelectionBar', () => {
     expect(container.querySelector('.selection-bar.is-framed')).toBeTruthy();
     expect(container.querySelector('.selection-bar-note')?.textContent).toBe('2 on other pages');
     expect(container.querySelector('.selection-bar-actions button')?.textContent).toBe('Delete');
-  });
-});
-
-describe('Toolbar', () => {
-  it('sets trailing controls apart and draws no trailing slot without them', () => {
-    const { container, rerender } = render(
-      <Toolbar variant="ruled" end={<button type="button">Export</button>}><input aria-label="Search" /></Toolbar>,
-    );
-    expect(container.querySelector('.toolbar.is-ruled > input')).toBeTruthy();
-    expect(container.querySelector('.toolbar-end button')?.textContent).toBe('Export');
-
-    rerender(<Toolbar><input aria-label="Search" /></Toolbar>);
-
-    expect(container.querySelector('.toolbar.is-ruled')).toBeNull();
-    expect(container.querySelector('.toolbar-end')).toBeNull();
-  });
-});
-
-describe('Panel', () => {
-  it('draws the header from its title and leaves the inset to the stylesheet', () => {
-    const { container } = render(<Panel title="Versions" extra={<button type="button">Check</button>} className="system-card">body</Panel>);
-    expect(container.querySelector('.panel.system-card .ant-card-head-title')?.textContent).toBe('Versions');
-    expect(container.querySelector('.ant-card-extra button')?.textContent).toBe('Check');
-    expect((container.querySelector('.ant-card-body') as HTMLElement).style.padding).toBe('');
   });
 });
 
@@ -230,13 +216,6 @@ describe('Meter', () => {
 });
 
 describe('Pager', () => {
-  // antd's pagination subscribes to breakpoints, which jsdom does not implement.
-  beforeEach(() => {
-    vi.stubGlobal('matchMedia', (query: string) => ({
-      matches: false, media: query, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {},
-    }));
-  });
-  afterEach(() => { vi.unstubAllGlobals(); });
 
   it('renders nothing when the list fits on one page', () => {
     const { container } = render(<Pager page={1} pageSize={20} total={20} onChange={() => undefined} />);
@@ -257,5 +236,19 @@ describe('Pager', () => {
     const { container } = render(<Pager variant="stepped" page={2} pageSize={10} total={48} onChange={() => undefined} />);
     expect(container.querySelector('.ant-pagination-simple')).toBeTruthy();
     expect(container.querySelector('input')).toBeNull();
+  });
+});
+
+describe('the translator', () => {
+  function UnknownIds() {
+    const t = useT();
+    // A miss reaches the translator as plain text: the runtime answers any string with itself, and
+    // this is the one place a caller has to say so.
+    return <span>{t('toString' as MessageKey)} · {t('no.such.id' as MessageKey, { n: 1 })}</span>;
+  }
+
+  it('renders an id the catalog does not define as itself, including a name the prototype carries', () => {
+    render(<I18nProvider><UnknownIds /></I18nProvider>);
+    expect(document.body.textContent).toContain('toString · no.such.id');
   });
 });

@@ -86,14 +86,15 @@ type dashboardRequests struct {
 }
 
 type dashboardTokens struct {
-	Total         int64                  `json:"total"`
-	Input         int64                  `json:"input"`
-	Output        int64                  `json:"output"`
-	Reasoning     int64                  `json:"reasoning"`
-	Cached        int64                  `json:"cached"`
-	CacheRead     int64                  `json:"cache_read"`
-	CacheCreation int64                  `json:"cache_creation"`
-	Series        []dashboardSeriesPoint `json:"series"`
+	Accounting    *repository.TokenAccountingMeasures `json:"token_accounting,omitempty"`
+	Total         int64                               `json:"total"`
+	Input         int64                               `json:"input"`
+	Output        int64                               `json:"output"`
+	Reasoning     int64                               `json:"reasoning"`
+	Cached        int64                               `json:"cached"`
+	CacheRead     int64                               `json:"cache_read"`
+	CacheCreation int64                               `json:"cache_creation"`
+	Series        []dashboardSeriesPoint              `json:"series"`
 }
 
 type dashboardSeriesPoint struct {
@@ -388,6 +389,9 @@ func (h *Handler) queryDashboard(ctx context.Context, window dashboardWindow, ap
 		rate := roundPercent(float64(success) / float64(totals.Requests))
 		facts.requests.SuccessRate = &rate
 	}
+	if totals.Accounting.CanonicalRequests+totals.Accounting.UnresolvedRequests > 0 {
+		facts.tokens.Accounting = &totals.Accounting
+	}
 	facts.tokens.Total = totals.TotalTokens
 	facts.tokens.Input = totals.InputTokens
 	facts.tokens.Output = totals.OutputTokens
@@ -629,8 +633,7 @@ func dashboardWindowFromRequest(request *http.Request, now time.Time) (dashboard
 	rawTo := strings.TrimSpace(query.Get("to"))
 
 	nowMS := now.UnixMilli()
-	fromMS := int64(0)
-	toMS := nowMS
+	var fromMS, toMS int64
 	openEnd := false
 
 	switch {

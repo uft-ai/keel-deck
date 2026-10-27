@@ -195,6 +195,11 @@ export function createFakeCpaServer({ managementKey = FAKE_CPA_MANAGEMENT_KEY } 
       { id: 'claude-3-5-sonnet', display_name: 'Claude 3.5 Sonnet' },
       { id: 'claude-3-5-haiku', display_name: 'Claude 3.5 Haiku' },
     ],
+    // CPA answers a channel without a built-in catalog from the plugin host, as
+    // it does for the `iflow-auth` fixture plugin's OAuth provider.
+    iflow: [
+      { id: 'iflow-e2e-chat', display_name: 'iFlow E2E Chat' },
+    ],
   };
 
   // The codex API-key list is stateful for the same reason authFiles is: the
@@ -249,7 +254,7 @@ export function createFakeCpaServer({ managementKey = FAKE_CPA_MANAGEMENT_KEY } 
     observability: { logs: { debug: false, 'logging-to-file': true, 'request-log': true } },
     access: { 'api-keys': [FAKE_CLIENT_SECRET] },
     client: { codex: { 'optimize-multi-agent-v2': true } },
-    upstream: { codex: { 'orphan-delegation-compatibility': true } },
+    upstream: { codex: { 'orphan-delegation-compatibility': true }, claude: { 'tool-search': false } },
     plugins: { enabled: true, dir: 'plugins' },
     'config-version': 8,
   };
@@ -412,7 +417,8 @@ export function createFakeCpaServer({ managementKey = FAKE_CPA_MANAGEMENT_KEY } 
       response.end([
         '<!doctype html><html><head><meta charset="utf-8"><title>Logger Console</title></head><body>',
         '<h1 id="plugin-title">Logger Console</h1><p id="plugin-status">loading</p><p id="plugin-theme"></p>',
-        '<p id="plugin-contract">loading</p><p id="plugin-credential-status"></p>',
+        '<p id="plugin-contract">loading</p><p id="plugin-credential-status"></p><p id="plugin-provider"></p>',
+        "<script>const parts = window.location.pathname.split('/').filter(Boolean);window.fixturePluginProvider = parts[0] === 'v0' && parts[1] === 'resource' && parts[2] === 'plugins' ? parts[3] : 'unrecognized';document.getElementById('plugin-provider').textContent = window.fixturePluginProvider;</script>",
         '<script src="/v0/resource/plugins/fixture-logger/console.js"></script>',
         '</body></html>',
       ].join(''));
@@ -426,21 +432,23 @@ export function createFakeCpaServer({ managementKey = FAKE_CPA_MANAGEMENT_KEY } 
         "  .then((reply) => reply.json())",
         "  .then((body) => { document.getElementById('plugin-status').textContent = body.state; })",
         "  .catch((error) => { document.getElementById('plugin-status').textContent = 'failed: ' + error.message; });",
+        "const externalParts = location.pathname.split('/').filter(Boolean);",
+        "const externalProvider = externalParts[0] === 'v0' && externalParts[1] === 'resource' && externalParts[2] === 'plugins' ? externalParts[3] : 'unrecognized';",
         "window.runPluginContract = async function(credential) {",
         "  const headers = credential === undefined ? {} : {Authorization: 'Bearer ' + credential};",
-        "  const configReply = await fetch('/v0/management/config', {headers});",
+        "  const configReply = await fetch('/v0/management/config', {headers, credentials:'omit'});",
         "  if (!configReply.ok) { await configReply.text(); document.getElementById('plugin-credential-status').textContent = String(configReply.status); return; }",
         "  const config = await configReply.json();",
         "  const groupPath = ['','v8','management','config','api-keys'].join('/');",
         "  const groups = await new Promise((resolve, reject) => { const request = new XMLHttpRequest(); request.open('GET', groupPath); if (credential !== undefined) request.setRequestHeader('Authorization', 'Bearer ' + credential); request.onload = () => request.status === 200 ? resolve(JSON.parse(request.responseText)) : reject(new Error('groups ' + request.status)); request.onerror = reject; request.send(); });",
         "  const modelsPath = ['','v1','models'].join('/');",
-        "  const modelsReply = await fetch(new Request(new URL(modelsPath, location.origin), {headers: {Authorization: 'Bearer ' + config['api-keys'][0]}}));",
+        "  const modelsReply = await fetch(new Request(new URL(modelsPath, location.origin), {credentials:'omit',headers: {Authorization: 'Bearer ' + config['api-keys'][0]}}));",
         "  const models = await modelsReply.json();",
-        "  const syncPath = ['','v0','management','plugins','fixture-logger','credentials','sync'].join('/');",
-        "  const syncReply = await fetch(new Request(new URL(syncPath, location.origin), {method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({credentials: Object.keys(groups), model_count: models.data.length})}));",
+        "  const syncPath = ['','v0','management','plugins',window.fixturePluginProvider,'credentials','sync'].join('/');",
+        "  const syncReply = await fetch(new Request(new URL(syncPath, location.origin), {method:'POST',credentials:'omit',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({credentials: Object.keys(groups), model_count: models.data.length})}));",
         "  if (!syncReply.ok) throw new Error('sync ' + syncReply.status);",
         "  await syncReply.json();",
-        "  const stateReply = await fetch('/v0/management/plugins/fixture-logger/state', {headers});",
+        "  const stateReply = await fetch(['','v0','management','plugins',externalProvider,'state'].join('/'), {headers,credentials:'omit'});",
         "  const state = await stateReply.json();",
         "  document.getElementById('plugin-contract').textContent = 'models ' + models.data.length + '; groups ' + Object.keys(groups).length + '; ' + state.state;",
         "  document.getElementById('plugin-credential-status').textContent = '200';",
@@ -950,8 +958,9 @@ export function createFakeCpaServer({ managementKey = FAKE_CPA_MANAGEMENT_KEY } 
         return;
       }
       if (targetURL.includes('retrieveUserQuotaSummary')) {
-        // Mirrors the real antigravity summary: two groups, weekly bucket listed
-        // before the five-hour one, display names like "Five Hour Limit".
+        // Mirrors the real antigravity summary: one group per model family, weekly buckets listed
+        // before the five-hour ones, display names like "Five Hour Limit", and a family that
+        // publishes no five-hour bucket at all (Gemini 4 Argon is weekly-only).
         json(response, 200, {
           status_code: 200,
           header: { 'content-type': ['application/json'] },
@@ -965,9 +974,8 @@ export function createFakeCpaServer({ managementKey = FAKE_CPA_MANAGEMENT_KEY } 
                 { bucketId: 'aerolith-week', displayName: 'Weekly Limit', window: 'weekly', remainingFraction: 1.0, resetTime: new Date(Date.now() + 7 * 86400000).toISOString() },
                 { bucketId: 'aerolith-5h', displayName: 'Five Hour Limit', window: '5h', remainingFraction: 1.0, resetTime: new Date(Date.now() + 5 * 3600000).toISOString() },
               ] },
-              { displayName: 'Additional model group', buckets: [
-                { bucketId: 'additional-week', displayName: 'Weekly Limit', window: 'weekly', remainingFraction: 0.8, resetTime: new Date(Date.now() + 6 * 86400000).toISOString() },
-                { bucketId: 'additional-5h', displayName: 'Five Hour Limit', window: '5h', remainingFraction: 0.9, resetTime: new Date(Date.now() + 4 * 3600000).toISOString() },
+              { displayName: 'Gemini 4 Argon', buckets: [
+                { bucketId: 'gemini-4-argon-week', displayName: 'Weekly Limit', window: 'weekly', remainingFraction: 0.8, resetTime: new Date(Date.now() + 6 * 86400000).toISOString() },
               ] },
             ],
           },

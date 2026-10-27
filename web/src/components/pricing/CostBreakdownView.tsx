@@ -1,3 +1,4 @@
+import { TokenAccountingNote } from '../usage/TokenAccountingNote';
 import { useTimeZone } from '../../utils/TimeZoneProvider';
 import React from 'react';
 import { Button } from 'antd';
@@ -5,7 +6,7 @@ import dayjs from '../../utils/time';
 import { DollarOutlined } from '../icons';
 import { useT } from '../../i18n';
 import { formatTokensFull } from '../../types/tokenDisplay';
-import { priceWouldApply, type RequestCostBreakdown } from '../../types/pricing';
+import { priceWouldApply, type RequestCostBreakdown, type UnpricedReason } from '../../types/pricing';
 import { formatMultiplier, formatRatePer1M, formatUsd, nanosToUsd } from '../../types/pricingDisplay';
 import { describeTier } from './PricingParts';
 import { channelIdentity } from './pricingIdentity';
@@ -21,7 +22,8 @@ export interface CostBreakdownViewProps {
 }
 
 /**
- * Why a request cost what it did: the tier that applied, each token bucket at its rate, both
+ * Why a request cost what it did: the tier that applied and the service tier it was billed on,
+ * each token bucket at its rate, both
  * multipliers, and which price version it was locked against. The stored amount is the answer;
  * the rows are its explanation, and a disagreement between them is stated rather than hidden.
  *
@@ -53,18 +55,22 @@ export const CostBreakdownView: React.FC<CostBreakdownViewProps> = ({ breakdown,
       </div>
     );
   }
+  const hasUnresolvedAccounting = breakdown.token_accounting != null && breakdown.token_accounting.status !== 'complete';
   if (breakdown.status === 'unpriced' || breakdown.status === 'legacy_unpriced') {
     // A request that had a price but no billable counters is not fixed by setting a price, so
     // only a request that ran without one offers the editor.
     const reason = breakdown.status === 'unpriced' ? breakdown.unpriced_reason : undefined;
     const usageReason = reason && !priceWouldApply(breakdown.status, reason) ? reason : undefined;
     const message = usageReason
-      ? t(`cost.unpriced_reason.${usageReason}`)
+      ? t(`cost.unpriced_reason.${usageReason as Exclude<UnpricedReason, 'no_price'>}`)
       : t(breakdown.status === 'unpriced' ? 'cost.unpriced' : 'cost.legacy_unpriced');
     return (
       <div className={styles.breakdown} data-testid="cost-breakdown">
-        <p className={styles['mode-hint']} data-testid="cost-unpriced-reason">{message}</p>
-        {!usageReason && setPrice}
+        <TokenAccountingNote accounting={breakdown.token_accounting} className={styles['mode-hint']} />
+        {!hasUnresolvedAccounting && <>
+          <p className={styles['mode-hint']} data-testid="cost-unpriced-reason">{message}</p>
+          {!usageReason && setPrice}
+        </>}
       </div>
     );
   }
@@ -72,10 +78,17 @@ export const CostBreakdownView: React.FC<CostBreakdownViewProps> = ({ breakdown,
   const stored = nanosToUsd(breakdown.stored_nanos);
   return (
     <div className={styles.breakdown} data-testid="cost-breakdown">
+      <TokenAccountingNote accounting={breakdown.token_accounting} className={styles['mode-hint']} />
       {(breakdown.status === 'invalid_price' || breakdown.invalid_reason) && (
         <Notice tone="warning" title={t('cost.invalid', { reason: breakdown.invalid_reason ?? '' })} />
       )}
       {quote?.tier && <p className={styles['breakdown-tier']}>{t('cost.tier', { tier: describeTier(t, quote.tier) })}</p>}
+      {/* The billed tier only explains a price that has service-tier lanes; elsewhere it decides nothing. */}
+      {breakdown.service_tier && version?.price.tiers?.some((tier) => tier.service_tiers?.length) && (
+        <p className={styles['breakdown-tier']} data-testid="cost-service-tier">
+          {t(breakdown.service_tier_source === 'outbound' ? 'cost.service_tier_outbound' : breakdown.service_tier_source === 'request' ? 'cost.service_tier_requested' : 'cost.service_tier', { tier: breakdown.service_tier })}
+        </p>
+      )}
       {quote && (
         <table className={styles['breakdown-table']}>
           <thead>

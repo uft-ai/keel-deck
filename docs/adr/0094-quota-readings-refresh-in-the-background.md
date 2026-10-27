@@ -1,6 +1,6 @@
 # ADR 0094: Quota readings refresh in the background
 
-- Status: Accepted
+- Status: Accepted, amended 2026-10-22 (see "A failed read leaves a trace for the console" and "A CPA cooldown ends when the credential can serve again")
 - Date: 2026-10-12
 
 ## Context
@@ -71,6 +71,43 @@ switched off back on. `quota_auto_refresh_get` and
 **A demonstration never starts the loop.** Its gateway is the fixture, and the
 demonstration starts no loop of its own beyond the HTTP server.
 
+**A failed read leaves a trace for the console, not an observation.** Because a failed or
+stale read is never stored, the stored reading could not say that the console's own
+refreshes had stopped working: the operator saw a toast, and the page went on presenting a
+reading days old as the current answer. Migration 044 adds `quota_refresh_attempts` - one
+row per credential, holding when the last read was attempted, whether it produced a
+reading and the provider's redacted reason, stamped when the read starts so two
+overlapping reads are ordered by start rather than by which response landed last - written
+by the one helper every read path goes through, and served as `last_refresh` beside the
+reading. The status the console
+presents then follows `quota.ApplyReadingHealth`: a failed attempt newer than the reading
+outranks it (auth-like failures as `error` with the reauth recommendation, the rest as
+`stale` with the previous numbers standing, or as `error` when the credential holds no
+observation at all and nothing on screen could be called out of date), an active cooldown
+outranks both, and a healthy or warning reading whose own announced reset has passed unseen
+reads as `stale`.
+Recording an attempt does not change the cadence: the loop's retry backoff stays
+in-process memory, so a restart still re-reads a failing credential once.
+
+**A CPA cooldown ends when the credential can serve again.** A usage-limit refusal leaves
+`quota_exceeded` evidence in `error_events` with the recovery time CPA announced, and the
+credential stays in cooldown until someone clears it. Two facts now end that cooldown on
+their own, each with the same CPA `routing/cooldown/reset` call and evidence wipe the
+operator's Clear Cooldown performs. First, a read through `Handler.refreshQuotaReading`
+that is fresh, usable and shows room in every published window
+(`quota.HasRestoredCapacity`) releases a credential that still holds evidence, whichever
+surface asked for the read: providers reset quotas before the recovery time they
+announced, and the credential could serve again. Second, each round of the loop releases
+an enabled credential whose every stored recovery and retry time has passed
+(`Repository.BatchExpiredCooldowns`, with no lookback window), including providers the
+loop never reads, because a clear is not a read. A newer cooldown that has not recovered
+yet keeps the credential blocked even when an older one has passed, and a clear that fails
+waits out the ten-minute retry backoff before it is tried again. Each release is
+logged with its `auth_index` and audited as `quota.clear_cooldown.automatic` with the
+reason `capacity_restored` or `recovery_time_passed`; a CPA failure keeps only its HTTP
+status. The second runs only inside the loop, so a deployment with both triggers off
+keeps operator-only clears for expired cooldowns.
+
 ## Consequences
 
 - An exhausted credential reads as recovered about a minute after its window resets,
@@ -83,4 +120,12 @@ demonstration starts no loop of its own beyond the HTTP server.
   reads.
 - The attempt memory is lost on restart, so a failing credential that is due may be
   tried once more after a restart; the round limit still bounds that.
-- No table or migration is added; the readings remain `quota_snapshots` rows.
+- The readings remain `quota_snapshots` rows; migration 044 adds only the per-credential
+  attempt record the console reports beside them.
+- A credential whose quota came back early, or whose recovery time has passed, serves
+  again without an operator clearing its cooldown. A read that reports capacity the
+  provider then refuses produces a fresh usage-limit error, so CPA puts the credential
+  back in cooldown until the next read.
+- A failure now outlives its toast: a page opened later still says the last refresh failed
+  and when, and a credential whose reading is older than the boundary it announced no
+  longer reads as healthy.
